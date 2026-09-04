@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -621,6 +622,110 @@ func TestWireEnrollmentProbeWithoutProof(t *testing.T) {
 	if _, ok := accountForCoderID(t, f, enrollCoderUserID); ok {
 		t.Error("probe must not create an account")
 	}
+}
+
+// (j) Per-IP pre-token gate (CD-2 §20): an exhausted gate rejects BEFORE
+// the first prompt (no banner, no challenge, audit ENROLLMENT_RATE_LIMITED);
+// between retries it ends the re-challenge loop cleanly. The gate sees the
+// bare peer IP, not host:port.
+
+// recordingGate is a race-safe PreTokenGate fake: it records each peer IP
+// and refuses once allow is false or tripsAfter calls have passed.
+type recordingGate struct {
+	mu         sync.Mutex
+	allow      bool
+	tripsAfter int
+	ips        []string
+}
+
+func (g *recordingGate) check(ip string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.ips = append(g.ips, ip)
+	if g.tripsAfter > 0 && len(g.ips) > g.tripsAfter {
+		return false
+	}
+	return g.allow
+}
+
+func (g *recordingGate) calls() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.ips...)
+}
+func TestWireEnrollmentPreTokenGate(t *testing.T) {
+	defer leakCheck(t)
+
+	t.Run("exhausted before first prompt", func(t *testing.T) {
+		stub := newCoderStub(enrollCoderUserID)
+		stub.set(enrollToken, http.StatusOK)
+		f := newFixture(t, stub)
+		defer f.close(t)
+
+		gate := &recordingGate{allow: false}
+		cfg := f.enrollmentAuthConfig()
+		cfg.Enrollment.PreTokenGate = gate.check
+		ws := startWireServer(t, cfg)
+		defer ws.shutdown()
+
+		probe := &clientProbe{}
+		ki := &kiResponder{answers: []string{enrollToken}}
+		client, err := dialGateway(ws.addr(), "init", probe, enrollmentMethods(newSigner(t), ki, "")...)
+		if client != nil {
+			client.Close()
+		}
+		if err == nil {
+			t.Fatal("expected auth failure with the pre-token gate exhausted")
+		}
+		if ki.promptCount() != 0 {
+			t.Errorf("token challenges = %d, want 0 (gate refused before the prompt)", ki.promptCount())
+		}
+		if strings.Contains(probe.bannerText(), "enrollment") || strings.Contains(probe.bannerText(), "/cli-auth") {
+			t.Errorf("no enrollment banner when the gate refuses: %q", probe.bannerText())
+		}
+		if got := gate.calls(); len(got) != 1 || got[0] != "127.0.0.1" {
+			t.Errorf("gate calls = %v, want one call with the bare peer IP", got)
+		}
+		if got := enrollmentAuditEvents(f, sshauth.EventTypeEnrollmentRejected, sshauth.ResultFailure, sshauth.DetailEnrollmentRateLimited); got != 1 {
+			t.Errorf("rate-limited rejection events = %d, want 1", got)
+		}
+		if _, ok := accountForCoderID(t, f, enrollCoderUserID); ok {
+			t.Error("nothing must be stored when the gate refuses")
+		}
+	})
+
+	t.Run("exhausted between retries", func(t *testing.T) {
+		stub := newCoderStub(enrollCoderUserID) // every candidate 401s
+		f := newFixture(t, stub)
+		defer f.close(t)
+
+		gate := &recordingGate{allow: true, tripsAfter: 1}
+		cfg := f.enrollmentAuthConfig()
+		cfg.Enrollment.PreTokenGate = gate.check
+		ws := startWireServer(t, cfg)
+		defer ws.shutdown()
+
+		ki := &kiResponder{answers: []string{
+			"cand-one-eeeeeeeeeeeeeeeeeeee",
+			"cand-two-eeeeeeeeeeeeeeeeeeee",
+		}}
+		client, err := dialGateway(ws.addr(), "init", &clientProbe{}, enrollmentMethods(newSigner(t), ki, "")...)
+		if client != nil {
+			client.Close()
+		}
+		if err == nil {
+			t.Fatal("expected auth failure once the gate trips")
+		}
+		if ki.promptCount() != 1 {
+			t.Errorf("token challenges = %d, want 1 (retry gated)", ki.promptCount())
+		}
+		if got := gate.calls(); len(got) != 2 {
+			t.Errorf("gate calls = %d, want 2 (first prompt + retry)", len(got))
+		}
+		if got := enrollmentAuditEvents(f, sshauth.EventTypeEnrollmentRejected, sshauth.ResultFailure, sshauth.DetailEnrollmentRateLimited); got != 1 {
+			t.Errorf("rate-limited rejection events = %d, want 1", got)
+		}
+	})
 }
 
 // Unit-level: enrollment candidate permissions round-trip and validation.

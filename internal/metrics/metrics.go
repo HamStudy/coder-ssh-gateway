@@ -64,6 +64,12 @@ const (
 	StoreOpGetAccount      = "get_account"
 	StoreOpClearCredential = "clear_credential"
 	StoreOpMarkInvalid     = "mark_invalid"
+
+	// Enrollment result values (bounded; CD-2 outcomes).
+	EnrollmentSuccess     = "success"
+	EnrollmentRejected    = "rejected"
+	EnrollmentKeyConflict = "key_conflict"
+	EnrollmentRateLimited = "rate_limited"
 )
 
 // Recorder is the call surface for counters/gauges outside the tunnel
@@ -82,6 +88,7 @@ type Recorder interface {
 	CredentialValidation(result string, d time.Duration)
 	CredentialRenewal(method, result string)
 	StoreOperation(operation, result string)
+	Enrollment(result string)
 }
 
 // NoopRecorder satisfies Recorder with no-ops for tests and partial wiring.
@@ -98,6 +105,7 @@ func (NoopRecorder) LimitRejection(string)                      {}
 func (NoopRecorder) CredentialValidation(string, time.Duration) {}
 func (NoopRecorder) CredentialRenewal(string, string)           {}
 func (NoopRecorder) StoreOperation(string, string)              {}
+func (NoopRecorder) Enrollment(string)                          {}
 
 // Metrics owns the registry and every §34.2 family. It implements both
 // Recorder and tunnel.Observer.
@@ -118,6 +126,7 @@ type Metrics struct {
 	tunnelBytes       *prometheus.CounterVec
 	limitRejections   *prometheus.CounterVec
 	storeOps          *prometheus.CounterVec
+	enrollments       *prometheus.CounterVec
 
 	// Limits usage gauges (extension beyond §34.2; §20 requires current
 	// usage to be exposed). Filled by PollLimitsUsage.
@@ -206,6 +215,10 @@ func New() *Metrics {
 			Namespace: namespace, Name: "store_operations_total",
 			Help: "State store operations by operation and result.",
 		}, []string{"operation", "result"}),
+		enrollments: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: namespace, Name: "enrollments_total",
+			Help: "CD-2 init@ self-enrollment outcomes by result.",
+		}, []string{"result"}),
 		limitsUsage: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace, Name: "limits_usage",
 			Help: "Current usage of each §20 resource limit (sums per-entity maps).",
@@ -220,7 +233,7 @@ func New() *Metrics {
 		m.connectionsActive, m.connectionsTotal, m.authAttempts, m.authDuration,
 		m.credValidations, m.credValidationDur, m.credRenewals,
 		m.channelsActive, m.channelsTotal, m.procsActive, m.procExits,
-		m.tunnelBytes, m.limitRejections, m.storeOps, m.limitsUsage, m.limitsMax,
+		m.tunnelBytes, m.limitRejections, m.storeOps, m.enrollments, m.limitsUsage, m.limitsMax,
 	)
 	m.preCreateSeries()
 	return m
@@ -274,6 +287,9 @@ func (m *Metrics) preCreateSeries() {
 		for _, r := range []string{ResultSuccess, ResultFailure} {
 			m.storeOps.WithLabelValues(op, r)
 		}
+	}
+	for _, r := range []string{EnrollmentSuccess, EnrollmentRejected, EnrollmentKeyConflict, EnrollmentRateLimited} {
+		m.enrollments.WithLabelValues(r)
 	}
 }
 
@@ -358,6 +374,10 @@ func (m *Metrics) CredentialRenewal(method, result string) {
 
 func (m *Metrics) StoreOperation(operation, result string) {
 	m.storeOps.WithLabelValues(normalizeStoreOp(operation), normalizeResult(result)).Inc()
+}
+
+func (m *Metrics) Enrollment(result string) {
+	m.enrollments.WithLabelValues(normalizeEnrollment(result)).Inc()
 }
 
 // --- tunnel.Observer implementation ---
@@ -494,5 +514,14 @@ func normalizeStoreOp(op string) string {
 		return op
 	default:
 		return "other"
+	}
+}
+
+func normalizeEnrollment(r string) string {
+	switch r {
+	case EnrollmentSuccess, EnrollmentKeyConflict, EnrollmentRateLimited:
+		return r
+	default:
+		return EnrollmentRejected
 	}
 }

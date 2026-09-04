@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -76,6 +77,16 @@ func KeyDigestHex(key ssh.PublicKey) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// peerIPFromState extracts the host portion of the connection peer address
+// for the per-IP PreTokenGate; unparseable addresses pass through whole.
+func peerIPFromState(state *ConnState) string {
+	peer := state.PeerAddr()
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		return host
+	}
+	return peer
+}
+
 // EnrollmentVerifier is the narrow verifier subset the enrollment
 // continuation needs. *coderapi.Verifier satisfies it.
 type EnrollmentVerifier interface {
@@ -113,6 +124,11 @@ type EnrollmentConfig struct {
 	// allowance. Attempts are gated on the zero-UUID bucket because the
 	// account does not exist until the token is verified. Nil disables.
 	Rate RenewalRateLimiter
+	// PreTokenGate bounds pre-resolution token guessing per peer IP (CD-2
+	// §20): it is consulted before the first token prompt is offered and
+	// again before each retry/password attempt. A false return fails
+	// enrollment cleanly (no prompt, no token accepted). Nil disables.
+	PreTokenGate func(ip string) bool
 	// Audit receives enrollment success/rejection events. Nil disables.
 	Audit audit.Logger
 	// MaxAttempts bounds candidate token attempts per connection.
@@ -233,6 +249,14 @@ func (c AuthConfig) verifiedEnrollment(state *ConnState, key ssh.PublicKey, cand
 		}
 	}
 
+	// §20: bound pre-resolution token guessing per peer IP before the
+	// first prompt is offered.
+	if ec.PreTokenGate != nil && !ec.PreTokenGate(peerIPFromState(state)) {
+		log.Debug("enrollment pre-token gate refused")
+		ec.auditEnrollment(scopeFromState(state), nil, nil, ResultFailure, DetailEnrollmentRateLimited)
+		return nil, ErrPublicKeyRejected
+	}
+
 	state.SendBanner(enrollmentBanner + "\nGenerate a token at " + ec.cliAuthURL() + ".")
 	log.Debug("entering device enrollment", slog.String("key_digest", digest))
 
@@ -292,6 +316,11 @@ func (s *enrollmentSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ss
 		if !errors.Is(err, ErrTokenRejected) {
 			return nil, err
 		}
+		if s.ec.PreTokenGate != nil && !s.ec.PreTokenGate(peerIPFromState(s.state)) {
+			s.log.Debug("enrollment re-challenge rate-limited")
+			s.ec.auditEnrollment(scopeFromState(s.state), nil, nil, ResultFailure, DetailEnrollmentRateLimited)
+			return nil, ErrRenewalRateLimited
+		}
 		s.log.Debug("enrollment candidate rejected; re-challenging")
 		instruction = "Token not accepted. Verify you copied the current token from\n" +
 			s.ec.cliAuthURL() + " and try again.\n" +
@@ -304,6 +333,11 @@ func (s *enrollmentSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ss
 // continuation. The pre-prompt enrollment banner is the prompt text.
 func (s *enrollmentSession) password(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 	defer wipeBytes(password)
+	if s.ec.PreTokenGate != nil && !s.ec.PreTokenGate(peerIPFromState(s.state)) {
+		s.log.Debug("enrollment password attempt rate-limited")
+		s.ec.auditEnrollment(scopeFromState(s.state), nil, nil, ResultFailure, DetailEnrollmentRateLimited)
+		return nil, ErrRenewalRateLimited
+	}
 	if s.state.RenewalAttempts() >= s.ec.maxAttempts() {
 		s.log.Debug("enrollment attempts exhausted",
 			slog.Int("attempts", s.state.RenewalAttempts()))

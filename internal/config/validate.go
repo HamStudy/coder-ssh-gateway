@@ -27,6 +27,7 @@ func (c *Config) Validate() error {
 	c.validateDeployment(&errs)
 	c.validateLimits(&errs)
 	c.validateMaintenance(&errs)
+	c.validateEnrollment(&errs)
 
 	return errors.Join(errs...)
 }
@@ -171,6 +172,23 @@ func (c *Config) validateMaintenance(errs *[]error) {
 	}
 	if c.Maintenance.InputTimeout <= 0 {
 		*errs = append(*errs, fmt.Errorf("maintenance.input_timeout: must be positive, got %v", c.Maintenance.InputTimeout.Std()))
+	}
+}
+
+func (c *Config) validateEnrollment(errs *[]error) {
+	if !c.Enrollment.Enabled {
+		return
+	}
+	if c.Enrollment.User == "" {
+		*errs = append(*errs, errors.New("enrollment.user: required when enrollment is enabled"))
+	} else if c.Enrollment.User == c.SSH.TransportUser || c.Enrollment.User == c.SSH.MaintenanceUser {
+		*errs = append(*errs, fmt.Errorf("enrollment.user: %q collides with the transport or maintenance username", c.Enrollment.User))
+	}
+	if c.Enrollment.MaxAttempts <= 0 {
+		*errs = append(*errs, fmt.Errorf("enrollment.max_attempts: must be positive, got %d", c.Enrollment.MaxAttempts))
+	}
+	if c.Enrollment.Timeout <= 0 {
+		*errs = append(*errs, fmt.Errorf("enrollment.timeout: must be positive, got %v", c.Enrollment.Timeout.Std()))
 	}
 }
 

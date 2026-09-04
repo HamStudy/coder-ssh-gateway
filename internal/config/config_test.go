@@ -143,6 +143,10 @@ func TestParseValidFixture(t *testing.T) {
 	if cfg.Listen.Address != ":2222" {
 		t.Errorf("fixture listen.address = %q, want :2222", cfg.Listen.Address)
 	}
+	if !cfg.Enrollment.Enabled || cfg.Enrollment.User != "init" ||
+		cfg.Enrollment.MaxAttempts != 3 || cfg.Enrollment.Timeout.Std() != 5*time.Minute {
+		t.Errorf("fixture enrollment = %+v, want enabled init/3/5m", cfg.Enrollment)
+	}
 
 	// Repoint secret/binary/state paths at real temp files, then validate.
 	env := newValidEnv(t)
@@ -191,6 +195,38 @@ func TestLoadMissingFile(t *testing.T) {
 	}
 }
 
+func TestEnrollmentSectionParsing(t *testing.T) {
+	env := newValidEnv(t)
+	cfg, err := Load(env.writeConfig(t, env.yaml()+`enrollment:
+  enabled: true
+  user: onboard
+  max_attempts: 5
+  timeout: 2m
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Enrollment.User != "onboard" || cfg.Enrollment.MaxAttempts != 5 ||
+		cfg.Enrollment.Timeout.Std() != 2*time.Minute {
+		t.Errorf("enrollment = %+v, want onboard/5/2m", cfg.Enrollment)
+	}
+
+	// Strict field checking rejects unknown keys inside the section.
+	_, err = Load(env.writeConfig(t, env.yaml()+"enrollment:\n  bogus: true\n"))
+	if err == nil {
+		t.Fatal("expected error for unknown enrollment field")
+	}
+
+	// A disabled section parses and validates without the enabled-only knobs.
+	disabled, err := Load(env.writeConfig(t, env.yaml()+"enrollment:\n  enabled: false\n"))
+	if err != nil {
+		t.Fatalf("Load disabled enrollment: %v", err)
+	}
+	if disabled.Enrollment.Enabled {
+		t.Error("enrollment.enabled = true, want false")
+	}
+}
+
 func TestDefaultValues(t *testing.T) {
 	c := Default()
 	checks := []struct {
@@ -219,6 +255,9 @@ func TestDefaultValues(t *testing.T) {
 		{"limits.renewal_attempts_per_account_per_minute", c.Limits.RenewalAttemptsPerAccountPerMinute, 5},
 		{"maintenance.enabled", c.Maintenance.Enabled, true},
 		{"maintenance.bind_on_first_token_requires_admin_flag", c.Maintenance.BindOnFirstTokenRequiresAdminFlag, true},
+		{"enrollment.enabled", c.Enrollment.Enabled, true},
+		{"enrollment.user", c.Enrollment.User, "init"},
+		{"enrollment.max_attempts", c.Enrollment.MaxAttempts, 3},
 		{"observability.log_format", c.Observability.LogFormat, "json"},
 		{"observability.metrics_address", c.Observability.MetricsAddress, "127.0.0.1:9090"},
 		{"observability.health_address", c.Observability.HealthAddress, "127.0.0.1:9091"},
@@ -240,6 +279,7 @@ func TestDefaultValues(t *testing.T) {
 		{"deployment.token_validation_timeout", c.Deployment.TokenValidationTimeout.Std(), 10 * time.Second},
 		{"deployment.token_validation_cache", c.Deployment.TokenValidationCache.Std(), 15 * time.Second},
 		{"maintenance.input_timeout", c.Maintenance.InputTimeout.Std(), 2 * time.Minute},
+		{"enrollment.timeout", c.Enrollment.Timeout.Std(), 5 * time.Minute},
 	}
 	for _, d := range durs {
 		if d.got != d.want {
@@ -436,6 +476,31 @@ func TestValidate(t *testing.T) {
 		{"zero audit retention", func(t *testing.T, c *Config, e validEnv) {
 			c.State.AuditRetentionDays = 0
 		}, "state.audit_retention_days"},
+
+		{"enrollment user collides with transport", func(t *testing.T, c *Config, e validEnv) {
+			c.Enrollment.User = c.SSH.TransportUser
+		}, "enrollment.user"},
+		{"enrollment user collides with maintenance", func(t *testing.T, c *Config, e validEnv) {
+			c.Enrollment.User = c.SSH.MaintenanceUser
+		}, "enrollment.user"},
+		{"enrollment user empty when enabled", func(t *testing.T, c *Config, e validEnv) {
+			c.Enrollment.User = ""
+		}, "enrollment.user"},
+		{"enrollment zero max attempts", func(t *testing.T, c *Config, e validEnv) {
+			c.Enrollment.MaxAttempts = 0
+		}, "enrollment.max_attempts"},
+		{"enrollment negative max attempts", func(t *testing.T, c *Config, e validEnv) {
+			c.Enrollment.MaxAttempts = -1
+		}, "enrollment.max_attempts"},
+		{"enrollment zero timeout", func(t *testing.T, c *Config, e validEnv) {
+			c.Enrollment.Timeout = Duration(0)
+		}, "enrollment.timeout"},
+		{"enrollment disabled tolerates zero knobs", func(t *testing.T, c *Config, e validEnv) {
+			c.Enrollment.Enabled = false
+			c.Enrollment.User = ""
+			c.Enrollment.MaxAttempts = 0
+			c.Enrollment.Timeout = Duration(0)
+		}, ""},
 
 		{"tls ca file missing", func(t *testing.T, c *Config, e validEnv) {
 			c.Deployment.TLS.CAFile = filepath.Join(e.dir, "missing-ca")

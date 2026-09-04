@@ -30,6 +30,7 @@ var requiredFamilies = []string{
 	"coder_ssh_gateway_tunnel_bytes_total",
 	"coder_ssh_gateway_limit_rejections_total",
 	"coder_ssh_gateway_store_operations_total",
+	"coder_ssh_gateway_enrollments_total",
 }
 
 func gatherText(t *testing.T, m *Metrics) string {
@@ -229,6 +230,10 @@ func TestCredentialValidationAndStoreOps(t *testing.T) {
 	m.StoreOperation(StoreOpLookupKey, ResultFailure)
 	m.CredentialRenewal(MethodToken, ResultSuccess)
 	m.CredentialRenewal("keyboard-interactive", ResultFailure) // normalized to token
+	m.Enrollment(EnrollmentSuccess)
+	m.Enrollment(EnrollmentKeyConflict)
+	m.Enrollment(EnrollmentRateLimited)
+	m.Enrollment("garbage") // normalized to rejected
 
 	checks := []struct {
 		name string
@@ -242,6 +247,10 @@ func TestCredentialValidationAndStoreOps(t *testing.T) {
 		{"store lookup fail", testutil.ToFloat64(m.storeOps.WithLabelValues("lookup_key", "failure")), 1},
 		{"renewal success", testutil.ToFloat64(m.credRenewals.WithLabelValues("token", "success")), 1},
 		{"renewal failure", testutil.ToFloat64(m.credRenewals.WithLabelValues("token", "failure")), 1},
+		{"enrollment success", testutil.ToFloat64(m.enrollments.WithLabelValues("success")), 1},
+		{"enrollment key conflict", testutil.ToFloat64(m.enrollments.WithLabelValues("key_conflict")), 1},
+		{"enrollment rate limited", testutil.ToFloat64(m.enrollments.WithLabelValues("rate_limited")), 1},
+		{"enrollment rejected", testutil.ToFloat64(m.enrollments.WithLabelValues("rejected")), 1},
 	}
 	for _, c := range checks {
 		if c.got != c.want {

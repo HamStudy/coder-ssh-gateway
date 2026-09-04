@@ -75,6 +75,12 @@ maintenance:
   input_timeout: 2m
   bind_on_first_token_requires_admin_flag: true
 
+enrollment:
+  enabled: true
+  user: init
+  max_attempts: 3
+  timeout: 5m
+
 observability:
   log_format: json
   log_level: info

@@ -38,6 +38,7 @@ type Config struct {
 	Deployment    Deployment    `yaml:"deployment"`
 	Limits        Limits        `yaml:"limits"`
 	Maintenance   Maintenance   `yaml:"maintenance"`
+	Enrollment    Enrollment    `yaml:"enrollment"`
 	Observability Observability `yaml:"observability"`
 }
 
@@ -119,6 +120,24 @@ type Maintenance struct {
 	BindOnFirstTokenRequiresAdminFlag bool     `yaml:"bind_on_first_token_requires_admin_flag"`
 }
 
+// Enrollment configures the CD-2 init@ token-anchored self-enrollment flow.
+// Enabled by default: self-configuration is the primary onboarding path.
+type Enrollment struct {
+	// Enabled arms the enrollment user. False makes the enrollment
+	// username behave exactly like any unknown username (§35).
+	Enabled bool `yaml:"enabled"`
+	// User is the outer SSH username that triggers enrollment
+	// (default "init"). It must differ from the transport and
+	// maintenance usernames.
+	User string `yaml:"user"`
+	// MaxAttempts bounds candidate token attempts per enrollment
+	// connection (mirrors limits.renewal_attempts_per_connection).
+	MaxAttempts int `yaml:"max_attempts"`
+	// Timeout extends the connection deadline while enrollment waits for
+	// a token (mirrors listen.renewal_auth_timeout).
+	Timeout Duration `yaml:"timeout"`
+}
+
 type Observability struct {
 	LogFormat      string `yaml:"log_format"`
 	LogLevel       string `yaml:"log_level"`
@@ -184,6 +203,12 @@ func Default() *Config {
 			SessionTimeout:                    Duration(5 * time.Minute),
 			InputTimeout:                      Duration(2 * time.Minute),
 			BindOnFirstTokenRequiresAdminFlag: true,
+		},
+		Enrollment: Enrollment{
+			Enabled:     true,
+			User:        "init",
+			MaxAttempts: 3,
+			Timeout:     Duration(5 * time.Minute),
 		},
 		Observability: Observability{
 			LogFormat:      "json",

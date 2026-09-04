@@ -122,6 +122,28 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		CoderURL:       dep.CoderURL,
 		Logger:         logger,
 	}
+
+	// CD-2: enrollment disabled leaves a nil Enrollment — init@ then
+	// rejects byte-identically to any unknown username (§35).
+	var enrollment *sshauth.EnrollmentConfig
+	if cfg.Enrollment.Enabled {
+		enrollment = &sshauth.EnrollmentConfig{
+			Enabled:  true,
+			User:     cfg.Enrollment.User,
+			Verifier: instVerifier,
+			Store:    instStore,
+			Rate:     rateLimits,
+			// §20: bound pre-resolution token guessing per source IP with
+			// the unknown-key attempt bucket.
+			PreTokenGate:   rateLimits.AllowUnknownKeyAttempt,
+			Audit:          auditOut,
+			MaxAttempts:    cfg.Enrollment.MaxAttempts,
+			RenewalTimeout: cfg.Enrollment.Timeout.Std(),
+			DeploymentID:   dep.ID,
+			CoderURL:       dep.CoderURL,
+			Logger:         logger,
+		}
+	}
 	authCfg := sshauth.AuthConfig{
 		TransportUser:        cfg.SSH.TransportUser,
 		MaintenanceUser:      cfg.SSH.MaintenanceUser,
@@ -134,6 +156,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		Audit:                auditOut,
 		Logger:               logger,
 		Renewal:              renewal,
+		EnrollmentUser:       cfg.Enrollment.User,
+		Enrollment:           enrollment,
 	}
 
 	codec, err := route.NewCodec(cfg.Deployment.TargetSuffix)

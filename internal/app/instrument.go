@@ -146,9 +146,10 @@ func (s *instrumentedStore) MarkCredentialInvalid(ctx context.Context, accountID
 }
 
 // auditMetricBridge decorates the audit logger, deriving the
-// credential_renewals_total family from §34.3 renewal audit events (the only
-// layer that sees both handshake and maintenance renewals without touching
-// the sshauth package). All events pass through unchanged.
+// credential_renewals_total and enrollments_total families from §34.3/CD-2
+// audit events (the only layer that sees handshake, maintenance, and
+// enrollment outcomes without touching the sshauth package). All events
+// pass through unchanged.
 type auditMetricBridge struct {
 	inner audit.Logger
 	rec   metrics.Recorder
@@ -164,6 +165,23 @@ func (b *auditMetricBridge) Record(ctx context.Context, ev audit.Event) error {
 		b.rec.CredentialRenewal(metrics.MethodToken, result)
 	case sshauth.EventTypeWrongUserToken:
 		b.rec.CredentialRenewal(metrics.MethodToken, metrics.ResultWrongUser)
+	case sshauth.EventTypeEnrollmentSuccess:
+		b.rec.Enrollment(metrics.EnrollmentSuccess)
+	case sshauth.EventTypeEnrollmentRejected:
+		b.rec.Enrollment(enrollmentRejectionLabel(ev.DetailCode))
 	}
 	return b.inner.Record(ctx, ev)
+}
+
+// enrollmentRejectionLabel maps the CD-2 rejection detail codes onto the
+// bounded enrollments_total result labels.
+func enrollmentRejectionLabel(detailCode string) string {
+	switch detailCode {
+	case sshauth.DetailEnrollmentKeyAlreadyLinked:
+		return metrics.EnrollmentKeyConflict
+	case sshauth.DetailEnrollmentRateLimited:
+		return metrics.EnrollmentRateLimited
+	default:
+		return metrics.EnrollmentRejected
+	}
 }
