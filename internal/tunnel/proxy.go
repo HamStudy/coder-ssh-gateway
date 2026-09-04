@@ -10,34 +10,40 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// proxyStreams owns the two §19.3 copy loops between the outer SSH channel
-// and the child process pipes. Result channels are buffered(1) so a finished
-// loop never blocks on a supervisor that already moved on.
 type proxyStreams struct {
 	upRes     chan error
 	downRes   chan error
 	firstByte chan struct{}
 }
 
-// startProxy launches the two copy directions:
-//
-//   - up: channel -> child stdin. Client EOF closes stdin but does NOT kill
-//     the child (§19.3 half-close semantics).
-//   - down: child stdout -> channel. The first buffer is read explicitly so
-//     the §19.6 startup timer can be cancelled on the first byte (the start
-//     of the inner SSH handshake); child stdout EOF then propagates to the
-//     client as a channel EOF via CloseWrite.
-func startProxy(channel ssh.Channel, proc *Process) *proxyStreams {
+func startProxy(channel ssh.Channel, proc *Process, obs Observer) *proxyStreams {
 	px := &proxyStreams{
 		upRes:     make(chan error, 1),
 		downRes:   make(chan error, 1),
 		firstByte: make(chan struct{}),
 	}
 
+	if obs == nil {
+		obs = NoopObserver{}
+	}
+
 	go func() {
-		_, err := io.Copy(proc.Stdin, channel)
-		closeErr := proc.Stdin.Close()
-		px.upRes <- errors.Join(normalizeStreamErr(err), normalizeStreamErr(closeErr))
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := channel.Read(buf)
+			if n > 0 {
+				obs.TunnelBytes("up", n)
+				if _, werr := proc.Stdin.Write(buf[:n]); werr != nil {
+					px.upRes <- err
+					return
+				}
+			}
+			if err != nil {
+				closeErr := proc.Stdin.Close()
+				px.upRes <- errors.Join(normalizeStreamErr(err), normalizeStreamErr(closeErr))
+				return
+			}
+		}
 	}()
 
 	go func() {
@@ -46,11 +52,23 @@ func startProxy(channel ssh.Channel, proc *Process) *proxyStreams {
 		var werr error
 		if n > 0 {
 			close(px.firstByte)
+			obs.TunnelBytes("down", n)
 			_, werr = channel.Write(buf[:n])
 		}
 		var copyErr error
 		if rerr == nil && werr == nil {
-			_, copyErr = io.Copy(channel, proc.Stdout)
+			for {
+				n, err := proc.Stdout.Read(buf)
+				if n > 0 {
+					obs.TunnelBytes("down", n)
+					if _, werr := channel.Write(buf[:n]); werr != nil {
+						break
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
 		}
 		closeErr := channel.CloseWrite()
 		px.downRes <- errors.Join(

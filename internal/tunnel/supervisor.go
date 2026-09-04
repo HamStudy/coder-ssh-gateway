@@ -39,6 +39,8 @@ type SuperviseOpts struct {
 	// NewTimer overrides timer creation (injectable clock for tests). The
 	// returned stop func releases the timer. nil -> time.NewTimer.
 	NewTimer func(d time.Duration) (<-chan time.Time, func())
+	// Observer receives tunnel lifecycle events. nil -> no-op.
+	Observer Observer
 }
 
 // SupervisionResult reports how a supervised tunnel ended. Code is "" on
@@ -89,16 +91,19 @@ func Supervise(ctx context.Context, proc *Process, channel ssh.Channel, opts Sup
 	if newTimer == nil {
 		newTimer = realTimer
 	}
+	obs := opts.Observer
+	if obs == nil {
+		obs = NoopObserver{}
+	}
 
-	// §19.7: stderr is drained continuously so the child never blocks on a
-	// full pipe; only the bounded ring retains anything.
 	stderrDone := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(ring, proc.Stderr)
 		close(stderrDone)
 	}()
 
-	px := startProxy(channel, proc)
+	obs.ProcessStarted()
+	px := startProxy(channel, proc, obs)
 
 	startupC, stopStartup := newTimer(startupTimeout)
 	defer stopStartup()
@@ -201,6 +206,8 @@ func Supervise(ctx context.Context, proc *Process, channel ssh.Channel, opts Sup
 	default:
 		res.Code = core.TUNNEL_CANCELLED
 	}
+	obs.ProcessExited(res.Code)
+	obs.ActiveGauge(0)
 	return res
 }
 

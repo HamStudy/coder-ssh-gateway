@@ -18,18 +18,17 @@ import (
 // open itself is audited by the server (§34.3).
 const EventTypeTunnelStart = "tunnel_start"
 
-// TunnelStarter adapts the launcher + supervisor to the server's
-// TunnelStarter interface: Start blocks for the tunnel's lifetime. On any
-// failure the already-accepted channel is closed and a tunnel_start failure
-// audit event is recorded with the core.TUNNEL_* detail code.
 type TunnelStarter struct {
 	Launcher        *Launcher
-	StartupTimeout  time.Duration // <=0 -> DefaultStartupTimeout
-	PolicyTimeout   time.Duration // 0 -> none
-	ShutdownGrace   time.Duration // <=0 -> DefaultShutdownGrace
-	StderrRingBytes int64         // <=0 -> DefaultStderrRingBytes
-	Audit           audit.Logger  // nil -> no failure audit
-	Log             *slog.Logger  // nil -> discard
+	StartupTimeout  time.Duration
+	PolicyTimeout   time.Duration
+	ShutdownGrace   time.Duration
+	StderrRingBytes int64
+	Audit           audit.Logger
+	Log             *slog.Logger
+	Observer        Observer
+	Rechecker       *Rechecker
+	Registry        *Registry
 }
 
 func (ts *TunnelStarter) Start(ctx context.Context, channel ssh.Channel, route core.Route, credential core.CredentialSnapshot) error {
@@ -53,6 +52,20 @@ func (ts *TunnelStarter) Start(ctx context.Context, channel ssh.Channel, route c
 		return err
 	}
 
+	var tunnelID uuid.UUID
+	if ts.Registry != nil {
+		tunnelID = uuid.New()
+		ts.Registry.Add(TunnelInfo{
+			ID:           tunnelID,
+			AccountID:    credential.AccountID,
+			DeploymentID: ts.Launcher.Dep.ID,
+			Generation:   credential.Generation,
+			Route:        route,
+			StartedAt:    time.Now(),
+			ConnectionID: credential.AccountID.String(),
+		})
+	}
+
 	ring := NewStderrRing(ts.StderrRingBytes)
 	res := Supervise(ctx, proc, channel, SuperviseOpts{
 		Ring:           ring,
@@ -60,9 +73,19 @@ func (ts *TunnelStarter) Start(ctx context.Context, channel ssh.Channel, route c
 		PolicyTimeout:  ts.PolicyTimeout,
 		Grace:          ts.ShutdownGrace,
 		Log:            log,
+		Observer:       ts.Observer,
 	})
+
+	if ts.Registry != nil && tunnelID != uuid.Nil {
+		ts.Registry.Remove(tunnelID)
+	}
+
 	if res.Code == "" {
 		return nil
+	}
+
+	if ts.Rechecker != nil && (res.Code == core.TUNNEL_CODER_EXITED || res.Code == core.TUNNEL_START_TIMEOUT) {
+		ts.Rechecker.RecheckAfterFailure(ctx, credential.AccountID, credential.Generation)
 	}
 
 	_ = channel.Close()
