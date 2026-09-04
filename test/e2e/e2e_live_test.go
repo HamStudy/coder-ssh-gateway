@@ -150,27 +150,46 @@ func TestLiveProxyJumpStarted(t *testing.T) {
 // and lets the coder CLI autostart it (§38.4 "stopped with autostart";
 // §39 "A stopped workspace can autostart when configured"). Afterwards the
 // workspace is returned to its found state: if WE started it, we stop it.
+//
+// Ordering is deliberate: the initial status is captured and the
+// stop-if-we-started cleanup registered BEFORE any connect attempt, so a
+// mid-test failure (e.g. banner timeout against a cold-starting agent)
+// still restores the workspace.
 func TestLiveAutostartStopped(t *testing.T) {
 	requireOpenSSH(t)
 	token := liveToken(t)
-	f := liveFixture(t, token)
 
-	wasRunning := liveWorkspaceRunning(t, token, "general")
-	startedByUs := false
-	if !wasRunning {
-		startedByUs = true // conservative: stop it again unless it was clearly running
-	}
+	// 1. Capture initial state FIRST.
+	status, healthy := liveWorkspaceState(t, token, "general")
+	startedByUs := status != "running" // conservative: anything not clearly running gets stopped again
+
+	// 2. Register cleanup BEFORE the fixture and any connect attempt; it
+	// must fire even when the test fails midway.
 	t.Cleanup(func() {
 		if startedByUs {
 			liveStopWorkspace(t, token, "general")
 		}
 	})
 
-	// Autostart may take minutes: allow the full workspace_connect_timeout.
+	f := liveFixture(t, token)
+
+	// 3. A workspace that is running but whose agent is still bootstrapping
+	// (left over from a previous interrupted run, for example) is not
+	// connectable yet: wait for agent health before touching ssh.
+	if status == "running" && !healthy {
+		liveWaitHealthy(t, token, "general", 3*time.Minute)
+	}
+
+	// 4. Autostart may take minutes. The ssh_config ConnectTimeout (10s)
+	// also bounds the INNER banner exchange, and `coder ssh --wait=auto`
+	// emits nothing on stdout while the agent boots — a tight timeout kills
+	// the connection mid-start. Give this invocation a 5m banner budget and
+	// a 6m overall context (>= workspace_connect_timeout).
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
-	stdout, stderr, code := f.proxyJumpExec(t, ctx, "general.coder-gateway.example.com", "printf hello")
+	stdout, stderr, code := f.proxyJumpExecOpts(t, ctx, "general.coder-gateway.example.com", "printf hello",
+		"ConnectTimeout=300")
 	if code != 0 {
 		t.Fatalf("live autostart ProxyJump exit %d\nstdout: %q\nstderr: %q\ngateway logs:\n%s",
 			code, stdout, stderr, f.logBuf.String())
@@ -188,31 +207,104 @@ func assertNoLeftoverChildren(t *testing.T, f *gatewayFixture) {
 	f.waitNoChildren(t, 15*time.Second)
 }
 
-// liveWorkspaceRunning probes the real Coder API for the workspace's latest
-// build status. The token lives only in the request header. Any probe
-// failure conservatively reports "running" so cleanup never stops a
-// workspace the test did not start.
-func liveWorkspaceRunning(t *testing.T, token, workspace string) bool {
+// liveWorkspaceState probes the real Coder API for the workspace's latest
+// build status and agent health. The token lives only in the request
+// header. Any probe failure conservatively reports "running"/healthy so
+// cleanup never stops a workspace the test did not start.
+func liveWorkspaceState(t *testing.T, token, workspace string) (status string, healthy bool) {
+	t.Helper()
+	ws, err := liveGetWorkspace(t, token, workspace)
+	if err != nil {
+		t.Logf("live probe workspace %q failed (%v); assuming running+healthy", workspace, err)
+		return "running", true
+	}
+	return workspaceState(ws)
+}
+
+// workspaceState extracts (latest_build.status, agents-healthy) from a
+// decoded Coder workspace object. Health is version-tolerant: an agent
+// counts healthy when its health.healthy flag is true, or — on deployments
+// without the health object — when it is connected and past the starting
+// lifecycle state.
+func workspaceState(ws map[string]any) (string, bool) {
+	build, _ := ws["latest_build"].(map[string]any)
+	status, _ := build["status"].(string)
+	if status != "running" {
+		return status, false
+	}
+	agents := collectAgents(build)
+	if len(agents) == 0 {
+		return status, false // running build with no agents yet: still bootstrapping
+	}
+	for _, a := range agents {
+		if health, ok := a["health"].(map[string]any); ok {
+			if h, _ := health["healthy"].(bool); !h {
+				return status, false
+			}
+			continue
+		}
+		agentStatus, _ := a["status"].(string)
+		lifecycle, _ := a["lifecycle_state"].(string)
+		if agentStatus != "connected" || (lifecycle != "" && lifecycle != "ready") {
+			return status, false
+		}
+	}
+	return status, true
+}
+
+// collectAgents flattens latest_build.resources[].agents[] across resources.
+func collectAgents(build map[string]any) []map[string]any {
+	var out []map[string]any
+	resources, _ := build["resources"].([]any)
+	for _, r := range resources {
+		res, _ := r.(map[string]any)
+		agents, _ := res["agents"].([]any)
+		for _, a := range agents {
+			if agent, ok := a.(map[string]any); ok {
+				out = append(out, agent)
+			}
+		}
+	}
+	return out
+}
+
+// liveWaitHealthy polls the workspace until its build is running and every
+// agent reports healthy, bounded by timeout.
+func liveWaitHealthy(t *testing.T, token, workspace string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		ws, err := liveGetWorkspace(t, token, workspace)
+		if err == nil {
+			status, healthy := workspaceState(ws)
+			if status == "running" && healthy {
+				t.Logf("workspace %q running and healthy", workspace)
+				return
+			}
+			t.Logf("workspace %q status=%q healthy=%t; waiting", workspace, status, healthy)
+		} else {
+			t.Logf("workspace %q probe error (retrying): %v", workspace, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("workspace %q not healthy within %v", workspace, timeout)
+		}
+		time.Sleep(5 * time.Second)
+	}
+}
+
+// liveGetWorkspace resolves the caller's username, then fetches the named
+// workspace object.
+func liveGetWorkspace(t *testing.T, token, workspace string) (map[string]any, error) {
 	t.Helper()
 	me, err := liveAPIGet(t, token, "/api/v2/users/me")
 	if err != nil {
-		t.Logf("live probe /users/me failed (%v); assuming workspace running", err)
-		return true
+		return nil, fmt.Errorf("users/me: %w", err)
 	}
 	username, _ := me["username"].(string)
 	if username == "" {
-		t.Log("live probe: no username in /users/me; assuming workspace running")
-		return true
+		return nil, fmt.Errorf("users/me: no username in reply")
 	}
-	ws, err := liveAPIGet(t, token, "/api/v2/users/"+username+"/workspace/"+workspace)
-	if err != nil {
-		t.Logf("live probe workspace %q failed (%v); assuming running", workspace, err)
-		return true
-	}
-	build, _ := ws["latest_build"].(map[string]any)
-	status, _ := build["status"].(string)
-	t.Logf("workspace %q latest_build.status = %q", workspace, status)
-	return status == "running"
+	return liveAPIGet(t, token, "/api/v2/users/"+username+"/workspace/"+workspace)
 }
 
 // liveAPIGet performs one authenticated GET against example.test and
@@ -241,25 +333,49 @@ func liveAPIGet(t *testing.T, token, path string) (map[string]any, error) {
 	return out, nil
 }
 
-// liveStopWorkspace returns a workspace to Stopped via the real coder CLI.
-// The token is passed through the process environment of the child only —
-// never argv (§18.3 parity) — and the child is the trusted official binary.
+// liveStopWorkspace returns a workspace to Stopped via the real coder CLI,
+// then VERIFIES the end state through the API: a stop issued while the
+// workspace is still autostarting can lose the race against the in-flight
+// build, so the stop is retried until the latest build reports stopped
+// (bounded). The token is passed through the process environment of the
+// child only — never argv (§18.3 parity).
 func liveStopWorkspace(t *testing.T, token, workspace string) {
 	t.Helper()
-	cmd := exec.Command(liveCoderBinary, "stop", "--yes", workspace)
-	cmd.Env = []string{
-		"PATH=/usr/local/bin:/usr/bin:/bin",
-		"HOME=" + t.TempDir(),
-		"CODER_URL=" + liveCoderURL,
-		"CODER_SESSION_TOKEN=" + token,
-		"CODER_NO_VERSION_WARNING=true",
-		"CODER_NO_FEATURE_WARNING=true",
-		"CODER_DISABLE_NETWORK_TELEMETRY=true",
+	deadline := time.Now().Add(3 * time.Minute)
+	stopped := false
+	for attempt := 1; ; attempt++ {
+		cmd := exec.Command(liveCoderBinary, "stop", "--yes", workspace)
+		cmd.Env = []string{
+			"PATH=/usr/local/bin:/usr/bin:/bin",
+			"HOME=" + t.TempDir(),
+			"CODER_URL=" + liveCoderURL,
+			"CODER_SESSION_TOKEN=" + token,
+			"CODER_NO_VERSION_WARNING=true",
+			"CODER_NO_FEATURE_WARNING=true",
+			"CODER_DISABLE_NETWORK_TELEMETRY=true",
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Logf("cleanup: coder stop %s (attempt %d): %v\n%s", workspace, attempt, err, out)
+		}
+		if ws, err := liveGetWorkspace(t, token, workspace); err == nil {
+			if status, _ := workspaceState(ws); status == "stopped" {
+				stopped = true
+				break
+			} else {
+				t.Logf("cleanup: workspace %q status=%q after stop attempt %d; waiting", workspace, status, attempt)
+			}
+		} else {
+			t.Logf("cleanup: status probe after stop attempt %d failed: %v", attempt, err)
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Second)
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Logf("cleanup: coder stop %s failed: %v\n%s", workspace, err, out)
+	if !stopped {
+		t.Errorf("cleanup: workspace %q did not reach stopped within budget; manual `coder stop %s` required", workspace, workspace)
 		return
 	}
-	t.Logf("cleanup: stopped workspace %q (started by this test)", workspace)
+	t.Logf("cleanup: workspace %q confirmed stopped", workspace)
 }

@@ -603,7 +603,18 @@ func runSSH(ctx context.Context, args ...string) (stdout, stderr string, exitCod
 // returns the captured streams.
 func (f *gatewayFixture) proxyJumpExec(t *testing.T, ctx context.Context, workspace string, command string) (stdout, stderr string, exitCode int) {
 	t.Helper()
-	args := append(f.sshCommonArgs(t),
+	return f.proxyJumpExecOpts(t, ctx, workspace, command)
+}
+
+// proxyJumpExecOpts is proxyJumpExec with extra per-invocation -o options
+// (command-line options win over the fixture ssh_config: first-value-wins).
+func (f *gatewayFixture) proxyJumpExecOpts(t *testing.T, ctx context.Context, workspace string, command string, extraOpts ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
+	args := f.sshCommonArgs(t)
+	for _, o := range extraOpts {
+		args = append(args, "-o", o)
+	}
+	args = append(args,
 		"-J", f.jumpSpec(),
 		"coder@"+workspace,
 		command,
