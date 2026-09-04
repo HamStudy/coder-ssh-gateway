@@ -37,31 +37,94 @@ subcommand in every invocation.
 ### Container
 
 `deploy/Dockerfile` builds a multi-stage, non-root image (distroless; no
-shell, no package manager). The build requires the Coder CLI checksum:
+shell, no package manager). The Coder CLI version and sha256 are pinned in
+the Dockerfile, so no build args are required (both remain overridable for
+version bumps — pin BOTH together):
 
 ```bash
-CODER_SHA256=$(curl -sSL https://github.com/coder/coder/releases/download/v2.35.2/coder_2.35.2_linux_amd64.tar.gz | sha256sum | cut -d' ' -f1)
-docker build -f deploy/Dockerfile \
-  --build-arg CODER_VERSION=v2.35.2 \
-  --build-arg CODER_SHA256="$CODER_SHA256" \
-  -t coder-ssh-gateway:dev .
+docker build -f deploy/Dockerfile -t coder-ssh-gateway:dev .
+docker run --rm coder-ssh-gateway:dev version
 ```
 
-One named volume holds everything (records, audit log, `secrets/`):
+One named volume holds everything (records, audit log, `secrets/`). The
+ENTRYPOINT already passes `--state-dir`; the subcommand goes last:
 
 ```bash
 docker volume create csgw-state
-docker run --rm -it -v csgw-state:/var/lib/coder-ssh-gateway \
+docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
   coder-ssh-gateway:dev init
-# edit config.yaml in the volume, then:
-docker run -d --name coder-ssh-gateway -p 22:2222 \
-  -v csgw-state:/var/lib/coder-ssh-gateway \
-  coder-ssh-gateway:dev
+docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
+  coder-ssh-gateway:dev doctor
 ```
 
-`deploy/docker-compose.yml` encodes the same shape. Named volumes inherit
-the image's prepared ownership (uid 65532); a host bind-mount must be
-chowned to 65532:65532 first. To keep secrets off the
+`init` writes a starter `config.yaml` with `listen.address: ":2222"`, which
+works as-is for container port mapping. The runtime image is distroless —
+there is no shell inside the container, so edit config on the host via
+`docker cp`:
+
+```bash
+c=$(docker create -v csgw-state:/var/lib/coder-ssh-gateway \
+  coder-ssh-gateway:dev version)
+docker cp "$c:/var/lib/coder-ssh-gateway/config.yaml" ./config.yaml
+# edit ./config.yaml, then:
+docker cp ./config.yaml "$c:/var/lib/coder-ssh-gateway/config.yaml"
+docker rm "$c"
+```
+
+Metrics and health default to `127.0.0.1` and are NOT reachable through
+`-p` port mappings; set `observability.metrics_address` / `health_address`
+to `:9090` / `:9091` in config.yaml (per the procedure above) before
+publishing those ports.
+
+Enroll (account, device key, credential) without exposing the token on
+argv. `--bind-on-first-token` asks for a `yes` confirmation on stdin after
+the token line:
+
+```bash
+docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
+  coder-ssh-gateway:dev admin account add --label "Laptop" --bind-on-first-token
+# add a device key: bind-mount the .pub read-only and pass --file
+docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
+  -v "$PWD/enroll:/mnt:ro" \
+  coder-ssh-gateway:dev admin key add --account <UUID> --file /mnt/laptop.pub --label laptop
+# store the Coder session token via stdin (token NEVER in argv):
+{ cat ~/.config/coderv2/session; echo; echo yes; } | \
+  docker run -i --rm -v csgw-state:/var/lib/coder-ssh-gateway \
+  coder-ssh-gateway:dev admin credential set --account <UUID> --stdin
+```
+
+Serve and connect:
+
+```bash
+docker run -d --name coder-ssh-gateway -p 2222:2222 \
+  -v csgw-state:/var/lib/coder-ssh-gateway \
+  coder-ssh-gateway:dev serve
+```
+
+Client side, note that a ProxyJump host (`-J user@host:port`) spawns a
+separate ssh child that does NOT inherit the parent's `-o` identity or
+known-hosts options — define the jump in a config file instead:
+
+```
+Host csgw-jump
+  HostName 127.0.0.1
+  Port 2222
+  User coder
+  IdentityFile ~/.ssh/id_ed25519
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+```
+
+```bash
+ssh -J csgw-jump coder@<workspace>.<target-suffix> 'printf hello'
+```
+
+Teardown: `docker stop coder-ssh-gateway && docker rm coder-ssh-gateway`;
+the state volume persists across container replacement and can be removed
+with `docker volume rm csgw-state` when decommissioning.
+
+Named volumes inherit the image's prepared ownership (uid 65532); a host
+bind-mount must be chowned to 65532:65532 first. To keep secrets off the
 data volume, mount them read-only (for example `/run/secrets`) and point
 `ssh.host_keys` / `encryption.keys` at those paths. A read-only mounted
 Coder CLI binary is a supported alternative to baking it into the image.

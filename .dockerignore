@@ -1,0 +1,25 @@
+# Keep the build context lean; the image build only needs go.mod, go.sum,
+# cmd/, and internal/.
+.git/
+.gitignore
+.github/
+.agents/
+.sisyphus/
+deploy/
+docs/
+scripts/
+testdata/
+state/
+*.state/
+*.md
+LICENSE
+Makefile
+skills-lock.json
+*.tar.gz
+*.tgz
+# Local keys, secrets, and session material must never enter the context.
+*.key
+*.pem
+id_*
+*.pub
+secrets/
