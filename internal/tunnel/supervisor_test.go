@@ -137,7 +137,9 @@ func spawnFakeProcess(t *testing.T, knobs ...string) (*Process, *atomic.Int32) {
 		StartedAt: time.Now(),
 		waitCh:    make(chan error, 1),
 	}
+	proc.drains.Add(2) // stdout + stderr consumers, mirroring Launcher.Launch
 	go func() {
+		proc.drains.Wait()
 		err := cmd.Wait()
 		sends.Add(1)
 		proc.waitCh <- err

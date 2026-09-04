@@ -47,6 +47,7 @@ func startProxy(channel ssh.Channel, proc *Process, obs Observer) *proxyStreams 
 	}()
 
 	go func() {
+		defer proc.StdoutDrained()
 		buf := make([]byte, 32*1024)
 		n, rerr := proc.Stdout.Read(buf)
 		var werr error

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,10 +39,32 @@ type Process struct {
 	Stderr    io.ReadCloser
 	StartedAt time.Time
 	waitCh    chan error
+
+	// drains tracks pipe consumers (stdout + stderr). os/exec closes the
+	// StdoutPipe/StderrPipe read ends inside Wait, discarding any unread
+	// bytes the child wrote before exiting — so Wait must not run until
+	// every consumer has finished reading. Consumers signal via
+	// StdoutDrained/StderrDrained; the Wait producer blocks on drains
+	// before calling Cmd.Wait.
+	drains          sync.WaitGroup
+	stdoutDrainOnce sync.Once
+	stderrDrainOnce sync.Once
 }
 
 func (p *Process) Wait() <-chan error {
 	return p.waitCh
+}
+
+// StdoutDrained signals that the consumer of Stdout has finished reading.
+// Idempotent. See the drains field for why Wait defers to this.
+func (p *Process) StdoutDrained() {
+	p.stdoutDrainOnce.Do(p.drains.Done)
+}
+
+// StderrDrained signals that the consumer of Stderr has finished reading.
+// Idempotent. See the drains field for why Wait defers to this.
+func (p *Process) StderrDrained() {
+	p.stderrDrainOnce.Do(p.drains.Done)
 }
 
 func (l *Launcher) Launch(ctx context.Context, route core.Route, cred core.CredentialSnapshot) (*Process, error) {
@@ -87,7 +110,14 @@ func (l *Launcher) Launch(ctx context.Context, route core.Route, cred core.Crede
 		waitCh:    make(chan error, 1),
 	}
 
+	// Wait defers to the pipe consumers: cmd.Wait closes StdoutPipe and
+	// StderrPipe after the child exits, discarding unread bytes, so it must
+	// not run until both drains signal completion (os/exec contract). On the
+	// cancellation path the TERM->KILL ladder kills the child first; the
+	// pipes then reach EOF and the drains complete, unblocking Wait.
+	proc.drains.Add(2)
 	go func() {
+		proc.drains.Wait()
 		proc.waitCh <- cmd.Wait()
 	}()
 

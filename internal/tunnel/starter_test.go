@@ -102,6 +102,9 @@ func TestLauncherLaunchHappy(t *testing.T) {
 	}
 
 	proc.Stdin.Close()
+	// No Supervise here: signal both pipe consumers done so Wait may run.
+	proc.StdoutDrained()
+	proc.StderrDrained()
 	select {
 	case <-proc.Wait():
 	case <-time.After(2 * time.Second):
@@ -183,6 +186,8 @@ func TestLauncherTokenNeverInArgv(t *testing.T) {
 	}
 
 	proc.Stdin.Close()
+	proc.StdoutDrained()
+	proc.StderrDrained()
 	select {
 	case <-proc.Wait():
 	case <-time.After(2 * time.Second):
@@ -223,6 +228,8 @@ func TestLauncherWaitReturnsExactlyOnce(t *testing.T) {
 	}
 
 	proc.Stdin.Close()
+	proc.StdoutDrained()
+	proc.StderrDrained()
 
 	select {
 	case <-ch1:
@@ -264,6 +271,8 @@ func TestLauncherProcessGroupKill(t *testing.T) {
 	if err := syscall.Kill(-proc.PID, syscall.SIGKILL); err != nil {
 		t.Logf("SIGKILL to process group: %v (may already be dead)", err)
 	}
+	proc.StdoutDrained()
+	proc.StderrDrained()
 
 	select {
 	case <-proc.Wait():

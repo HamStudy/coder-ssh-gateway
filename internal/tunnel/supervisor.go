@@ -98,6 +98,7 @@ func Supervise(ctx context.Context, proc *Process, channel ssh.Channel, opts Sup
 
 	stderrDone := make(chan struct{})
 	go func() {
+		defer proc.StderrDrained()
 		_, _ = io.Copy(ring, proc.Stderr)
 		close(stderrDone)
 	}()
