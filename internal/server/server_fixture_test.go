@@ -24,6 +24,7 @@ import (
 	"github.com/taxilian/coder-ssh-gateway/internal/config"
 	"github.com/taxilian/coder-ssh-gateway/internal/core"
 	"github.com/taxilian/coder-ssh-gateway/internal/limits"
+	"github.com/taxilian/coder-ssh-gateway/internal/route"
 	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
 	"github.com/taxilian/coder-ssh-gateway/internal/server"
 	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
@@ -113,6 +114,8 @@ type gwFixture struct {
 	logs     *logCapture
 	coder    *httptest.Server
 	verifier *coderapi.CachedVerifier
+	codec    *route.Codec
+	starter  *fakeTunnelStarter
 }
 
 func (f *gwFixture) close(t *testing.T) {
@@ -197,7 +200,24 @@ func newFixture(t *testing.T, handler http.Handler) *gwFixture {
 	}
 	f.verifier = coderapi.NewCachedVerifier(f.dep.ID, v, time.Minute)
 
+	f.codec, err = route.NewCodec(f.dep.TargetSuffix)
+	if err != nil {
+		t.Fatalf("route.NewCodec: %v", err)
+	}
+	f.starter = newFakeTunnelStarter("TUNNEL-OK")
+
 	return f
+}
+
+// rebuildVerifier swaps in a CachedVerifier with a different cache TTL (T16
+// stale-revalidation tests need a TTL that expires immediately).
+func (f *gwFixture) rebuildVerifier(t *testing.T, ttl time.Duration) {
+	t.Helper()
+	v, err := coderapi.New(f.dep, coderapi.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("coderapi.New: %v", err)
+	}
+	f.verifier = coderapi.NewCachedVerifier(f.dep.ID, v, ttl)
 }
 
 func (f *gwFixture) installCredential(t *testing.T, token string) {
@@ -256,10 +276,11 @@ func hostSigner(t *testing.T) ssh.Signer {
 // testServer wraps a running Server. Callers must defer shutdown() AFTER
 // `defer leakCheck(t)` so teardown happens before goroutine verification.
 type testServer struct {
-	srv    *server.Server
-	ln     net.Listener
-	cancel context.CancelFunc
-	errCh  chan error
+	srv      *server.Server
+	ln       net.Listener
+	cancel   context.CancelFunc
+	errCh    chan error
+	counters *limits.Counters
 }
 
 func startTestServer(t *testing.T, f *gwFixture, mutate func(*server.ServerConfig, *config.Config)) *testServer {
@@ -267,10 +288,12 @@ func startTestServer(t *testing.T, f *gwFixture, mutate func(*server.ServerConfi
 
 	limitsCfg := config.Default()
 	sc := server.ServerConfig{
-		HostSigners: []ssh.Signer{hostSigner(t)},
-		Auth:        f.authConfig(),
-		Audit:       f.audit,
-		Logger:      slog.New(f.logs),
+		HostSigners:   []ssh.Signer{hostSigner(t)},
+		Auth:          f.authConfig(),
+		Audit:         f.audit,
+		Logger:        slog.New(f.logs),
+		RouteCodec:    f.codec,
+		TunnelStarter: f.starter,
 	}
 	if mutate != nil {
 		mutate(&sc, limitsCfg)
@@ -286,7 +309,7 @@ func startTestServer(t *testing.T, f *gwFixture, mutate func(*server.ServerConfi
 		t.Fatalf("listen: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	ts := &testServer{srv: srv, ln: ln, cancel: cancel, errCh: make(chan error, 1)}
+	ts := &testServer{srv: srv, ln: ln, cancel: cancel, errCh: make(chan error, 1), counters: sc.Counters}
 	go func() {
 		ts.errCh <- srv.Serve(ctx, ln)
 	}()

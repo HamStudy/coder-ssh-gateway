@@ -1,7 +1,7 @@
 // Package server implements the outer SSH listener: accept loop, admission
-// control, per-connection SSH configuration, phase-aware deadlines, and the
-// §8.4 global-request policy. Channel dispatch lands in T16/T21; T15 rejects
-// every channel open with a placeholder.
+// control, per-connection SSH configuration, phase-aware deadlines, the §8.4
+// global-request policy, and §8.3 channel dispatch (transport-mode
+// direct-tcpip in channels.go; maintenance mode lands in T21).
 package server
 
 import (
@@ -20,6 +20,7 @@ import (
 
 	"github.com/taxilian/coder-ssh-gateway/internal/audit"
 	"github.com/taxilian/coder-ssh-gateway/internal/limits"
+	"github.com/taxilian/coder-ssh-gateway/internal/route"
 	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
 )
 
@@ -27,10 +28,22 @@ import (
 // the server fails closed rather than running without admission control.
 var ErrNilCounters = errors.New("server: counters are required")
 
+// ErrNilRouteCodec / ErrNilTunnelStarter are returned by New when the
+// direct-tcpip dispatch dependencies (T16) are missing; the server fails
+// closed rather than accepting channels it cannot route or start.
+var (
+	ErrNilRouteCodec    = errors.New("server: route codec is required")
+	ErrNilTunnelStarter = errors.New("server: tunnel starter is required")
+)
+
 const (
 	defaultHandshakeTimeout   = 30 * time.Second
 	defaultServerVersion      = "SSH-2.0-CoderSSHGW_0.1"
 	defaultProxyHeaderTimeout = 5 * time.Second
+
+	// defaultCacheTTL matches the §11.5 validation-cache default; after this
+	// interval a credential snapshot is revalidated at channel open (§19.9).
+	defaultCacheTTL = 15 * time.Second
 
 	// proxyV1MaxLine is the strict length bound for a PROXY v1 header line
 	// including the terminating CRLF (§31.4: strict length bounds).
@@ -65,8 +78,17 @@ type ServerConfig struct {
 	// ProxyHeaderTimeout bounds the PROXY header read (§31.4 strict time
 	// bounds). Zero selects min(5s, HandshakeTimeout).
 	ProxyHeaderTimeout time.Duration
-	Logger             *slog.Logger
-	Audit              audit.Logger
+	// RouteCodec validates direct-tcpip targets (§17.5). Required (T16).
+	RouteCodec route.RouteCodec
+	// TunnelStarter starts workspace tunnels on accepted direct-tcpip
+	// channels (§24.1). Required (T16); T17 provides the real starter.
+	TunnelStarter TunnelStarter
+	// CacheTTL bounds how long a credential snapshot's LastValidatedAt is
+	// trusted before channel-open revalidation (§11.5, §19.9). Zero selects
+	// 15s.
+	CacheTTL time.Duration
+	Logger   *slog.Logger
+	Audit    audit.Logger
 }
 
 // Server owns the immutable base ssh.ServerConfig and the accept loop.
@@ -88,6 +110,15 @@ func New(cfg ServerConfig) (*Server, error) {
 	}
 	if cfg.Counters == nil {
 		return nil, ErrNilCounters
+	}
+	if cfg.RouteCodec == nil {
+		return nil, ErrNilRouteCodec
+	}
+	if cfg.TunnelStarter == nil {
+		return nil, ErrNilTunnelStarter
+	}
+	if cfg.CacheTTL <= 0 {
+		cfg.CacheTTL = defaultCacheTTL
 	}
 	if cfg.HandshakeTimeout <= 0 {
 		cfg.HandshakeTimeout = defaultHandshakeTimeout

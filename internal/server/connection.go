@@ -22,8 +22,8 @@ const EventTypeHandshakeFailed = "ssh_handshake_failed"
 const DetailHandshakeFailed = "SSH_HANDSHAKE_FAILED"
 
 // handleConn runs one accepted TCP connection through admission, the SSH
-// handshake with phase-aware deadlines (§13.5), and the T15 placeholder
-// channel rejection. It follows the §26 pseudocode.
+// handshake with phase-aware deadlines (§13.5), and the §8.3 channel
+// dispatch. It follows the §26 pseudocode.
 func (s *Server) handleConn(raw net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -171,23 +171,26 @@ func (s *Server) handleConn(raw net.Conn) {
 		s.handleGlobalRequests(connCtx, state, requests)
 	}()
 
-	// T15 placeholder: every channel open is rejected. T16 replaces the
-	// transport branch with real direct-tcpip dispatch; T21 replaces the
-	// maintenance branch.
+	// §8.3 dispatch: transport mode admits only direct-tcpip (T16);
+	// maintenance mode rejects everything until T21 lands.
 	switch perms.Mode {
-	case sshauth.ModeTransport, sshauth.ModeMaintenance:
+	case sshauth.ModeTransport:
+		s.dispatchTransportChannels(connCtx, state, perms, channels)
+	case sshauth.ModeMaintenance:
+		// TODO(T21): maintenance-mode session channel (§14.2).
 		rejectChannelAll(channels)
 	default:
 		log.Warn("unknown permission mode; closing", slog.String("mode", perms.Mode))
+		rejectChannelAll(channels)
 	}
 }
 
-// rejectChannelAll is the T15 placeholder dispatcher (§8.3 enforcement lands
-// in T16). It drains the channels channel so ssh.NewServerConn bookkeeping
-// unwinds cleanly on close.
+// rejectChannelAll drains the channels channel with a Prohibited rejection
+// per open so ssh.NewServerConn bookkeeping unwinds cleanly on close.
+// Used by maintenance mode until T21 and by the unknown-mode guard.
 func rejectChannelAll(channels <-chan ssh.NewChannel) {
 	for ch := range channels {
-		_ = ch.Reject(ssh.Prohibited, "channel dispatch not yet implemented")
+		_ = ch.Reject(ssh.Prohibited, "channel type not permitted")
 	}
 }
 
