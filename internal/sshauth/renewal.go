@@ -93,9 +93,8 @@ type RenewalStore interface {
 }
 
 // RenewalRateLimiter is the narrow rate-limiter subset the renewal
-// continuation needs. *limits.RateLimits satisfies it. (limits.RateLimits
-// has no exported constructor today — T9 — so this interface keeps renewal
-// testable without widening the limits package; see notepad decisions.)
+// continuation needs. *limits.RateLimits satisfies it (construct via
+// limits.NewRateLimits); the interface keeps renewal testable with fakes.
 type RenewalRateLimiter interface {
 	AllowRenewalAttempt(accountID uuid.UUID) bool
 	GrantReconnectAllowance(accountID uuid.UUID)

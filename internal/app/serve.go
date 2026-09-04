@@ -14,8 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/taxilian/coder-ssh-gateway/internal/audit"
 	"github.com/taxilian/coder-ssh-gateway/internal/coderapi"
 	"github.com/taxilian/coder-ssh-gateway/internal/config"
@@ -112,11 +110,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 	}
 	auditOut := &auditMetricBridge{inner: auditLog, rec: m}
 
-	renewalRate := newRenewalLimiter(cfg.Limits.RenewalAttemptsPerAccountPerMinute)
+	rateLimits := limits.NewRateLimits(cfg.Limits)
 	renewal := &sshauth.RenewalConfig{
 		Verifier:       instVerifier,
 		Store:          instStore,
-		Rate:           renewalRate,
+		Rate:           rateLimits,
 		Audit:          auditOut,
 		MaxAttempts:    cfg.Limits.RenewalAttemptsPerConnection,
 		RenewalTimeout: cfg.Listen.RenewalAuthTimeout.Std(),
@@ -179,7 +177,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		HostSigners:        signers,
 		Auth:               authCfg,
 		Counters:           counters,
-		PreAuthGate:        nil, // see issues.md: limits.RateLimits has no exported constructor (deferred)
+		PreAuthGate:        rateLimits.AllowPreAuthIP,
 		HandshakeTimeout:   cfg.Listen.HandshakeTimeout.Std(),
 		TCPKeepalive:       cfg.Listen.TCPKeepalive.Std(),
 		ServerVersion:      cfg.SSH.ServerVersion,
@@ -456,58 +454,4 @@ func (c *cli) cmdServe(args []string) int {
 	}
 	built.Logger.Info("shutdown complete")
 	return exitOK
-}
-
-// renewalLimiter implements sshauth.RenewalRateLimiter as a per-account
-// fixed-window counter plus the §13.6 single-use reconnect allowance.
-// TODO(F-wave): replace with limits.RateLimits once limits exports a
-// constructor (its newRateLimits is unexported today).
-type renewalLimiter struct {
-	mu        sync.Mutex
-	maxPerMin int
-	windows   map[uuid.UUID]renewalWindow
-	allowance map[uuid.UUID]struct{}
-}
-
-type renewalWindow struct {
-	minute int64
-	count  int
-}
-
-func newRenewalLimiter(maxPerMin int) *renewalLimiter {
-	if maxPerMin <= 0 {
-		maxPerMin = 5
-	}
-	return &renewalLimiter{
-		maxPerMin: maxPerMin,
-		windows:   make(map[uuid.UUID]renewalWindow),
-		allowance: make(map[uuid.UUID]struct{}),
-	}
-}
-
-func (r *renewalLimiter) AllowRenewalAttempt(accountID uuid.UUID) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if _, ok := r.allowance[accountID]; ok {
-		delete(r.allowance, accountID)
-		return true
-	}
-	now := time.Now().Unix() / 60
-	w := r.windows[accountID]
-	if w.minute != now {
-		w = renewalWindow{minute: now}
-	}
-	if w.count >= r.maxPerMin {
-		r.windows[accountID] = w
-		return false
-	}
-	w.count++
-	r.windows[accountID] = w
-	return true
-}
-
-func (r *renewalLimiter) GrantReconnectAllowance(accountID uuid.UUID) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.allowance[accountID] = struct{}{}
 }

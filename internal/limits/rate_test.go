@@ -12,7 +12,7 @@ import (
 func TestRateLimitsPreAuthIP(t *testing.T) {
 	cfg := config.Default()
 	cfg.Limits.ConnectionsPerIP = 16
-	rl := newRateLimits(cfg, time.Now)
+	rl := newRateLimits(cfg.Limits, time.Now)
 
 	ip := "1.2.3.4"
 
@@ -31,7 +31,7 @@ func TestRateLimitsPreAuthIP(t *testing.T) {
 
 func TestRateLimitsUnknownKeyAttempt(t *testing.T) {
 	cfg := config.Default()
-	rl := newRateLimits(cfg, time.Now)
+	rl := newRateLimits(cfg.Limits, time.Now)
 
 	ip := "5.6.7.8"
 
@@ -51,7 +51,7 @@ func TestRateLimitsUnknownKeyAttempt(t *testing.T) {
 func TestRateLimitsRenewalAttempt(t *testing.T) {
 	cfg := config.Default()
 	cfg.Limits.RenewalAttemptsPerAccountPerMinute = 5
-	rl := newRateLimits(cfg, time.Now)
+	rl := newRateLimits(cfg.Limits, time.Now)
 
 	accountID := uuid.New()
 
@@ -71,7 +71,7 @@ func TestRateLimitsRenewalAttempt(t *testing.T) {
 func TestRateLimitsReconnectAllowanceSingleUse(t *testing.T) {
 	cfg := config.Default()
 	cfg.Limits.RenewalAttemptsPerAccountPerMinute = 3
-	rl := newRateLimits(cfg, time.Now)
+	rl := newRateLimits(cfg.Limits, time.Now)
 
 	accountID := uuid.New()
 
@@ -102,7 +102,7 @@ func TestRateLimitsReconnectAllowanceSingleUse(t *testing.T) {
 func TestRateLimitsReconnectAllowanceConsumedByNextAttempt(t *testing.T) {
 	cfg := config.Default()
 	cfg.Limits.RenewalAttemptsPerAccountPerMinute = 2
-	rl := newRateLimits(cfg, time.Now)
+	rl := newRateLimits(cfg.Limits, time.Now)
 
 	accountID := uuid.New()
 
@@ -128,7 +128,7 @@ func TestRateLimitsFakeClockRefill(t *testing.T) {
 	cfg := config.Default()
 	cfg.Limits.RenewalAttemptsPerAccountPerMinute = 3
 	clock := &fakeClock{now: time.Now()}
-	rl := newRateLimits(cfg, clock.Now)
+	rl := newRateLimits(cfg.Limits, clock.Now)
 
 	accountID := uuid.New()
 
@@ -154,7 +154,7 @@ func TestRateLimitsEvictionBoundedMap(t *testing.T) {
 	cfg := config.Default()
 	cfg.Limits.ConnectionsPerIP = 16
 	clock := &fakeClock{now: time.Now()}
-	rl := newRateLimitsWithEviction(cfg, clock.Now, 10000, 10*time.Minute)
+	rl := newRateLimitsWithEviction(cfg.Limits, clock.Now, 10000, 10*time.Minute)
 
 	// Create 20k distinct IPs - eviction should keep map bounded
 	for i := 0; i < 20000; i++ {
@@ -176,7 +176,7 @@ func TestRateLimitsEvictionIdleCleanup(t *testing.T) {
 	cfg := config.Default()
 	cfg.Limits.ConnectionsPerIP = 16
 	clock := &fakeClock{now: time.Now()}
-	rl := newRateLimitsWithEviction(cfg, clock.Now, 100, 1*time.Second)
+	rl := newRateLimitsWithEviction(cfg.Limits, clock.Now, 100, 1*time.Second)
 
 	// Add some IPs
 	for i := 0; i < 50; i++ {
@@ -207,7 +207,7 @@ func TestRateLimitsConcurrentHammer(t *testing.T) {
 	cfg.Limits.ConnectionsPerIP = 50
 	cfg.Limits.RenewalAttemptsPerAccountPerMinute = 100
 	clock := &fakeClock{now: time.Now()}
-	rl := newRateLimitsWithEviction(cfg, clock.Now, 10000, 10*time.Minute)
+	rl := newRateLimitsWithEviction(cfg.Limits, clock.Now, 10000, 10*time.Minute)
 
 	const goroutines = 100
 	var wg sync.WaitGroup
@@ -232,6 +232,42 @@ func TestRateLimitsConcurrentHammer(t *testing.T) {
 	wg.Wait()
 
 	// Should complete without deadlocks or OOM
+}
+
+func TestNewRateLimitsExportedConstructor(t *testing.T) {
+	cfg := config.Default()
+	cfg.Limits.ConnectionsPerIP = 2
+	cfg.Limits.RenewalAttemptsPerAccountPerMinute = 1
+	rl := NewRateLimits(cfg.Limits)
+
+	ip := "9.9.9.9"
+	// Pre-auth IP gate: bucket of 2, third attempt rejected.
+	if !rl.AllowPreAuthIP(ip) {
+		t.Fatal("first pre-auth attempt should be allowed")
+	}
+	if !rl.AllowPreAuthIP(ip) {
+		t.Fatal("second pre-auth attempt should be allowed")
+	}
+	if rl.AllowPreAuthIP(ip) {
+		t.Error("pre-auth attempt beyond connections_per_ip should be rejected")
+	}
+
+	accountID := uuid.New()
+	// Renewal gate: bucket of 1, second attempt rejected, reconnect
+	// allowance admits exactly one more.
+	if !rl.AllowRenewalAttempt(accountID) {
+		t.Fatal("first renewal attempt should be allowed")
+	}
+	if rl.AllowRenewalAttempt(accountID) {
+		t.Error("second renewal attempt should be rejected")
+	}
+	rl.GrantReconnectAllowance(accountID)
+	if !rl.AllowRenewalAttempt(accountID) {
+		t.Error("reconnect allowance should admit one attempt")
+	}
+	if rl.AllowRenewalAttempt(accountID) {
+		t.Error("reconnect allowance should be single-use")
+	}
 }
 
 type fakeClock struct {

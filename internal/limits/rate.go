@@ -72,24 +72,33 @@ type accountBucketEntry struct {
 	allowanceMu sync.Mutex
 }
 
-func newRateLimits(cfg *config.Config, clock func() time.Time) *RateLimits {
-	return newRateLimitsWithEviction(cfg, clock, 10000, 10*time.Minute)
+// NewRateLimits constructs the production §20 rate limiter (pre-auth IP
+// gate, unknown-key gate, and the per-account renewal gate with the §13.6
+// single-use reconnect allowance) from the limits configuration, using the
+// real clock and the default eviction bounds. Connection semaphores are
+// separate: see New.
+func NewRateLimits(l config.Limits) *RateLimits {
+	return newRateLimits(l, time.Now)
 }
 
-func newRateLimitsWithEviction(cfg *config.Config, clock func() time.Time, maxMapSize int, maxIdle time.Duration) *RateLimits {
+func newRateLimits(l config.Limits, clock func() time.Time) *RateLimits {
+	return newRateLimitsWithEviction(l, clock, 10000, 10*time.Minute)
+}
+
+func newRateLimitsWithEviction(l config.Limits, clock func() time.Time, maxMapSize int, maxIdle time.Duration) *RateLimits {
 	if clock == nil {
 		clock = time.Now
 	}
 	return &RateLimits{
 		preAuthIP:             make(map[string]*tokenBucket),
-		maxPreAuthIP:          cfg.Limits.ConnectionsPerIP,
+		maxPreAuthIP:          l.ConnectionsPerIP,
 		ipBucket:              make(map[string]*bucketEntry),
 		keyBucket:             make(map[string]*tokenBucket),
 		accountBucket:         make(map[uuid.UUID]*accountBucketEntry),
 		clock:                 clock,
 		maxMapSize:            maxMapSize,
 		maxIdle:               maxIdle,
-		renewalAttemptsPerMin: cfg.Limits.RenewalAttemptsPerAccountPerMinute,
+		renewalAttemptsPerMin: l.RenewalAttemptsPerAccountPerMinute,
 	}
 }
 
