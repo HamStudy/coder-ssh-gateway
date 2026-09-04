@@ -43,6 +43,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
 )
 
 const (
@@ -112,6 +113,7 @@ type Store struct {
 
 	mu     sync.RWMutex
 	closed bool
+	kp     secretbox.KeyProvider
 }
 
 // Open creates (if absent) and exclusively locks the state directory.
@@ -554,6 +556,10 @@ func (s *Store) UpdateAccountIdentity(id uuid.UUID, coderUserID uuid.UUID, usern
 	if err := s.checkOpen(); err != nil {
 		return err
 	}
+	return s.updateAccountIdentityLocked(id, coderUserID, username)
+}
+
+func (s *Store) updateAccountIdentityLocked(id uuid.UUID, coderUserID uuid.UUID, username string) error {
 	name := id.String() + ".json"
 	var rec accountRecord
 	if err := s.mustReadAccountLocked(id, name, &rec); err != nil {
@@ -818,16 +824,6 @@ func (s *Store) LoadCredentialRecord(accountID uuid.UUID) (CredentialRecord, err
 	if err := s.checkOpen(); err != nil {
 		return CredentialRecord{}, err
 	}
-	var rec CredentialRecord
-	err := s.readRecord(dirCredentials, accountID.String()+".json", &rec)
-	if errors.Is(err, fs.ErrNotExist) {
-		return CredentialRecord{
-			AccountID: accountID.String(),
-			State:     core.CredentialStateMissing.String(),
-		}, nil
-	}
-	if err != nil {
-		return CredentialRecord{}, err
-	}
-	return rec, nil
+	rec, _, err := s.loadCredentialRecordLocked(accountID)
+	return rec, err
 }
