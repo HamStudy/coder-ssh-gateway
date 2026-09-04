@@ -388,6 +388,11 @@ type clientChan struct {
 	out    []byte
 	status *uint32
 	eof    chan struct{}
+	// readDone closes when the data-read goroutine exits (channel EOF). It
+	// is the happens-before edge that guarantees every received byte is in
+	// cc.out before output() is read — without it the final append races
+	// the test's read under CPU contention.
+	readDone chan struct{}
 }
 
 func openClientChan(t *testing.T, client *ssh.Client) *clientChan {
@@ -396,7 +401,7 @@ func openClientChan(t *testing.T, client *ssh.Client) *clientChan {
 	if err != nil {
 		t.Fatalf("open session channel: %v", err)
 	}
-	cc := &clientChan{ch: ch, eof: make(chan struct{})}
+	cc := &clientChan{ch: ch, eof: make(chan struct{}), readDone: make(chan struct{})}
 	go func() {
 		defer close(cc.eof)
 		for req := range reqs {
@@ -415,6 +420,7 @@ func openClientChan(t *testing.T, client *ssh.Client) *clientChan {
 		}
 	}()
 	go func() {
+		defer close(cc.readDone)
 		buf := make([]byte, 4096)
 		for {
 			n, err := ch.Read(buf)
@@ -456,6 +462,13 @@ func (cc *clientChan) waitClosed(t *testing.T, client *ssh.Client) {
 	case <-cc.eof:
 	case <-time.After(conditionWindow):
 		t.Fatal("channel request loop did not end (transport not closed)")
+	}
+	// Drain the read goroutine too: the server writes the rejection text
+	// BEFORE exit-status/close, so by readDone every byte is captured.
+	select {
+	case <-cc.readDone:
+	case <-time.After(conditionWindow):
+		t.Fatal("channel read loop did not end (no EOF after transport close)")
 	}
 	done := make(chan error, 1)
 	go func() { done <- client.Conn.Wait() }()
