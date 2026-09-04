@@ -430,6 +430,11 @@ func (c *cli) cmdServe(args []string) int {
 		return exitError
 	}
 	config.ApplyStateDir(cfg, c.stateDir)
+	envApplied, err := config.ApplyEnvOverrides(cfg)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "error: %v\n", err)
+		return exitError
+	}
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(c.stderr, "error: invalid config: %v\n", err)
 		return exitError
@@ -441,6 +446,9 @@ func (c *cli) cmdServe(args []string) int {
 		return exitError
 	}
 	defer built.Close()
+	if len(envApplied) > 0 {
+		built.Logger.Info("config environment overrides applied", "vars", envApplied)
+	}
 
 	ln, err := net.Listen("tcp", cfg.Listen.Address)
 	if err != nil {
