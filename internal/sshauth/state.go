@@ -34,6 +34,7 @@ type ConnState struct {
 	preAuthConn  ssh.ServerPreAuthConn
 	candidate    *candidateIdentity
 	verified     *verifiedIdentity
+	renewal      *renewalAttempt
 	renewalTries int
 	reconnect    bool
 }
@@ -44,6 +45,15 @@ type ConnState struct {
 type candidateIdentity struct {
 	account   core.Account
 	keyRecord core.SSHKeyRecord
+}
+
+// renewalAttempt captures the §12 PromptToken state: the verified identity
+// plus the credential generation observed when renewal started, so the
+// continuation callbacks replace with a compare-and-set (§21.4, §25.4).
+type renewalAttempt struct {
+	account            core.Account
+	keyRecord          core.SSHKeyRecord
+	expectedGeneration int64
 }
 
 // verifiedIdentity records proof-of-possession details once the client has
@@ -164,6 +174,28 @@ func (s *ConnState) VerifiedIdentity() (core.Account, core.SSHKeyRecord, string,
 		return core.Account{}, core.SSHKeyRecord{}, "", false
 	}
 	return s.verified.account, s.verified.keyRecord, s.verified.signatureAlgorithm, true
+}
+
+// SetRenewalAttempt records the §12 PromptToken state when the verified-key
+// callback enters the renewal path (§25.4).
+func (s *ConnState) SetRenewalAttempt(account core.Account, keyRecord core.SSHKeyRecord, expectedGeneration int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.renewal = &renewalAttempt{
+		account:            account,
+		keyRecord:          keyRecord,
+		expectedGeneration: expectedGeneration,
+	}
+}
+
+// RenewalAttempt returns the recorded renewal attempt, if any.
+func (s *ConnState) RenewalAttempt() (core.Account, core.SSHKeyRecord, int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.renewal == nil {
+		return core.Account{}, core.SSHKeyRecord{}, 0, false
+	}
+	return s.renewal.account, s.renewal.keyRecord, s.renewal.expectedGeneration, true
 }
 
 // IncrementRenewalAttempts bumps and returns the per-connection renewal

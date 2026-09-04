@@ -134,7 +134,7 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 	}
 
 	if snap.State == core.CredentialStateMissing || len(snap.Token) == 0 {
-		return c.startRenewal(state, log, account, keyRecord, core.CredentialMissing)
+		return c.startRenewal(state, log, account, keyRecord, snap.Generation, core.CredentialMissing)
 	}
 
 	identity, err := c.Verifier.VerifyCached(ctx, account.ID, snap.Generation, snap.Token)
@@ -158,42 +158,70 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 
 	kind := core.KindOf(err)
 	if kind.Renewable() {
-		return c.startRenewal(state, log, account, keyRecord, kind)
+		return c.startRenewal(state, log, account, keyRecord, snap.Generation, kind)
 	}
 
 	state.SendBanner(nonRenewableBanner(kind))
 	return nil, reject("credential_not_usable", detailCodeFor(err, kind), account.ID, keyRecord.ID)
 }
 
-// startRenewal enters the §13 renewal path: extend the connection deadline
-// (§13.5), send renewal instructions (§13.3), and return partial success
-// with continuation callbacks and NIL permissions (§9.5).
-func (c AuthConfig) startRenewal(state *ConnState, log *slog.Logger, account core.Account, keyRecord core.SSHKeyRecord, kind core.CredentialErrorKind) (*ssh.Permissions, error) {
-	if c.RenewalAuthTimeout > 0 {
-		if err := state.SetDeadline(time.Now().Add(c.RenewalAuthTimeout)); err != nil {
+// startRenewal enters the §13 renewal path: record the renewal attempt on
+// the connection state (§12), extend the connection deadline (§13.5), send
+// renewal instructions (§13.3), and return partial success with continuation
+// callbacks and NIL permissions (§9.5). With a configured Renewal the
+// continuations are the real §25.4 renewal flow; otherwise the placeholders
+// reject every attempt.
+func (c AuthConfig) startRenewal(state *ConnState, log *slog.Logger, account core.Account, keyRecord core.SSHKeyRecord, generation int64, kind core.CredentialErrorKind) (*ssh.Permissions, error) {
+	timeout := c.RenewalAuthTimeout
+	if c.Renewal != nil && c.Renewal.RenewalTimeout > 0 {
+		timeout = c.Renewal.RenewalTimeout
+	}
+	if timeout > 0 {
+		if err := state.SetDeadline(time.Now().Add(timeout)); err != nil {
 			log.Debug("cannot extend deadline for renewal", slog.String("detail", err.Error()))
 			c.recordAuthRejected(state.Context(), state, core.STORE_UNAVAILABLE, account.ID, keyRecord.ID)
 			return nil, ErrPublicKeyRejected
 		}
 	}
+	state.SetRenewalAttempt(account, keyRecord, generation)
 	state.SendBanner(c.renewalInstructions())
 	log.Debug("entering credential renewal",
 		slog.String("account_id", account.ID.String()),
 		slog.String("credential_kind", string(kind)),
 	)
-	return nil, &ssh.PartialSuccessError{
-		Next: ssh.ServerAuthCallbacks{
-			KeyboardInteractiveCallback: placeholderRenewalKeyboardInteractive,
-			PasswordCallback:            placeholderRenewalPassword,
-		},
+	next := ssh.ServerAuthCallbacks{
+		KeyboardInteractiveCallback: placeholderRenewalKeyboardInteractive,
+		PasswordCallback:            placeholderRenewalPassword,
 	}
+	if c.Renewal != nil {
+		rc := *c.Renewal
+		if rc.DeploymentID == uuid.Nil {
+			rc.DeploymentID = c.DeploymentID
+		}
+		if rc.CoderURL == nil {
+			rc.CoderURL = c.CoderURL
+		}
+		sess := &renewalSession{
+			rc:                 &rc,
+			state:              state,
+			account:            account,
+			keyRecord:          keyRecord,
+			expectedGeneration: generation,
+			log: log.With(
+				slog.String("account_id", account.ID.String()),
+				slog.String("ssh_key_id", keyRecord.ID.String()),
+			),
+		}
+		next.KeyboardInteractiveCallback = sess.keyboardInteractive
+		next.PasswordCallback = sess.password
+	}
+	return nil, &ssh.PartialSuccessError{Next: next}
 }
 
-// TODO(T20): replace both placeholder renewal callbacks with real token
-// renewal (sanitize -> verify -> CAS store -> must_reconnect permissions).
-// Until then they are dumb rejectors; they exist so clients see the offered
-// continuation methods (keyboard-interactive, password) after partial
-// success.
+// The placeholder renewal callbacks are used when AuthConfig.Renewal is nil.
+// They exist so clients see the offered continuation methods
+// (keyboard-interactive, password) after partial success even without
+// configured renewal dependencies.
 
 func placeholderRenewalKeyboardInteractive(meta ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 	return nil, errRenewalNotImplemented

@@ -110,6 +110,8 @@ type fixture struct {
 	logs        *logCapture
 	coder       *httptest.Server
 	verifier    *coderapi.CachedVerifier
+	rawVerifier *coderapi.Verifier
+	rate        *fakeRateLimiter
 }
 
 func (f *fixture) close(t *testing.T) {
@@ -201,6 +203,8 @@ func newFixture(t *testing.T, handler http.Handler) *fixture {
 		t.Fatalf("coderapi.New: %v", err)
 	}
 	f.verifier = coderapi.NewCachedVerifier(f.dep.ID, v, time.Minute)
+	f.rawVerifier = v
+	f.rate = newFakeRateLimiter(100)
 
 	return f
 }
@@ -234,6 +238,19 @@ func (f *fixture) authConfig() sshauth.AuthConfig {
 		Verifier:        f.verifier,
 		Audit:           f.audit,
 		Logger:          slog.New(f.logs),
+		Renewal:         f.renewalConfig(),
+	}
+}
+
+// renewalConfig builds the real §13 continuation config against the
+// fixture's uncached verifier and fake rate limiter.
+func (f *fixture) renewalConfig() *sshauth.RenewalConfig {
+	return &sshauth.RenewalConfig{
+		Verifier: f.rawVerifier,
+		Store:    f.store,
+		Rate:     f.rate,
+		Audit:    f.audit,
+		Logger:   slog.New(f.logs),
 	}
 }
 
@@ -262,6 +279,7 @@ type wireServer struct {
 
 	mu      sync.Mutex
 	results []wireResult
+	states  []*sshauth.ConnState
 	conns   []*ssh.ServerConn
 	raws    []net.Conn
 	wg      sync.WaitGroup
@@ -311,6 +329,9 @@ func (ws *wireServer) acceptLoop() {
 func (ws *wireServer) serve(raw net.Conn) {
 	defer ws.wg.Done()
 	state := sshauth.NewConnState(raw)
+	ws.mu.Lock()
+	ws.states = append(ws.states, state)
+	ws.mu.Unlock()
 
 	scfg := &ssh.ServerConfig{}
 	scfg.AddHostKey(ws.hostSigner)
@@ -329,6 +350,12 @@ func (ws *wireServer) serve(raw net.Conn) {
 	ws.mu.Unlock()
 	if err != nil {
 		_ = raw.Close()
+		return
+	}
+	// §13.6: after a credential renewal the outer connection closes
+	// immediately, without starting a channel dispatcher.
+	if perms != nil && perms.Extensions[sshauth.PermissionMustReconnect] == "true" {
+		_ = sc.Close()
 		return
 	}
 	ws.mu.Lock()
@@ -354,20 +381,36 @@ func (ws *wireServer) shutdown() {
 
 // lastResult blocks until the server has completed at least one handshake.
 func (ws *wireServer) lastResult() wireResult {
+	results := ws.waitResults(1)
+	return results[len(results)-1]
+}
+
+// waitResults blocks until the server has completed at least n handshakes.
+func (ws *wireServer) waitResults(n int) []wireResult {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		ws.mu.Lock()
-		if len(ws.results) > 0 {
-			r := ws.results[len(ws.results)-1]
+		if len(ws.results) >= n {
+			out := append([]wireResult(nil), ws.results...)
 			ws.mu.Unlock()
-			return r
+			return out
 		}
 		ws.mu.Unlock()
 		if time.Now().After(deadline) {
-			ws.t.Fatal("timed out waiting for server handshake result")
+			ws.t.Fatalf("timed out waiting for %d server handshake result(s)", n)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// stateAt returns the ConnState of the i-th accepted connection.
+func (ws *wireServer) stateAt(i int) *sshauth.ConnState {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	if i >= len(ws.states) {
+		ws.t.Fatalf("only %d connection states recorded", len(ws.states))
+	}
+	return ws.states[i]
 }
 
 // clientProbe captures client-visible banner text.
@@ -639,8 +682,10 @@ func TestWireRejectUniformity(t *testing.T) {
 }
 
 // (6) Expired credential (Coder 401) yields partial success, a renewal banner
-// with the /cli-auth URL, and continuation methods that the T14 placeholders
-// reject.
+// with the /cli-auth URL, and the real §13 continuation methods. This client
+// cannot supply a valid token (its keyboard-interactive callback aborts and
+// its password is a bogus token that Coder rejects with 401), so the overall
+// authentication still fails.
 func TestWireExpiredCredentialPartialSuccess(t *testing.T) {
 	defer leakCheck(t)
 
@@ -659,11 +704,12 @@ func TestWireExpiredCredentialPartialSuccess(t *testing.T) {
 		client.Close()
 	}
 	if err == nil {
-		t.Fatal("expected overall auth failure (placeholder renewal rejects)")
+		t.Fatal("expected overall auth failure (client supplied no valid token)")
 	}
 	msg := err.Error()
 	// Partial success must have offered the continuation methods; the
-	// client attempted them and the placeholders rejected them.
+	// client attempted them and the real renewal flow rejected the bogus
+	// candidates.
 	if !strings.Contains(msg, "keyboard-interactive") {
 		t.Errorf("client error does not show keyboard-interactive continuation: %q", msg)
 	}

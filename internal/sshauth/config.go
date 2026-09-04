@@ -49,7 +49,12 @@ type AuthConfig struct {
 	// RenewalAuthTimeout extends the raw connection deadline when the
 	// verified-key callback enters the renewal path (§13.5). Zero disables
 	// the extension (the connection owner keeps its own deadline).
+	// Renewal.RenewalTimeout overrides this when set.
 	RenewalAuthTimeout time.Duration
+
+	// Renewal carries the §13 credential-renewal continuation dependencies.
+	// Nil keeps the placeholder (always-reject) continuation callbacks.
+	Renewal *RenewalConfig
 
 	Store    KeyLookupStore
 	Verifier CachedTokenVerifier
