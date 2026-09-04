@@ -21,3 +21,7 @@ testdata/local/
 *.swo
 *~
 .DS_Store
+
+# Local agent-skill infrastructure (must never be committed)
+.agents/
+skills-lock.json
