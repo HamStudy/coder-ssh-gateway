@@ -172,13 +172,17 @@ func (s *Server) handleConn(raw net.Conn) {
 	}()
 
 	// §8.3 dispatch: transport mode admits only direct-tcpip (T16);
-	// maintenance mode rejects everything until T21 lands.
+	// maintenance mode admits one session channel via the §14 handler (T21),
+	// or rejects everything when no handler is wired.
 	switch perms.Mode {
 	case sshauth.ModeTransport:
 		s.dispatchTransportChannels(connCtx, state, perms, channels)
 	case sshauth.ModeMaintenance:
-		// TODO(T21): maintenance-mode session channel (§14.2).
-		rejectChannelAll(channels)
+		if s.cfg.MaintenanceHandler == nil {
+			rejectChannelAll(channels)
+			return
+		}
+		s.dispatchMaintenanceChannels(connCtx, state, perms, channels)
 	default:
 		log.Warn("unknown permission mode; closing", slog.String("mode", perms.Mode))
 		rejectChannelAll(channels)
@@ -187,7 +191,8 @@ func (s *Server) handleConn(raw net.Conn) {
 
 // rejectChannelAll drains the channels channel with a Prohibited rejection
 // per open so ssh.NewServerConn bookkeeping unwinds cleanly on close.
-// Used by maintenance mode until T21 and by the unknown-mode guard.
+// Used by maintenance mode when no MaintenanceHandler is wired and by the
+// unknown-mode guard.
 func rejectChannelAll(channels <-chan ssh.NewChannel) {
 	for ch := range channels {
 		_ = ch.Reject(ssh.Prohibited, "channel type not permitted")

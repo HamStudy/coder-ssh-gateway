@@ -158,6 +158,69 @@ func (rc *RenewalConfig) cliAuthURL() string {
 	return u.String()
 }
 
+// renewalScope identifies one connection for logs and audit in the shared
+// §25.4 completion path. The auth continuations build it from ConnState; the
+// maintenance handler (§14, post-auth on a session channel) carries the same
+// identity through the context via WithConnScope.
+type renewalScope struct {
+	ctx  context.Context
+	id   string
+	peer string
+}
+
+func scopeFromState(state *ConnState) renewalScope {
+	return renewalScope{ctx: state.Context(), id: state.ID(), peer: state.PeerAddr()}
+}
+
+// connScope is the WithConnScope payload: server-connection identity plus
+// the authenticated SSH key ID for audit attribution.
+type connScope struct {
+	id     string
+	peer   string
+	sshKey uuid.UUID
+}
+
+type connScopeKey struct{}
+
+// WithConnScope annotates ctx with the server-side connection identity for
+// ReplaceToken (§14 maintenance mode runs post-auth, so no ConnState exists
+// on the renewal path). The server channel dispatcher installs it.
+func WithConnScope(ctx context.Context, connectionID, peer string, sshKeyID uuid.UUID) context.Context {
+	return context.WithValue(ctx, connScopeKey{}, connScope{id: connectionID, peer: peer, sshKey: sshKeyID})
+}
+
+func scopeFromContext(ctx context.Context) connScope {
+	if cs, ok := ctx.Value(connScopeKey{}).(connScope); ok {
+		return cs
+	}
+	return connScope{}
+}
+
+// ReplaceToken is the §14.3 maintenance-mode entry to the shared §25.4
+// completion path (replaceCredential). Unlike the auth continuations it
+// performs NO handshake side effects — no auth banner, no reconnect
+// allowance, no must_reconnect permissions — because the maintenance channel
+// owns user messaging and the §14.3 transport close. Connection identity for
+// logs and audit comes from WithConnScope (absent scope is tolerated).
+//
+// The returned generation is the credential generation after the call: the
+// newly stored one, or — when a concurrent renewal won the CAS (§23.2) — the
+// reloaded current generation (a success outcome: the credential is valid).
+// Errors are the shared renewal sentinels; only ErrTokenRejected is
+// retryable with a fresh candidate.
+func (rc *RenewalConfig) ReplaceToken(ctx context.Context, account core.Account, expectedGeneration int64, rawCandidate []byte) (int64, error) {
+	cs := scopeFromContext(ctx)
+	keyRecord := core.SSHKeyRecord{ID: cs.sshKey, AccountID: account.ID}
+	snap, _, err := rc.replaceCredential(
+		renewalScope{ctx: ctx, id: cs.id, peer: cs.peer},
+		account, keyRecord, expectedGeneration, rawCandidate,
+	)
+	if err != nil {
+		return expectedGeneration, err
+	}
+	return snap.Generation, nil
+}
+
 // renewalSession is one connection's §12 renewal attempt: the verified
 // identity and the credential generation captured when the verified-key
 // callback entered the renewal path (§12 state machine, §25.4).
@@ -183,7 +246,7 @@ func (s *renewalSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ssh.K
 		if s.state.RenewalAttempts() >= s.rc.maxAttempts() {
 			s.log.Debug("renewal attempts exhausted",
 				slog.Int("attempts", s.state.RenewalAttempts()))
-			s.rc.auditRenewal(s.state, s.account, s.keyRecord, ResultFailure, DetailRenewalAttemptsExhausted)
+			s.rc.auditRenewal(scopeFromState(s.state), s.account, s.keyRecord, ResultFailure, DetailRenewalAttemptsExhausted)
 			return nil, ErrRenewalAttemptsExhausted
 		}
 		answers, err := challenge(challengeName, instruction, []string{tokenPrompt}, []bool{false})
@@ -228,7 +291,7 @@ func (s *renewalSession) password(_ ssh.ConnMetadata, password []byte) (*ssh.Per
 	if s.state.RenewalAttempts() >= s.rc.maxAttempts() {
 		s.log.Debug("renewal attempts exhausted",
 			slog.Int("attempts", s.state.RenewalAttempts()))
-		s.rc.auditRenewal(s.state, s.account, s.keyRecord, ResultFailure, DetailRenewalAttemptsExhausted)
+		s.rc.auditRenewal(scopeFromState(s.state), s.account, s.keyRecord, ResultFailure, DetailRenewalAttemptsExhausted)
 		return nil, ErrRenewalAttemptsExhausted
 	}
 	s.state.IncrementRenewalAttempts()
@@ -239,13 +302,10 @@ func (s *renewalSession) password(_ ssh.ConnMetadata, password []byte) (*ssh.Per
 }
 
 // validateAndStoreReplacement is the §25.4 shared completion used by both
-// continuation methods: sanitize -> rate gate -> verify -> identity binding
-// -> generation-CAS store replace -> success banner + reconnect allowance +
-// final permissions with must_reconnect=true (§13.6).
-//
-// Candidate token bytes are NEVER logged or audited (§13.2/§34.3); the
-// sanitized buffer is wiped before return (the store additionally wipes it
-// inside ReplaceCredential — double wipe is intentional and harmless).
+// continuation methods: the replaceCredential core (sanitize -> rate gate ->
+// verify -> identity binding -> generation-CAS store replace) plus the
+// handshake-only side effects (success banner, reconnect allowance,
+// must_reconnect=true final permissions, §13.6).
 func (rc *RenewalConfig) validateAndStoreReplacement(
 	ctx context.Context,
 	state *ConnState,
@@ -254,9 +314,61 @@ func (rc *RenewalConfig) validateAndStoreReplacement(
 	expectedGeneration int64,
 	rawCandidate []byte,
 ) (*ssh.Permissions, error) {
-	log := rc.logger().With(
+	snap, alreadyUpdated, err := rc.replaceCredential(
+		scopeFromState(state), account, keyRecord, expectedGeneration, rawCandidate,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if alreadyUpdated {
+		// §23.2: a concurrent renewal already stored a valid token. This is
+		// a success outcome — force a reconnect so the next connection
+		// regenerates permissions from the NEW generation.
+		state.SendBanner(renewalAlreadyUpdatedBanner)
+		if rc.Rate != nil {
+			rc.Rate.GrantReconnectAllowance(account.ID)
+		}
+		state.SetMustReconnect(true)
+		return FinalTransportPermissions(account.ID, rc.DeploymentID, keyRecord.ID, snap.Generation, true), nil
+	}
+
+	// Success (§13.6): confirmation banner, one reconnect allowance, and
+	// final transport permissions that force an immediate reconnect.
+	state.SendBanner(renewalSuccessBanner)
+	if rc.Rate != nil {
+		rc.Rate.GrantReconnectAllowance(account.ID)
+	}
+	rc.logger().Debug("credential renewed; forcing reconnect",
 		slog.String("connection_id", state.ID()),
-		slog.String("peer", state.PeerAddr()),
+		slog.Int64("generation", snap.Generation))
+	state.SetMustReconnect(true)
+	return FinalTransportPermissions(account.ID, rc.DeploymentID, keyRecord.ID, snap.Generation, true), nil
+}
+
+// replaceCredential is the side-effect-light core of the §25.4 shared
+// completion: sanitize -> rate gate -> verify -> identity binding ->
+// generation-CAS store replace. It emits logs and §34.3 audit events but
+// touches no handshake state, so both the auth continuations and the §14.3
+// maintenance session (via ReplaceToken) share it.
+//
+// Candidate token bytes are NEVER logged or audited (§13.2/§34.3); the
+// sanitized buffer is wiped before return (the store additionally wipes it
+// inside ReplaceCredential — double wipe is intentional and harmless).
+//
+// alreadyUpdated reports the §23.2 losing-race success: a concurrent renewal
+// won the CAS, so the stored credential is already valid; snap then carries
+// the reloaded current generation.
+func (rc *RenewalConfig) replaceCredential(
+	scope renewalScope,
+	account core.Account,
+	keyRecord core.SSHKeyRecord,
+	expectedGeneration int64,
+	rawCandidate []byte,
+) (snap core.CredentialSnapshot, alreadyUpdated bool, err error) {
+	log := rc.logger().With(
+		slog.String("connection_id", scope.id),
+		slog.String("peer", scope.peer),
 		slog.String("account_id", account.ID.String()),
 	)
 
@@ -265,18 +377,18 @@ func (rc *RenewalConfig) validateAndStoreReplacement(
 		// Sanitize errors are static sentinels; the detail never contains
 		// token bytes or lengths (§13.2).
 		log.Debug("renewal candidate failed sanitization", slog.String("detail", err.Error()))
-		rc.auditRenewal(state, account, keyRecord, ResultFailure, core.AUTH_CREDENTIAL_UNAUTHORIZED)
-		return nil, ErrTokenRejected
+		rc.auditRenewal(scope, account, keyRecord, ResultFailure, core.AUTH_CREDENTIAL_UNAUTHORIZED)
+		return core.CredentialSnapshot{}, false, ErrTokenRejected
 	}
 	defer wipeBytes(candidate)
 
 	if rc.Rate != nil && !rc.Rate.AllowRenewalAttempt(account.ID) {
 		log.Debug("renewal attempt rate-limited")
-		rc.auditRenewal(state, account, keyRecord, ResultFailure, DetailRenewalRateLimited)
-		return nil, ErrRenewalRateLimited
+		rc.auditRenewal(scope, account, keyRecord, ResultFailure, DetailRenewalRateLimited)
+		return core.CredentialSnapshot{}, false, ErrRenewalRateLimited
 	}
 
-	identity, err := rc.Verifier.Verify(ctx, candidate)
+	identity, err := rc.Verifier.Verify(scope.ctx, candidate)
 	if err != nil {
 		kind := core.KindOf(err)
 		detail := detailCodeFor(err, kind)
@@ -285,21 +397,21 @@ func (rc *RenewalConfig) validateAndStoreReplacement(
 			// Retryable: the user can paste a fresh token (§35 row
 			// "replacement token returns 401").
 			log.Debug("renewal candidate rejected by Coder", slog.String("detail_code", detail))
-			rc.auditRenewal(state, account, keyRecord, ResultFailure, detail)
-			return nil, ErrTokenRejected
+			rc.auditRenewal(scope, account, keyRecord, ResultFailure, detail)
+			return core.CredentialSnapshot{}, false, ErrTokenRejected
 		case core.ControlPlaneUnavailable:
 			// §13.2/§35: clean failure, NO retry prompt, store untouched.
 			log.Debug("coder unavailable during renewal", slog.String("detail_code", detail))
-			rc.auditRenewal(state, account, keyRecord, ResultFailure, core.AUTH_CODER_UNAVAILABLE)
-			return nil, ErrCoderUnavailable
+			rc.auditRenewal(scope, account, keyRecord, ResultFailure, core.AUTH_CODER_UNAVAILABLE)
+			return core.CredentialSnapshot{}, false, ErrCoderUnavailable
 		default:
 			// 403 / incompatible / malformed (§11.4): non-renewable.
 			log.Debug("renewal candidate failed non-renewably",
 				slog.String("kind", string(kind)),
 				slog.String("detail_code", detail),
 			)
-			rc.auditRenewal(state, account, keyRecord, ResultFailure, detail)
-			return nil, ErrRenewalFailed
+			rc.auditRenewal(scope, account, keyRecord, ResultFailure, detail)
+			return core.CredentialSnapshot{}, false, ErrRenewalFailed
 		}
 	}
 
@@ -310,16 +422,16 @@ func (rc *RenewalConfig) validateAndStoreReplacement(
 	if account.CoderUserID != nil {
 		if identity.ID != *account.CoderUserID {
 			log.Warn("renewal candidate resolved to wrong Coder identity")
-			rc.auditWrongUserToken(state, account, keyRecord)
-			return nil, ErrWrongUserToken
+			rc.auditWrongUserToken(scope, account, keyRecord)
+			return core.CredentialSnapshot{}, false, ErrWrongUserToken
 		}
 	} else if !account.BindOnFirstToken {
 		log.Warn("renewal candidate for unbound account without bind_on_first_token")
-		rc.auditWrongUserToken(state, account, keyRecord)
-		return nil, ErrWrongUserToken
+		rc.auditWrongUserToken(scope, account, keyRecord)
+		return core.CredentialSnapshot{}, false, ErrWrongUserToken
 	}
 
-	snap, err := rc.Store.ReplaceCredential(ctx, core.ReplaceCredentialRequest{
+	snap, err = rc.Store.ReplaceCredential(scope.ctx, core.ReplaceCredentialRequest{
 		AccountID:          account.ID,
 		ExpectedGeneration: expectedGeneration,
 		Token:              candidate,
@@ -328,76 +440,63 @@ func (rc *RenewalConfig) validateAndStoreReplacement(
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrGenerationConflict):
-			// §23.2: a concurrent renewal already stored a valid token.
-			// This is a success outcome — force a reconnect so the next
-			// connection regenerates permissions from the NEW generation.
 			generation := expectedGeneration
-			if current, lerr := rc.Store.LoadCredential(ctx, account.ID); lerr == nil {
+			if current, lerr := rc.Store.LoadCredential(scope.ctx, account.ID); lerr == nil {
 				generation = current.Generation
+				snap = current
+				wipeBytes(current.Token)
+			} else {
+				snap = core.CredentialSnapshot{AccountID: account.ID, Generation: generation}
 			}
 			log.Debug("credential already updated by concurrent renewal",
 				slog.Int64("generation", generation))
-			state.SendBanner(renewalAlreadyUpdatedBanner)
-			if rc.Rate != nil {
-				rc.Rate.GrantReconnectAllowance(account.ID)
-			}
-			rc.auditRenewal(state, account, keyRecord, ResultSuccess, DetailRenewalAlreadyUpdated)
-			state.SetMustReconnect(true)
-			return FinalTransportPermissions(account.ID, rc.DeploymentID, keyRecord.ID, generation, true), nil
+			rc.auditRenewal(scope, account, keyRecord, ResultSuccess, DetailRenewalAlreadyUpdated)
+			return snap, true, nil
 		case errors.Is(err, store.ErrWrongIdentity):
 			// Defensive: the binding pre-check above should have caught
 			// this; a first-bind collision (duplicate coder_user_id) also
 			// lands here.
 			log.Warn("store rejected renewal identity binding")
-			rc.auditWrongUserToken(state, account, keyRecord)
-			return nil, ErrWrongUserToken
+			rc.auditWrongUserToken(scope, account, keyRecord)
+			return core.CredentialSnapshot{}, false, ErrWrongUserToken
 		default:
 			log.Debug("renewal store replace failed",
 				slog.String("detail_code", store.CodeOf(err)))
-			rc.auditRenewal(state, account, keyRecord, ResultFailure, store.CodeOf(err))
-			return nil, ErrRenewalFailed
+			rc.auditRenewal(scope, account, keyRecord, ResultFailure, store.CodeOf(err))
+			return core.CredentialSnapshot{}, false, ErrRenewalFailed
 		}
 	}
 
-	// Success (§13.6): confirmation banner, one reconnect allowance, audit,
-	// and final transport permissions that force an immediate reconnect.
-	state.SendBanner(renewalSuccessBanner)
-	if rc.Rate != nil {
-		rc.Rate.GrantReconnectAllowance(account.ID)
-	}
-	rc.auditRenewal(state, account, keyRecord, ResultSuccess, "")
-	log.Debug("credential renewed; forcing reconnect",
-		slog.Int64("generation", snap.Generation))
-	state.SetMustReconnect(true)
-	return FinalTransportPermissions(account.ID, rc.DeploymentID, keyRecord.ID, snap.Generation, true), nil
+	rc.auditRenewal(scope, account, keyRecord, ResultSuccess, "")
+	return snap, false, nil
 }
 
 // auditRenewal records a §34.3 token-renewal outcome. detailCode is a
 // stable, generic code — never user input or token material.
-func (rc *RenewalConfig) auditRenewal(state *ConnState, account core.Account, keyRecord core.SSHKeyRecord, result, detailCode string) {
-	rc.record(state.Context(), audit.Event{
-		ConnectionID: state.ID(),
+func (rc *RenewalConfig) auditRenewal(scope renewalScope, account core.Account, keyRecord core.SSHKeyRecord, result, detailCode string) {
+	rc.record(scope.ctx, audit.Event{
+		ConnectionID: scope.id,
 		DeploymentID: rc.DeploymentID.String(),
 		AccountID:    account.ID.String(),
 		SSHKeyID:     keyRecord.ID.String(),
 		EventType:    EventTypeCredentialRenewal,
 		Result:       result,
-		PeerAddress:  state.PeerAddr(),
+		PeerAddress:  scope.peer,
 		DetailCode:   detailCode,
 	})
 }
 
 // auditWrongUserToken records the §34.3 wrong-user token attempt
 // (§10.4 security event).
-func (rc *RenewalConfig) auditWrongUserToken(state *ConnState, account core.Account, keyRecord core.SSHKeyRecord) {
-	rc.record(state.Context(), audit.Event{
-		ConnectionID: state.ID(),
+func (rc *RenewalConfig) auditWrongUserToken(scope renewalScope, account core.Account, keyRecord core.SSHKeyRecord) {
+	rc.record(scope.ctx, audit.Event{
+		ConnectionID: scope.id,
 		DeploymentID: rc.DeploymentID.String(),
 		AccountID:    account.ID.String(),
 		SSHKeyID:     keyRecord.ID.String(),
 		EventType:    EventTypeWrongUserToken,
 		Result:       ResultFailure,
-		PeerAddress:  state.PeerAddr(),
+		PeerAddress:  scope.peer,
 		DetailCode:   core.AUTH_WRONG_CODER_IDENTITY,
 	})
 }

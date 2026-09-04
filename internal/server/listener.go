@@ -1,7 +1,7 @@
 // Package server implements the outer SSH listener: accept loop, admission
 // control, per-connection SSH configuration, phase-aware deadlines, the §8.4
 // global-request policy, and §8.3 channel dispatch (transport-mode
-// direct-tcpip in channels.go; maintenance mode lands in T21).
+// direct-tcpip and maintenance-mode session in channels.go).
 package server
 
 import (
@@ -87,8 +87,12 @@ type ServerConfig struct {
 	// trusted before channel-open revalidation (§11.5, §19.9). Zero selects
 	// 15s.
 	CacheTTL time.Duration
-	Logger   *slog.Logger
-	Audit    audit.Logger
+	// MaintenanceHandler runs the §14 maintenance session on the single
+	// admitted session channel of maintenance-mode connections (T21). Nil
+	// keeps the reject-all behavior for maintenance mode (T15/T16 default).
+	MaintenanceHandler MaintenanceHandler
+	Logger             *slog.Logger
+	Audit              audit.Logger
 }
 
 // Server owns the immutable base ssh.ServerConfig and the accept loop.

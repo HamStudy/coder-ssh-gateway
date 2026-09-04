@@ -26,6 +26,14 @@ type TunnelStarter interface {
 	Start(ctx context.Context, channel ssh.Channel, route core.Route, credential core.CredentialSnapshot) error
 }
 
+// MaintenanceHandler runs the restricted §14 maintenance session on the
+// single admitted `session` channel of a maintenance-mode connection (T21;
+// *maintenance.Handler satisfies it). The dispatcher closes the channel and
+// the entire outer transport after Handle returns (§14.3/§27).
+type MaintenanceHandler interface {
+	Handle(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, accountID uuid.UUID) error
+}
+
 // directTCPIPRequest is the RFC 4254 §7.2 direct-tcpip open payload (§19.2).
 type directTCPIPRequest struct {
 	DestinationAddress string
@@ -68,6 +76,48 @@ func (s *Server) rejectUnsupportedChannel(log *slog.Logger, newCh ssh.NewChannel
 	}
 	log.Debug("rejecting unsupported channel type", slog.String("channel_type", chType))
 	_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
+}
+
+// dispatchMaintenanceChannels implements §8.3 for maintenance mode: exactly
+// one `session` channel is admitted (first wins; a second open is rejected
+// Prohibited), `direct-tcpip` is rejected Prohibited, and every other type
+// is rejected UnknownChannelType. The session runs in its own goroutine so a
+// second open attempt is answered promptly; when the session ends the whole
+// outer transport closes (§14.3/§27), which ends this dispatch loop.
+func (s *Server) dispatchMaintenanceChannels(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, channels <-chan ssh.NewChannel) {
+	log := s.log.With(slog.String("connection_id", state.ID()))
+	served := false
+	for newCh := range channels {
+		chType := newCh.ChannelType()
+		switch {
+		case chType == "session" && !served:
+			ch, requests, err := newCh.Accept()
+			if err != nil {
+				log.Debug("maintenance session accept failed", slog.String("detail", err.Error()))
+				continue
+			}
+			served = true
+			go func() {
+				hctx := sshauth.WithConnScope(ctx, state.ID(), state.PeerAddr(), perms.SSHKeyID)
+				if err := s.cfg.MaintenanceHandler.Handle(hctx, ch, requests, perms.AccountID); err != nil {
+					log.Debug("maintenance session ended with error", slog.String("detail", err.Error()))
+				}
+				_ = ch.Close()
+				// §27: a finished maintenance session closes the outer
+				// transport; the next connection starts fresh.
+				_ = state.Close()
+			}()
+		case chType == "session":
+			log.Debug("rejecting second maintenance session channel (§8.3)")
+			_ = newCh.Reject(ssh.Prohibited, "maintenance permits a single session channel")
+		case chType == "direct-tcpip":
+			log.Debug("rejecting direct-tcpip in maintenance mode (§8.3)")
+			_ = newCh.Reject(ssh.Prohibited, "direct-tcpip is not permitted in maintenance mode")
+		default:
+			log.Debug("rejecting unsupported channel type in maintenance mode", slog.String("channel_type", chType))
+			_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
+		}
+	}
 }
 
 // admitDirectTCPIP runs the §19.1 admission order for one direct-tcpip
