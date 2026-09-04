@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -50,6 +51,31 @@ func TestFileKeyProviderRawKey(t *testing.T) {
 	}
 	if !bytes.Equal(key, raw) {
 		t.Fatal("key mismatch")
+	}
+}
+
+// A raw 32-byte key whose edge bytes are whitespace (space, newline, tab)
+// must round-trip byte-exact: whitespace trimming is only for text-encoded
+// key files. Regression: init writes raw keys; TrimSpace corrupted any key
+// whose first/last byte was unicode-space, breaking credential storage.
+func TestFileKeyProviderRawKeyWhitespaceEdges(t *testing.T) {
+	dir := t.TempDir()
+	for _, edge := range []byte{' ', '\n', '\t', '\r'} {
+		raw := rawKey(0x42)
+		raw[0] = edge
+		raw[len(raw)-1] = edge
+		name := fmt.Sprintf("v1-edge-%02x", edge)
+		p := &secretbox.FileKeyProvider{
+			Keys:     map[string]string{"v1": writeKeyFile(t, dir, name, raw, 0o400)},
+			ActiveID: "v1",
+		}
+		_, key, err := p.ActiveKey(context.Background())
+		if err != nil {
+			t.Fatalf("ActiveKey (edge %#x): %v", edge, err)
+		}
+		if !bytes.Equal(key, raw) {
+			t.Fatalf("edge %#x: key corrupted by trimming", edge)
+		}
 	}
 }
 

@@ -97,6 +97,12 @@ func (p *FileKeyProvider) logger() *slog.Logger {
 }
 
 func parseKeyMaterial(data []byte) ([]byte, error) {
+	// Exact-size raw key material wins BEFORE any whitespace trimming:
+	// TrimSpace would silently corrupt a binary key whose edge bytes happen
+	// to be ASCII/unicode space (found by E2E: init writes raw 32-byte keys).
+	if len(data) == KeySize {
+		return slices.Clone(data), nil
+	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == KeySize {
 		return slices.Clone(trimmed), nil
