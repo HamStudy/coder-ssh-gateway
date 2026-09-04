@@ -28,21 +28,21 @@ func redactString(s string) string {
 }
 
 type Event struct {
-	ID                  string `json:"id"`
-	OccurredAtMs        int64  `json:"occurred_at_ms"`
-	ConnectionID        string `json:"connection_id,omitempty"`
-	DeploymentID        string `json:"deployment_id,omitempty"`
-	AccountID           string `json:"account_id,omitempty"`
-	SSHKeyID            string `json:"ssh_key_id,omitempty"`
-	EventType           string `json:"event_type"`
-	Result              string `json:"result"`
-	PeerAddress         string `json:"peer_address,omitempty"`
-	Target              string `json:"target,omitempty"`
+	ID                   string `json:"id"`
+	OccurredAtMs         int64  `json:"occurred_at_ms"`
+	ConnectionID         string `json:"connection_id,omitempty"`
+	DeploymentID         string `json:"deployment_id,omitempty"`
+	AccountID            string `json:"account_id,omitempty"`
+	SSHKeyID             string `json:"ssh_key_id,omitempty"`
+	EventType            string `json:"event_type"`
+	Result               string `json:"result"`
+	PeerAddress          string `json:"peer_address,omitempty"`
+	Target               string `json:"target,omitempty"`
 	CredentialGeneration *int64 `json:"credential_generation,omitempty"`
-	DurationMs          *int64 `json:"duration_ms,omitempty"`
-	BytesUp             *int64 `json:"bytes_up,omitempty"`
-	BytesDown           *int64 `json:"bytes_down,omitempty"`
-	DetailCode          string `json:"detail_code,omitempty"`
+	DurationMs           *int64 `json:"duration_ms,omitempty"`
+	BytesUp              *int64 `json:"bytes_up,omitempty"`
+	BytesDown            *int64 `json:"bytes_down,omitempty"`
+	DetailCode           string `json:"detail_code,omitempty"`
 }
 
 func (e Event) MarshalJSON() ([]byte, error) {
@@ -98,6 +98,7 @@ type JSONLFileLogger struct {
 	f       *os.File
 	fsync   bool
 	dateStr string
+	now     func() time.Time
 }
 
 func NewJSONLFileLogger(dir string, fsync bool) (*JSONLFileLogger, error) {
@@ -119,7 +120,29 @@ func NewJSONLFileLogger(dir string, fsync bool) (*JSONLFileLogger, error) {
 		f:       f,
 		fsync:   fsync,
 		dateStr: dateStr,
+		now:     time.Now,
 	}, nil
+}
+
+// rollIfDayChangedLocked reopens the per-day file when the clock crosses
+// midnight; on failure the old file stays open and the next Record retries.
+func (l *JSONLFileLogger) rollIfDayChangedLocked() error {
+	today := l.now().Format("2006-01-02")
+	if today == l.dateStr {
+		return nil
+	}
+	path := filepath.Join(l.dir, "audit-"+today+".jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if err := l.f.Close(); err != nil {
+		f.Close()
+		return err
+	}
+	l.f = f
+	l.dateStr = today
+	return nil
 }
 
 func (l *JSONLFileLogger) Record(ctx context.Context, event Event) error {
@@ -130,6 +153,10 @@ func (l *JSONLFileLogger) Record(ctx context.Context, event Event) error {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if err := l.rollIfDayChangedLocked(); err != nil {
+		return err
+	}
 
 	line := append(data, '\n')
 

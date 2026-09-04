@@ -16,21 +16,21 @@ func TestEventJSONSerialization(t *testing.T) {
 	bytesUp := int64(1024)
 	bytesDown := int64(2048)
 	event := Event{
-		ID:                     "test-event-1",
-		OccurredAtMs:           time.Now().UnixMilli(),
-		ConnectionID:           "conn-123",
-		DeploymentID:           "deploy-456",
-		AccountID:              "acc-789",
-		SSHKeyID:               "key-abc",
-		EventType:              "auth_success",
-		Result:                 "success",
-		PeerAddress:             "192.168.1.1:12345",
-		Target:                 "workspace1.coder-gateway.example.com",
-		CredentialGeneration:    &credGen,
-		DurationMs:             &durationMs,
-		BytesUp:                &bytesUp,
-		BytesDown:              &bytesDown,
-		DetailCode:             "AUTH_KEY_ACCEPTED",
+		ID:                   "test-event-1",
+		OccurredAtMs:         time.Now().UnixMilli(),
+		ConnectionID:         "conn-123",
+		DeploymentID:         "deploy-456",
+		AccountID:            "acc-789",
+		SSHKeyID:             "key-abc",
+		EventType:            "auth_success",
+		Result:               "success",
+		PeerAddress:          "192.168.1.1:12345",
+		Target:               "workspace1.coder-gateway.example.com",
+		CredentialGeneration: &credGen,
+		DurationMs:           &durationMs,
+		BytesUp:              &bytesUp,
+		BytesDown:            &bytesDown,
+		DetailCode:           "AUTH_KEY_ACCEPTED",
 	}
 
 	data, err := json.Marshal(event)
@@ -112,12 +112,12 @@ func TestRedaction(t *testing.T) {
 func TestRedactionLongToken(t *testing.T) {
 	token := "this-token-has-dashes-and_underscores-abc123"
 	event := Event{
-		ID:         "test-redaction-long",
+		ID:           "test-redaction-long",
 		OccurredAtMs: time.Now().UnixMilli(),
-		EventType:  "test",
-		Result:     "test",
-		DetailCode: token,
-		Target:     token,
+		EventType:    "test",
+		Result:       "test",
+		DetailCode:   token,
+		Target:       token,
 	}
 
 	data, err := json.Marshal(event)
@@ -345,5 +345,60 @@ func TestJSONLFileLoggerWithFSync(t *testing.T) {
 
 	if err := logger.Record(context.Background(), event); err != nil {
 		t.Fatalf("Record failed: %v", err)
+	}
+}
+
+func TestJSONLFileLoggerDayRollover(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	logger, err := NewJSONLFileLogger(tmpDir, false)
+	if err != nil {
+		t.Fatalf("NewJSONLFileLogger failed: %v", err)
+	}
+	defer logger.Close()
+
+	clock := time.Date(2026, 9, 4, 23, 59, 59, 0, time.UTC)
+	logger.now = func() time.Time { return clock }
+
+	before := Event{ID: "before-midnight", OccurredAtMs: clock.UnixMilli(), EventType: "test", Result: "success"}
+	if err := logger.Record(context.Background(), before); err != nil {
+		t.Fatalf("Record before midnight failed: %v", err)
+	}
+
+	clock = clock.Add(2 * time.Second) // 2026-09-05 00:00:01
+	after := Event{ID: "after-midnight", OccurredAtMs: clock.UnixMilli(), EventType: "test", Result: "success"}
+	if err := logger.Record(context.Background(), after); err != nil {
+		t.Fatalf("Record after midnight failed: %v", err)
+	}
+
+	day1, err := os.ReadFile(filepath.Join(tmpDir, "audit-2026-09-04.jsonl"))
+	if err != nil {
+		t.Fatalf("read day1 file: %v", err)
+	}
+	day2, err := os.ReadFile(filepath.Join(tmpDir, "audit-2026-09-05.jsonl"))
+	if err != nil {
+		t.Fatalf("read day2 file: %v", err)
+	}
+	if !strings.Contains(string(day1), "before-midnight") || strings.Contains(string(day1), "after-midnight") {
+		t.Errorf("day1 file contents wrong: %s", day1)
+	}
+	if !strings.Contains(string(day2), "after-midnight") {
+		t.Errorf("day2 file contents wrong: %s", day2)
+	}
+
+	// Same-day record after rollover must not reopen the file (handle stable).
+	f := logger.f
+	if err := logger.Record(context.Background(), after); err != nil {
+		t.Fatalf("second same-day Record failed: %v", err)
+	}
+	if logger.f != f {
+		t.Error("file handle changed without a day boundary crossing")
+	}
+	day2, err = os.ReadFile(filepath.Join(tmpDir, "audit-2026-09-05.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(day2), "after-midnight"); got != 2 {
+		t.Errorf("day2 file has %d after-midnight events, want 2", got)
 	}
 }
