@@ -1,0 +1,38 @@
+# Example compose file for coder-ssh-gateway. Adapt before production use.
+#
+# One volume holds ALL state (records, audit log, secrets/): the flat-file
+# store takes an exclusive flock on <state-dir>/lock, so exactly one
+# container may use the volume at a time.
+#
+# Bootstrap once:
+#   docker compose run --rm gateway init
+#   docker compose run --rm gateway doctor
+# then `docker compose up -d`.
+
+services:
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        CODER_VERSION: v2.35.2
+        # sha256 of coder_2.35.2_linux_amd64.tar.gz; required, build fails without it.
+        CODER_SHA256: ""
+    image: coder-ssh-gateway:dev
+    restart: on-failure
+    # Host port 22 -> container 2222. Use "2222:2222" if host 22 is taken.
+    ports:
+      - "22:2222"
+    volumes:
+      - csgw-state:/var/lib/coder-ssh-gateway
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    # Metrics/health bind 127.0.0.1 by default; publish them only if you
+    # changed observability.metrics_address / health_address in config.yaml.
+
+volumes:
+  csgw-state:

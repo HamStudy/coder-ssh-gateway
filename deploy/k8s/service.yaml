@@ -1,0 +1,16 @@
+# Raw TCP passthrough; an ordinary HTTP Ingress does not work here
+# (design section 31.3). Use a TCP-capable L4 load balancer.
+apiVersion: v1
+kind: Service
+metadata:
+  name: coder-ssh-gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: coder-ssh-gateway
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: 2222
+  # Metrics and health stay cluster-internal; expose them via a separate
+  # ClusterIP service only if your monitoring runs outside the cluster.

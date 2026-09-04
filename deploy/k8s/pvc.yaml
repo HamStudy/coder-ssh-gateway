@@ -1,0 +1,13 @@
+# ONE PVC holds the full state dir: store records, audit log, and (by
+# default) secrets/ under it. Access mode must be ReadWriteOnce: the store
+# flock makes any second writer fail fast.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: coder-ssh-gateway
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName: <your-class>
