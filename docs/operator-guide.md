@@ -72,9 +72,24 @@ docker rm "$c"
 ```
 
 Metrics and health default to `127.0.0.1` and are NOT reachable through
-`-p` port mappings; set `observability.metrics_address` / `health_address`
-to `:9090` / `:9091` in config.yaml (per the procedure above) before
-publishing those ports.
+`-p` port mappings. Two ways to expose them — either set
+`observability.metrics_address` / `health_address` to `:9090` / `:9091` in
+config.yaml (per the procedure above), or leave the config untouched and
+pass the environment overrides at run time (see "Environment overrides"
+below; no config edit needed):
+
+```bash
+docker run -d --name coder-ssh-gateway \
+  -p 2222:2222 -p 9090:9090 -p 9091:9091 \
+  -e CSGW_METRICS_ADDRESS=0.0.0.0:9090 \
+  -e CSGW_HEALTH_ADDRESS=0.0.0.0:9091 \
+  -v csgw-state:/var/lib/coder-ssh-gateway \
+  coder-ssh-gateway:dev serve
+```
+
+With enrollment enabled (the default) users self-enroll via
+`ssh init@<gateway>` — the container enrollment below is the out-of-band
+alternative for operators who disable self-enrollment.
 
 Enroll (account, device key, credential) without exposing the token on
 argv. `--bind-on-first-token` asks for a `yes` confirmation on stdin after
@@ -157,7 +172,84 @@ state dir (VERSION + flock), encryption key (seal/open self-test), host key
 limits. Optional: `--account UUID` also validates that account's stored
 credential; `--probe-workspace NAME` runs a real `coder ssh --stdio` probe.
 
-## Enrolling a user
+## Self-enrollment (init@)
+
+With `enrollment.enabled: true` (the default), users onboard themselves:
+`ssh init@<gateway>` from any device prompts for a Coder token, links that
+device's SSH key to the caller's Coder account, stores the token, and
+closes the connection. The next connection uses the normal transport path
+(`coder@…`). The "Enrolling a user" section below remains available as the
+out-of-band alternative.
+
+### How it works
+
+1. The client connects to the enrollment username (`init` by default) and
+   proves possession of its private key. Proof of key possession always
+   comes first — the gateway never prompts for a token before the key is
+   verified.
+2. Only then does it show the enrollment banner with the deployment's
+   `/cli-auth` URL and prompt `Coder token: ` (keyboard-interactive, with a
+   password-method parity path for clients that do not render
+   keyboard-interactive prompts).
+3. The submitted token is validated against Coder `/api/v2/users/me`. The
+   returned Coder user UUID anchors the account: an existing account bound
+   to that UUID is reused (and the new key added to it), otherwise a new
+   account is created for that UUID. The token is stored (generation CAS,
+   same as renewal) and the key is registered with the label
+   `enrolled <timestamp> via init@`.
+4. Success banner, one reconnect allowance, connection closed. The client
+   must reconnect — the enrolled credential is live for the next transport
+   connection immediately.
+
+Idempotency: re-enrolling the same key with a token for the same Coder user
+is a no-op success (the existing key record is recovered). A key already
+linked to a *different* account is a hard rejection (`key_already_linked`
+audit event, explanatory banner, no mutation) — this check runs before any
+account creation, so a wrong-identity token cannot create an account.
+
+### Security model
+
+- **Token possession is enrollment authority.** Whoever presents a valid
+  Coder token enrolls the presented key for that token's Coder user. The
+  blast radius of a stolen token used this way is the same as the token
+  itself: the attacker could already impersonate that user against Coder
+  directly. See SECURITY.md.
+- **Proof-before-prompt.** Key possession is verified before any token
+  prompt, so unauthenticated scanners never reach the token path.
+- **Rate limits.** Per-IP pre-token gate (the pre-auth unknown-key bucket)
+  plus per-connection and per-account attempt bounds shared with the
+  renewal flow. Refusals are audited.
+- **Key-conflict policy.** Cross-account key reuse is rejected outright,
+  never re-linked.
+- **Audit + metrics.** Every outcome is an audit event
+  (`enrollment_success` / `enrollment_rejected` with detail codes) and a
+  `coder_ssh_gateway_enrollments_total{result}` counter increment
+  (`success|rejected|key_conflict|rate_limited`). Alert on rejections.
+- **No existence oracle.** With enrollment disabled — or for a client that
+  fails key verification — the `init` username rejects byte-identically to
+  any unknown username.
+
+### Disabling self-enrollment
+
+```yaml
+enrollment:
+  enabled: false
+```
+
+Disable it for closed memberships — deployments where the set of users is
+fixed and provisioned out-of-band, where any holder of a valid Coder token
+must NOT be able to attach a new key to their gateway account, or where
+policy requires an administrator to approve every device key. With it off,
+the `init` username behaves exactly like an unknown username and the
+admin-driven flow below is the only enrollment path.
+
+Note: this flow deliberately reverses design section 10.5 ("an unknown SSH
+key must never be allowed to create an account simply by supplying a valid
+Coder token"). That reversal is a product decision: token-anchored
+self-enrollment is the primary onboarding path, secured by the controls
+above rather than by prohibiting key-first account creation.
+
+## Enrolling a user (out-of-band)
 
 Enrollment is offline administration against the state dir; the gateway
 does not have to be running, but it must NOT be running (the flock is
@@ -211,6 +303,38 @@ Config file: `<state-dir>/config.yaml` by default; override with `--config`.
 Relative paths in the file resolve against the config file's directory.
 Unknown keys are rejected. Durations are strings like `30s`, `5m`.
 
+### Environment overrides
+
+Three bind addresses can be overridden by environment variables, applied by
+`serve` after config parse and before validation. Precedence is uniform:
+**CLI flag > env var > config file > default**. An unset or empty variable
+is ignored; an invalid value (not `host:port`, non-numeric or out-of-range
+port) fails startup naming the variable, leaving the config unmutated.
+Wildcard binds (`0.0.0.0`, `[::]`, empty host) are accepted — that is the
+container use case. Applied overrides are logged at startup.
+
+| Variable | Overrides | Typical container value |
+| --- | --- | --- |
+| `CSGW_LISTEN_ADDRESS` | `listen.address` | `0.0.0.0:2222` |
+| `CSGW_METRICS_ADDRESS` | `observability.metrics_address` | `0.0.0.0:9090` |
+| `CSGW_HEALTH_ADDRESS` | `observability.health_address` | `0.0.0.0:9091` |
+
+Kubernetes example (see `deploy/k8s/deployment.yaml`): the health/metrics
+Service ports and probes need a non-loopback bind, so set the env vars
+instead of editing config.yaml:
+
+```yaml
+env:
+  - name: CSGW_LISTEN_ADDRESS
+    value: "0.0.0.0:2222"
+  - name: CSGW_METRICS_ADDRESS
+    value: "0.0.0.0:9090"
+  - name: CSGW_HEALTH_ADDRESS
+    value: "0.0.0.0:9091"
+```
+
+`doctor` never binds listeners, so the overrides only affect `serve`.
+
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `version` | `1` | Config schema version. |
@@ -263,6 +387,10 @@ Unknown keys are rejected. Durations are strings like `30s`, `5m`.
 | `maintenance.session_timeout` | `5m` | Whole-session bound for maintenance. |
 | `maintenance.input_timeout` | `2m` | Negotiation and per-keystroke bound. |
 | `maintenance.bind_on_first_token_requires_admin_flag` | `true` | First-token binding only for accounts created with `--bind-on-first-token`. |
+| `enrollment.enabled` | `true` | Enable the init@ token-anchored self-enrollment flow (see "Self-enrollment"). |
+| `enrollment.user` | `init` | SSH username that triggers enrollment; must differ from transport and maintenance users. |
+| `enrollment.max_attempts` | `3` | Token submissions allowed per enrollment connection. |
+| `enrollment.timeout` | `5m` | Handshake deadline extension while an enrollment token prompt is open. |
 | `observability.log_format` | `json` | `json` or `text`. |
 | `observability.log_level` | `info` | `debug`, `info`, `warn`, `error`. |
 | `observability.metrics_address` | `127.0.0.1:9090` | Prometheus metrics listen address. |

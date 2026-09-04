@@ -40,6 +40,18 @@ spec:
             - --state-dir
             - /var/lib/coder-ssh-gateway
             - serve
+          # Env overrides (CD-1) replace config.yaml edits for the bind
+          # addresses: CLI flag > env var > config file > default. The
+          # health/metrics Service ports and probes below REQUIRE a
+          # non-loopback bind — config defaults are 127.0.0.1 and would be
+          # unreachable from the kubelet.
+          env:
+            - name: CSGW_LISTEN_ADDRESS # overrides listen.address
+              value: "0.0.0.0:2222"
+            - name: CSGW_METRICS_ADDRESS # overrides observability.metrics_address
+              value: "0.0.0.0:9090"
+            - name: CSGW_HEALTH_ADDRESS # overrides observability.health_address
+              value: "0.0.0.0:9091"
           ports:
             - name: ssh
               containerPort: 2222

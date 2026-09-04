@@ -47,11 +47,26 @@ with the pod and clients reconnect.
 ## Health probes
 
 `/livez` and `/readyz` are served on `observability.health_address`
-(default `127.0.0.1:9091`; set it to `:9091` in config so the kubelet can
-reach them). Liveness means the process and store lock are healthy;
-readiness additionally means the deployment config is usable. During
-SIGTERM shutdown readiness flips false while active tunnels drain, so pair
-`terminationGracePeriodSeconds: 90` with your configured drain period.
+(default `127.0.0.1:9091`). The kubelet cannot reach a loopback bind, so
+the example Deployment sets the `CSGW_*` environment overrides instead of
+editing `config.yaml`:
+
+```yaml
+env:
+  - name: CSGW_LISTEN_ADDRESS   # overrides listen.address
+    value: "0.0.0.0:2222"
+  - name: CSGW_METRICS_ADDRESS  # overrides observability.metrics_address
+    value: "0.0.0.0:9090"
+  - name: CSGW_HEALTH_ADDRESS   # overrides observability.health_address
+    value: "0.0.0.0:9091"
+```
+
+Precedence is CLI flag > env var > config file > default; the same override
+works for `docker run -e`. Liveness means the process and store lock are
+healthy; readiness additionally means the deployment config is usable.
+During SIGTERM shutdown readiness flips false while active tunnels drain,
+so pair `terminationGracePeriodSeconds: 90` with your configured drain
+period.
 
 ## Network policy (design section 31.5)
 

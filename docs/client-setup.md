@@ -7,8 +7,62 @@ the workspace suffix `coder-gateway.example.com` (Coder deployment
 You will receive from your operator:
 
 - the gateway hostname and port;
-- the gateway's outer host-key fingerprint (verify it on first connect);
-- confirmation that your SSH public key is registered.
+- the gateway's outer host-key fingerprint (verify it on first connect).
+
+You do NOT need the operator to pre-register anything: the gateway enrolls
+your key itself on first connect (see the next section). If your operator has
+disabled self-enrollment, you will instead receive confirmation that your SSH
+public key and account were provisioned out-of-band; in that case skip to the
+per-client sections.
+
+## Initial enrollment (primary onboarding path)
+
+Run this once from **every** machine that will connect. From any system with
+an SSH client:
+
+```bash
+ssh init@gateway.example.com
+```
+
+What happens:
+
+1. Your SSH client proves possession of this machine's private key (the key
+   must exist — generate one with `ssh-keygen -t ed25519` if needed).
+2. The gateway answers with a banner ("New device enrollment…") and prompts
+   `Coder token: `.
+3. Open `https://example.test/cli-auth` in a browser, copy the session
+   token shown there, and paste it at the prompt (input is hidden).
+4. The gateway validates the token against Coder, links this machine's key
+   to your Coder account, stores the token, prints a confirmation
+   ("Enrolled. Coder user …"), and closes the connection.
+
+That is the whole enrollment. The connection closes by design — reconnect
+with your normal workspace connection (`coder@…`, below). Repeat from every
+device; each device's key lands on the same account as long as you paste a
+token for the same Coder user.
+
+For the inline token prompt to render, the client must permit the follow-up
+authentication methods. A dedicated host block does this without touching
+your workspace entries:
+
+```sshconfig
+Host coder-gateway-init
+    HostName gateway.example.com
+    User init
+    IdentitiesOnly yes
+    IdentityFile ~/.ssh/coder-gateway
+    PreferredAuthentications publickey,keyboard-interactive,password
+    KbdInteractiveAuthentication yes
+    PasswordAuthentication yes
+```
+
+Then `ssh coder-gateway-init`. Enabling `password` here does not enable
+token-only login — your public key is always required first; the password
+method only lets the hidden token prompt render after the key is accepted.
+
+A key that is already linked to a *different* account is rejected with an
+explanatory banner and nothing is changed; use a per-device key, or ask your
+operator to remove the stale key registration.
 
 ## OpenSSH (desktop/laptop)
 
@@ -78,15 +132,36 @@ prompt render after your key is accepted.
 
 ### First connection
 
-1. `ssh coder-jump` and compare the displayed host-key fingerprint against
-   the one your operator published before answering `yes`.
-2. `ssh coder-gateway-auth`, paste your Coder session token at the hidden
-   prompt, wait for confirmation and disconnect.
+1. `ssh coder-gateway-init` (or `ssh init@gateway.example.com`) and compare
+   the displayed host-key fingerprint against the one your operator
+   published before answering `yes`.
+2. Paste your Coder session token at the `Coder token:` prompt, wait for
+   the "Enrolled." confirmation, and let the connection close.
 3. `ssh dev.coder-gateway.example.com`.
+
+Step 2 stores the token; you only repeat it when the token expires (see the
+maintenance entry above).
 
 ## Moshi (iPad)
 
-Moshi does not run `ssh_config`; configure two saved connections.
+Moshi does not run `ssh_config`; configure three saved connections. The
+first one is for enrollment.
+
+### Enrollment connection
+
+```text
+Name:             Coder Gateway Init
+Connection type:  SSH
+Host:             gateway.example.com
+Port:             22
+Username:         init
+Authentication:   this device's SSH key
+Jump host:        none
+```
+
+Open it once: the gateway prompts for your Coder token (from
+`https://example.test/cli-auth`), links this iPad's key to your Coder
+account, confirms, and disconnects. Repeat on each new device.
 
 ### Workspace connection
 
