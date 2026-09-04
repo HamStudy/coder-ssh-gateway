@@ -1,0 +1,82 @@
+# Example gateway configuration for the ham.dev development environment.
+# Secret/binary/state paths below are placeholders: tests repoint them at
+# real temp files before validation (committed secrets are forbidden).
+version: 1
+
+listen:
+  address: ":2222"
+  handshake_timeout: 30s
+  renewal_auth_timeout: 5m
+  tcp_keepalive: 30s
+  proxy_protocol: false
+
+ssh:
+  transport_user: coder
+  maintenance_user: auth
+  server_version: "SSH-2.0-CoderSSHGW_0.1"
+  host_keys:
+    - /run/secrets/ssh_host_ed25519_key
+  allow_ssh_certificates: false
+
+state:
+  dir: /var/lib/coder-ssh-gateway
+  audit_retention_days: 90
+
+encryption:
+  provider: file
+  active_key_id: v1
+  keys:
+    v1: /run/secrets/credential-key-v1
+
+deployment:
+  id: primary
+  coder_url: https://example.test
+  target_suffix: coder-gateway.example.com
+
+  coder_binary: /usr/local/bin/coder
+  coder_global_config: /var/lib/coder-ssh-gateway/coder-config
+  working_directory: /var/empty/coder-ssh-gateway
+
+  autostart: true
+  wait: auto
+  workspace_connect_timeout: 5m
+
+  token_validation_timeout: 10s
+  token_validation_cache: 15s
+
+  tls:
+    ca_file: ""
+    client_cert_file: ""
+    client_key_file: ""
+
+  network:
+    disable_coder_telemetry: true
+    https_proxy: ""
+    no_proxy: ""
+
+limits:
+  unauthenticated_connections: 128
+  handshakes: 64
+  connections_per_ip: 16
+  connections_per_key: 8
+  connections_per_account: 8
+  channels_per_connection: 4
+  channels_per_account: 8
+  coder_processes: 128
+  coder_api_requests: 32
+  renewal_attempts_per_connection: 3
+  renewal_attempts_per_account_per_minute: 5
+  process_shutdown_grace: 5s
+  stderr_buffer_bytes: 65536
+
+maintenance:
+  enabled: true
+  session_timeout: 5m
+  input_timeout: 2m
+  bind_on_first_token_requires_admin_flag: true
+
+observability:
+  log_format: json
+  log_level: info
+  metrics_address: "127.0.0.1:9090"
+  health_address: "127.0.0.1:9091"
