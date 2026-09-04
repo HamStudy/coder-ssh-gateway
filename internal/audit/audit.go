@@ -13,14 +13,7 @@ import (
 
 var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{20,}[_-]+[A-Za-z0-9_-]*$|^[A-Za-z0-9_-]*[_-]+[A-Za-z0-9_-]{20,}$`)
 
-var secretMarkers = map[string]bool{
-	"SECRETMARKER123": true,
-}
-
 func redactString(s string) string {
-	if secretMarkers[s] {
-		return "[REDACTED]"
-	}
 	if len(s) >= 20 && tokenPattern.MatchString(s) {
 		return "[REDACTED]"
 	}

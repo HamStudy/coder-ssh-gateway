@@ -12,6 +12,7 @@ import (
 
 	"github.com/taxilian/coder-ssh-gateway/internal/audit"
 	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
 	"github.com/taxilian/coder-ssh-gateway/internal/store"
 )
 
@@ -132,6 +133,9 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 	if err != nil {
 		return nil, reject("credential_load_failed", store.CodeOf(err), account.ID, keyRecord.ID)
 	}
+	// §21.5: this snapshot's token never leaves the verified stage (only its
+	// generation is carried onward), so wipe it on every path.
+	defer secretbox.BestEffortWipe(snap.Token)
 
 	if snap.State == core.CredentialStateMissing || len(snap.Token) == 0 {
 		return c.startRenewal(state, log, account, keyRecord, snap.Generation, core.CredentialMissing)

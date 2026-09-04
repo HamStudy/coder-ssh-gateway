@@ -63,10 +63,12 @@ func startProxy(channel ssh.Channel, proc *Process, obs Observer) *proxyStreams 
 				if n > 0 {
 					obs.TunnelBytes("down", n)
 					if _, werr := channel.Write(buf[:n]); werr != nil {
+						copyErr = werr
 						break
 					}
 				}
 				if err != nil {
+					copyErr = err
 					break
 				}
 			}

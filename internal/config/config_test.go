@@ -20,12 +20,11 @@ func writeFile(t *testing.T, path string, content []byte, perm os.FileMode) {
 }
 
 type validEnv struct {
-	dir        string
-	stateDir   string
-	hostKey    string
-	encKey     string
-	coderBin   string
-	configPath string
+	dir      string
+	stateDir string
+	hostKey  string
+	encKey   string
+	coderBin string
 }
 
 func newValidEnv(t *testing.T) validEnv {

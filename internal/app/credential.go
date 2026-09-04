@@ -218,15 +218,15 @@ func credentialErrorForHumans(err error) error {
 	if errors.As(err, &credErr) {
 		switch credErr.Kind {
 		case core.CredentialInvalid:
-			return errors.New("Coder rejected the token (401 unauthorized)")
+			return errors.New("coder rejected the token (401 unauthorized)")
 		case core.CredentialForbidden:
-			return errors.New("Coder forbids this token (403)")
+			return errors.New("coder forbids this token (403)")
 		case core.ControlPlaneUnavailable:
-			return errors.New("Coder control plane unreachable; token not stored, retry later")
+			return errors.New("coder control plane unreachable; token not stored, retry later")
 		case core.ControlPlaneIncompatible:
-			return errors.New("Coder deployment incompatible (unexpected response)")
+			return errors.New("coder deployment incompatible (unexpected response)")
 		case core.CredentialMalformedReply:
-			return errors.New("Coder returned a malformed identity reply")
+			return errors.New("coder returned a malformed identity reply")
 		}
 	}
 	return err

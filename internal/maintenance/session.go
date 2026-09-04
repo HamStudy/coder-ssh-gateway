@@ -340,10 +340,9 @@ func (h *Handler) renewLoop(ctx context.Context, channel ssh.Channel, account co
 			return err
 		}
 
-		newGeneration, err := h.Renewal.ReplaceToken(ctx, account, generation, line)
+		_, err = h.Renewal.ReplaceToken(ctx, account, generation, line)
 		secretbox.BestEffortWipe(line)
 		if err == nil {
-			generation = newGeneration
 			// The replacement refreshed the cached identity; reload for the
 			// confirmation message (§14.3 names the verified Coder user).
 			username := account.CachedUsername

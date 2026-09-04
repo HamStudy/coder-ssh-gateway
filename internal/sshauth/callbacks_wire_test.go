@@ -281,7 +281,6 @@ type wireServer struct {
 	results []wireResult
 	states  []*sshauth.ConnState
 	conns   []*ssh.ServerConn
-	raws    []net.Conn
 	wg      sync.WaitGroup
 }
 

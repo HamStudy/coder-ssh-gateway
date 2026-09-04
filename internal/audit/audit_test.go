@@ -86,7 +86,7 @@ func TestEventJSONSerialization(t *testing.T) {
 }
 
 func TestRedaction(t *testing.T) {
-	token := "SECRETMARKER123"
+	token := "SECRETMARKER12345678_x" // matches tokenPattern: >=20 chars + separator
 	event := Event{
 		ID:           "test-redaction",
 		OccurredAtMs: time.Now().UnixMilli(),

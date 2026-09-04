@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
 )
 
 // Rechecker verifies stored credentials after a tunnel child exits before
@@ -47,6 +48,9 @@ func (r *Rechecker) RecheckAfterFailure(ctx context.Context, accountID uuid.UUID
 		)
 		return
 	}
+	// §21.5: the caller owns this snapshot's token; it is verified here and
+	// never passed onward, so wipe it on every path.
+	defer secretbox.BestEffortWipe(snap.Token)
 
 	// Generation changed while child ran — credential replaced, do nothing.
 	if snap.Generation != generation {

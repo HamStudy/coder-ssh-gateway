@@ -14,6 +14,7 @@ import (
 	"github.com/taxilian/coder-ssh-gateway/internal/core"
 	"github.com/taxilian/coder-ssh-gateway/internal/limits"
 	"github.com/taxilian/coder-ssh-gateway/internal/route"
+	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
 	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
 )
 
@@ -229,6 +230,7 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 		log.Info("credential no longer valid at channel open; closing transport",
 			slog.String("state", snap.State.String()),
 		)
+		secretbox.BestEffortWipe(snap.Token) // §21.5: token not passed onward
 		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, rt.DisplayTarget, false, detail)
 		_ = newCh.Reject(ssh.Prohibited, "credential no longer valid; reconnect")
@@ -247,6 +249,7 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 	// §19.1(8) + §11.5: revalidate when the cached validation is stale.
 	if time.Since(snap.LastValidatedAt) > s.cfg.CacheTTL {
 		if _, err := s.cfg.Auth.Verifier.VerifyCached(ctx, perms.AccountID, snap.Generation, snap.Token); err != nil {
+			secretbox.BestEffortWipe(snap.Token) // §21.5: token not passed onward
 			s.rejectOnRevalidationFailure(ctx, state, perms, rt, newCh, err)
 			return
 		}
@@ -257,6 +260,7 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 	// minutes; a pending channel open would hit client timeouts).
 	ch, requests, err := newCh.Accept()
 	if err != nil {
+		secretbox.BestEffortWipe(snap.Token) // §21.5: token not passed onward
 		log.Debug("channel accept failed", slog.String("detail", err.Error()))
 		return
 	}

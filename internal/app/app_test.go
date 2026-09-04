@@ -132,16 +132,6 @@ func (f *cliFixture) writeConfig(t *testing.T, coderBinary string) {
 	}
 }
 
-func (f *cliFixture) parse(t *testing.T) *config.Config {
-	t.Helper()
-	cfg, err := config.Parse(f.configPath)
-	if err != nil {
-		t.Fatalf("parse config: %v", err)
-	}
-	config.ApplyStateDir(cfg, f.dir)
-	return cfg
-}
-
 // addAccount runs admin account add --coder-user-id and returns the new
 // account UUID parsed from stdout.
 func (f *cliFixture) addAccount(t *testing.T, label string) uuid.UUID {

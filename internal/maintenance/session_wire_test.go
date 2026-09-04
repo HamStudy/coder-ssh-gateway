@@ -118,12 +118,6 @@ type coderStub struct {
 	status map[string]int
 }
 
-func (c *coderStub) set(token string, status int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.status[token] = status
-}
-
 func (c *coderStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Coder-Session-Token"), "")
 	c.mu.Lock()
