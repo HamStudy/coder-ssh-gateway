@@ -62,6 +62,21 @@ func ParseCredentialState(v string) (CredentialState, error) {
 	}
 }
 
+// DeploymentTLS holds client TLS configuration for the coder binary.
+type DeploymentTLS struct {
+	CAFile   string
+	CertFile string
+	KeyFile  string
+}
+
+// DeploymentNetwork holds network proxy configuration.
+type DeploymentNetwork struct {
+	Proxy   string
+	NoProxy string
+	// DisableNetworkTelemetry controls the CODER_DISABLE_NETWORK_TELEMETRY env var.
+	DisableNetworkTelemetry bool
+}
+
 type Deployment struct {
 	ID           uuid.UUID
 	CoderURL     *url.URL
@@ -71,6 +86,8 @@ type Deployment struct {
 	WorkingDir   string
 	Autostart    bool
 	WaitMode     string
+	TLS          DeploymentTLS
+	Network      DeploymentNetwork
 }
 
 type Route struct {
