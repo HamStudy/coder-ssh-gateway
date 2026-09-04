@@ -1,0 +1,23 @@
+# Sisyphus state (do not commit)
+.sisyphus/
+
+# Gateway state
+state/
+*.state/
+
+# SSH key files
+*_key
+*.pem
+
+# Local test fixtures
+testdata/local/
+
+# Temporary files
+/tmp/
+*.tmp
+
+# Editor files
+*.swp
+*.swo
+*~
+.DS_Store
