@@ -65,6 +65,12 @@ func (c AuthConfig) publicKeyCallback(state *ConnState, cfgErr error, meta ssh.C
 
 	user := meta.User()
 	if user != c.TransportUser && user != c.MaintenanceUser {
+		// CD-2: the enrollment user is the only other recognized username,
+		// and only while enrollment is armed; otherwise it rejects
+		// identically to any unknown username (§35).
+		if c.enrollmentEnabled() && user == c.enrollmentUser() {
+			return c.enrollmentCandidate(state, key)
+		}
 		return nil, reject("unknown_username", core.AUTH_UNKNOWN_KEY)
 	}
 
@@ -111,6 +117,12 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 
 	if cfgErr != nil {
 		return nil, reject("config_invalid", core.STORE_UNAVAILABLE, uuid.Nil, uuid.Nil)
+	}
+
+	// CD-2: enrollment-mode candidate permissions branch into the token-
+	// anchored self-enrollment flow before the store-identity parsing.
+	if candidate != nil && candidate.Extensions[PermissionMode] == ModeEnrollment {
+		return c.verifiedEnrollment(state, key, candidate)
 	}
 
 	perms, err := ParseCandidatePermissions(candidate)

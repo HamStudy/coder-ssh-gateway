@@ -1,9 +1,12 @@
 package sshauth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
@@ -16,12 +19,19 @@ const (
 	PermissionSSHKeyID             = "gateway.ssh_key_id"
 	PermissionCredentialGeneration = "gateway.credential_generation"
 	PermissionMustReconnect        = "gateway.must_reconnect"
+	// PermissionEnrollmentKeyDigest carries the sha256 hex digest of the
+	// proven public key through the enrollment candidate stage (CD-2). No
+	// account/key UUIDs exist yet at that point.
+	PermissionEnrollmentKeyDigest = "gateway.enrollment_key_digest"
 )
 
 const (
 	ModeCandidate   = "candidate"
 	ModeTransport   = "transport"
 	ModeMaintenance = "maintenance"
+	// ModeEnrollment marks candidate permissions for the init@ self-
+	// enrollment flow (CD-2): the key is not (yet) linked to any account.
+	ModeEnrollment = "enrollment"
 )
 
 type CandidatePerms struct {
@@ -39,12 +49,31 @@ type FinalPerms struct {
 	MustReconnect        bool
 }
 
+// EnrollmentCandidatePerms is the parsed form of enrollment-mode candidate
+// permissions: the proven key's digest and nothing else.
+type EnrollmentCandidatePerms struct {
+	Mode      string
+	KeyDigest string
+}
+
 func CandidatePermissions(accountID, keyID uuid.UUID) *ssh.Permissions {
 	return &ssh.Permissions{
 		Extensions: map[string]string{
 			PermissionMode:      ModeCandidate,
 			PermissionAccountID: accountID.String(),
 			PermissionSSHKeyID:  keyID.String(),
+		},
+	}
+}
+
+// EnrollmentCandidatePermissions builds candidate permissions for the init@
+// self-enrollment flow: mode=enrollment plus the proven key's digest. There
+// are deliberately no account/key UUIDs — they do not exist yet.
+func EnrollmentCandidatePermissions(keyDigestHex string) *ssh.Permissions {
+	return &ssh.Permissions{
+		Extensions: map[string]string{
+			PermissionMode:                ModeEnrollment,
+			PermissionEnrollmentKeyDigest: keyDigestHex,
 		},
 	}
 }
@@ -88,6 +117,9 @@ var (
 	ErrNegativeGeneration   = errors.New("credential_generation is negative")
 	ErrInvalidMustReconnect = errors.New("invalid must_reconnect")
 	ErrUnknownExtension     = errors.New("unknown extension key")
+
+	ErrMissingEnrollmentKeyDigest = errors.New("missing enrollment_key_digest")
+	ErrInvalidEnrollmentKeyDigest = errors.New("invalid enrollment_key_digest")
 )
 
 func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
@@ -227,4 +259,41 @@ func ParseCandidatePermissions(perms *ssh.Permissions) (CandidatePerms, error) {
 		AccountID: accountID,
 		SSHKeyID:  sshKeyID,
 	}, nil
+}
+
+// ParseEnrollmentCandidatePermissions validates enrollment-mode candidate
+// permissions: exactly mode + a 64-char lowercase-hex sha256 digest, no
+// other extensions.
+func ParseEnrollmentCandidatePermissions(perms *ssh.Permissions) (EnrollmentCandidatePerms, error) {
+	if perms == nil || perms.Extensions == nil {
+		return EnrollmentCandidatePerms{}, ErrMissingEnrollmentKeyDigest
+	}
+
+	ext := perms.Extensions
+
+	mode := ext[PermissionMode]
+	if mode != ModeEnrollment {
+		return EnrollmentCandidatePerms{}, fmt.Errorf("%w: %q", ErrInvalidMode, mode)
+	}
+
+	digest := ext[PermissionEnrollmentKeyDigest]
+	if digest == "" {
+		return EnrollmentCandidatePerms{}, ErrMissingEnrollmentKeyDigest
+	}
+	if len(digest) != sha256.Size*2 || digest != strings.ToLower(digest) {
+		return EnrollmentCandidatePerms{}, fmt.Errorf("%w: %q", ErrInvalidEnrollmentKeyDigest, digest)
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return EnrollmentCandidatePerms{}, fmt.Errorf("%w: %q", ErrInvalidEnrollmentKeyDigest, digest)
+	}
+
+	for key := range ext {
+		switch key {
+		case PermissionMode, PermissionEnrollmentKeyDigest:
+		default:
+			return EnrollmentCandidatePerms{}, fmt.Errorf("%w: %q", ErrUnknownExtension, key)
+		}
+	}
+
+	return EnrollmentCandidatePerms{Mode: mode, KeyDigest: digest}, nil
 }

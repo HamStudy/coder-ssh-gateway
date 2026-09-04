@@ -56,6 +56,15 @@ type AuthConfig struct {
 	// Nil keeps the placeholder (always-reject) continuation callbacks.
 	Renewal *RenewalConfig
 
+	// EnrollmentUser is the outer username that triggers self-enrollment
+	// (CD-2, e.g. "init"). It is active only when Enrollment is non-nil
+	// and Enabled; Enrollment.User overrides it when set.
+	EnrollmentUser string
+	// Enrollment carries the CD-2 self-enrollment continuation
+	// dependencies. Nil or Disabled makes the enrollment username behave
+	// exactly like any unknown username (§35).
+	Enrollment *EnrollmentConfig
+
 	Store    KeyLookupStore
 	Verifier CachedTokenVerifier
 	Audit    audit.Logger
@@ -79,7 +88,33 @@ func (c AuthConfig) validate() error {
 	if c.Store == nil || c.Verifier == nil {
 		return errors.New("sshauth: store and verifier are required")
 	}
+	if c.Enrollment != nil && c.Enrollment.Enabled {
+		user := c.enrollmentUser()
+		if user == "" {
+			return errors.New("sshauth: enabled enrollment requires an enrollment username")
+		}
+		if user == c.TransportUser || user == c.MaintenanceUser {
+			return errors.New("sshauth: enrollment username must differ from transport and maintenance usernames")
+		}
+		if c.Enrollment.Verifier == nil || c.Enrollment.Store == nil {
+			return errors.New("sshauth: enabled enrollment requires verifier and store")
+		}
+	}
 	return nil
+}
+
+// enrollmentUser resolves the enrollment trigger username:
+// Enrollment.User wins over AuthConfig.EnrollmentUser.
+func (c AuthConfig) enrollmentUser() string {
+	if c.Enrollment != nil && c.Enrollment.User != "" {
+		return c.Enrollment.User
+	}
+	return c.EnrollmentUser
+}
+
+// enrollmentEnabled reports whether the enrollment user is armed.
+func (c AuthConfig) enrollmentEnabled() bool {
+	return c.Enrollment != nil && c.Enrollment.Enabled && c.enrollmentUser() != ""
 }
 
 func (c AuthConfig) logger() *slog.Logger {
