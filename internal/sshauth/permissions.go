@@ -49,14 +49,15 @@ func CandidatePermissions(accountID, keyID uuid.UUID) *ssh.Permissions {
 	}
 }
 
-func FinalTransportPermissions(accountID, keyID uuid.UUID, generation int64, mustReconnect bool) *ssh.Permissions {
+func FinalTransportPermissions(accountID, deploymentID, keyID uuid.UUID, generation int64, mustReconnect bool) *ssh.Permissions {
 	return &ssh.Permissions{
 		Extensions: map[string]string{
-			PermissionMode:                  ModeTransport,
-			PermissionAccountID:             accountID.String(),
-			PermissionSSHKeyID:              keyID.String(),
-			PermissionCredentialGeneration:   strconv.FormatInt(generation, 10),
-			PermissionMustReconnect:         strconv.FormatBool(mustReconnect),
+			PermissionMode:                 ModeTransport,
+			PermissionAccountID:            accountID.String(),
+			PermissionDeploymentID:         deploymentID.String(),
+			PermissionSSHKeyID:             keyID.String(),
+			PermissionCredentialGeneration: strconv.FormatInt(generation, 10),
+			PermissionMustReconnect:        strconv.FormatBool(mustReconnect),
 		},
 	}
 }
@@ -72,18 +73,21 @@ func FinalMaintenancePermissions(accountID, keyID uuid.UUID) *ssh.Permissions {
 }
 
 var (
-	ErrInvalidMode            = errors.New("invalid gateway mode")
-	ErrMissingAccountID       = errors.New("missing account_id")
-	ErrInvalidAccountID       = errors.New("invalid account_id")
-	ErrZeroAccountID          = errors.New("account_id is zero")
-	ErrMissingSSHKeyID        = errors.New("missing ssh_key_id")
-	ErrInvalidSSHKeyID        = errors.New("invalid ssh_key_id")
-	ErrZeroSSHKeyID           = errors.New("ssh_key_id is zero")
-	ErrMissingGeneration      = errors.New("missing credential_generation")
-	ErrInvalidGeneration      = errors.New("invalid credential_generation")
-	ErrNegativeGeneration     = errors.New("credential_generation is negative")
-	ErrInvalidMustReconnect   = errors.New("invalid must_reconnect")
-	ErrUnknownExtension       = errors.New("unknown extension key")
+	ErrInvalidMode          = errors.New("invalid gateway mode")
+	ErrMissingAccountID     = errors.New("missing account_id")
+	ErrInvalidAccountID     = errors.New("invalid account_id")
+	ErrZeroAccountID        = errors.New("account_id is zero")
+	ErrMissingDeploymentID  = errors.New("missing deployment_id")
+	ErrInvalidDeploymentID  = errors.New("invalid deployment_id")
+	ErrZeroDeploymentID     = errors.New("deployment_id is zero")
+	ErrMissingSSHKeyID      = errors.New("missing ssh_key_id")
+	ErrInvalidSSHKeyID      = errors.New("invalid ssh_key_id")
+	ErrZeroSSHKeyID         = errors.New("ssh_key_id is zero")
+	ErrMissingGeneration    = errors.New("missing credential_generation")
+	ErrInvalidGeneration    = errors.New("invalid credential_generation")
+	ErrNegativeGeneration   = errors.New("credential_generation is negative")
+	ErrInvalidMustReconnect = errors.New("invalid must_reconnect")
+	ErrUnknownExtension     = errors.New("unknown extension key")
 )
 
 func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
@@ -125,8 +129,13 @@ func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
 	var deploymentID uuid.UUID
 	if didStr := ext[PermissionDeploymentID]; didStr != "" {
 		if deploymentID, err = uuid.Parse(didStr); err != nil {
-			return FinalPerms{}, fmt.Errorf("invalid deployment_id: %w", err)
+			return FinalPerms{}, fmt.Errorf("%w: %q", ErrInvalidDeploymentID, didStr)
 		}
+		if deploymentID == uuid.Nil {
+			return FinalPerms{}, ErrZeroDeploymentID
+		}
+	} else if mode == ModeTransport {
+		return FinalPerms{}, ErrMissingDeploymentID
 	}
 
 	var generation int64

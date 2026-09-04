@@ -28,10 +28,11 @@ func TestCandidatePermissions(t *testing.T) {
 
 func TestFinalTransportPermissions(t *testing.T) {
 	accountID := uuid.New()
+	deploymentID := uuid.New()
 	keyID := uuid.New()
 	generation := int64(42)
 
-	perms := sshauth.FinalTransportPermissions(accountID, keyID, generation, false)
+	perms := sshauth.FinalTransportPermissions(accountID, deploymentID, keyID, generation, false)
 
 	ext := perms.Extensions
 	if ext["gateway.mode"] != string(sshauth.ModeTransport) {
@@ -39,6 +40,9 @@ func TestFinalTransportPermissions(t *testing.T) {
 	}
 	if ext["gateway.account_id"] != accountID.String() {
 		t.Errorf("account_id = %q, want %q", ext["gateway.account_id"], accountID.String())
+	}
+	if ext["gateway.deployment_id"] != deploymentID.String() {
+		t.Errorf("deployment_id = %q, want %q", ext["gateway.deployment_id"], deploymentID.String())
 	}
 	if ext["gateway.ssh_key_id"] != keyID.String() {
 		t.Errorf("ssh_key_id = %q, want %q", ext["gateway.ssh_key_id"], keyID.String())
@@ -71,10 +75,11 @@ func TestFinalMaintenancePermissions(t *testing.T) {
 
 func TestParseFinalPermissions_RoundTrip(t *testing.T) {
 	accountID := uuid.New()
+	deploymentID := uuid.New()
 	keyID := uuid.New()
 	generation := int64(99)
 
-	built := sshauth.FinalTransportPermissions(accountID, keyID, generation, true)
+	built := sshauth.FinalTransportPermissions(accountID, deploymentID, keyID, generation, true)
 
 	parsed, err := sshauth.ParseFinalPermissions(built)
 	if err != nil {
@@ -86,6 +91,9 @@ func TestParseFinalPermissions_RoundTrip(t *testing.T) {
 	}
 	if parsed.AccountID != accountID {
 		t.Errorf("AccountID = %v, want %v", parsed.AccountID, accountID)
+	}
+	if parsed.DeploymentID != deploymentID {
+		t.Errorf("DeploymentID = %v, want %v", parsed.DeploymentID, deploymentID)
 	}
 	if parsed.SSHKeyID != keyID {
 		t.Errorf("SSHKeyID = %v, want %v", parsed.SSHKeyID, keyID)
@@ -132,6 +140,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 				Extensions: map[string]string{
 					"gateway.mode":                  "transport",
 					"gateway.account_id":            uuid.New().String(),
+					"gateway.deployment_id":         uuid.New().String(),
 					"gateway.ssh_key_id":            uuid.New().String(),
 					"gateway.credential_generation": "not-a-number",
 				},
@@ -144,6 +153,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 				Extensions: map[string]string{
 					"gateway.mode":                  "transport",
 					"gateway.account_id":            uuid.New().String(),
+					"gateway.deployment_id":         uuid.New().String(),
 					"gateway.ssh_key_id":            uuid.New().String(),
 					"gateway.credential_generation": "-1",
 				},
@@ -211,12 +221,36 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 				Extensions: map[string]string{
 					"gateway.mode":                  "transport",
 					"gateway.account_id":            uuid.New().String(),
+					"gateway.deployment_id":         uuid.New().String(),
 					"gateway.ssh_key_id":            uuid.New().String(),
 					"gateway.credential_generation": "1",
 					"gateway.must_reconnect":        "yes",
 				},
 			},
 			wantErr: "must_reconnect",
+		},
+		{
+			name: "transport without deployment_id",
+			perms: &ssh.Permissions{
+				Extensions: map[string]string{
+					"gateway.mode":       "transport",
+					"gateway.account_id": uuid.New().String(),
+					"gateway.ssh_key_id": uuid.New().String(),
+				},
+			},
+			wantErr: "deployment_id",
+		},
+		{
+			name: "zero deployment_id",
+			perms: &ssh.Permissions{
+				Extensions: map[string]string{
+					"gateway.mode":          "transport",
+					"gateway.account_id":    uuid.New().String(),
+					"gateway.deployment_id": uuid.Nil.String(),
+					"gateway.ssh_key_id":    uuid.New().String(),
+				},
+			},
+			wantErr: "deployment_id",
 		},
 	}
 
@@ -249,8 +283,9 @@ func TestParsePermissions_RejectsTampered(t *testing.T) {
 
 	t.Run("extra unknown key", func(t *testing.T) {
 		accountID := uuid.New()
+		deploymentID := uuid.New()
 		keyID := uuid.New()
-		perms := sshauth.FinalTransportPermissions(accountID, keyID, 1, false)
+		perms := sshauth.FinalTransportPermissions(accountID, deploymentID, keyID, 1, false)
 		perms.Extensions["gateway.extra_field"] = "disallowed"
 		_, err := sshauth.ParseFinalPermissions(perms)
 		if err == nil {
@@ -268,6 +303,26 @@ func TestModeConstants(t *testing.T) {
 	}
 	if sshauth.ModeMaintenance != "maintenance" {
 		t.Errorf("ModeMaintenance = %q, want %q", sshauth.ModeMaintenance, "maintenance")
+	}
+}
+
+func TestParseFinalPermissions_MaintenanceWithoutDeploymentID(t *testing.T) {
+	perms := &ssh.Permissions{
+		Extensions: map[string]string{
+			"gateway.mode":       "maintenance",
+			"gateway.account_id": uuid.New().String(),
+			"gateway.ssh_key_id": uuid.New().String(),
+		},
+	}
+	parsed, err := sshauth.ParseFinalPermissions(perms)
+	if err != nil {
+		t.Fatalf("ParseFinalPermissions() error = %v (maintenance mode should allow missing deployment_id)", err)
+	}
+	if parsed.Mode != sshauth.ModeMaintenance {
+		t.Errorf("Mode = %v, want %v", parsed.Mode, sshauth.ModeMaintenance)
+	}
+	if parsed.DeploymentID != (uuid.UUID{}) {
+		t.Errorf("DeploymentID = %v, want zero UUID for maintenance without deployment_id", parsed.DeploymentID)
 	}
 }
 
