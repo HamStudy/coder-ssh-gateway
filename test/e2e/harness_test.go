@@ -398,8 +398,21 @@ deployment:
 observability:
   log_format: text
   log_level: debug
+  metrics_address: "127.0.0.1:0"
+  health_address: "127.0.0.1:0"
 `, f.addr, f.stateDir, f.coder.url(), testSuffix, fakeBin,
 		filepath.Join(f.stateDir, "coder-config"), filepath.Join(f.stateDir, "run"), f.coder.caFile)
+	// Ephemeral observability ports only: the 9090/9091 defaults would
+	// collide with any concurrently running gateway on this host.
+	for _, fixed := range []string{"9090", "9091"} {
+		if strings.Contains(cfg, fixed) {
+			t.Fatalf("fixture config must not bind fixed observability port %s", fixed)
+		}
+	}
+	if !strings.Contains(cfg, `metrics_address: "127.0.0.1:0"`) ||
+		!strings.Contains(cfg, `health_address: "127.0.0.1:0"`) {
+		t.Fatalf("fixture config must set ephemeral metrics/health addresses:\n%s", cfg)
+	}
 	if err := os.WriteFile(filepath.Join(f.stateDir, "config.yaml"), []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

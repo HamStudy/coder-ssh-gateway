@@ -113,6 +113,8 @@ deployment:
 observability:
   log_format: text
   log_level: info
+  metrics_address: "127.0.0.1:0"
+  health_address: "127.0.0.1:0"
 `, f.addr, f.stateDir, liveCoderURL, liveCoderBinary,
 		filepath.Join(f.stateDir, "coder-config"), filepath.Join(f.stateDir, "run"))
 	if err := os.WriteFile(filepath.Join(f.stateDir, "config.yaml"), []byte(cfg), 0o600); err != nil {
