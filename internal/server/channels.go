@@ -12,6 +12,7 @@ import (
 
 	"github.com/taxilian/coder-ssh-gateway/internal/audit"
 	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/taxilian/coder-ssh-gateway/internal/limits"
 	"github.com/taxilian/coder-ssh-gateway/internal/route"
 	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
 )
@@ -68,6 +69,7 @@ func (s *Server) dispatchTransportChannels(ctx context.Context, state *sshauth.C
 // `session` is a known type rejected by policy → Prohibited; every other
 // type is unsupported by this server → UnknownChannelType.
 func (s *Server) rejectUnsupportedChannel(log *slog.Logger, newCh ssh.NewChannel) {
+	s.rec.ChannelRejected()
 	chType := newCh.ChannelType()
 	if chType == "session" {
 		log.Debug("rejecting session channel in transport mode (§8.3)")
@@ -90,6 +92,10 @@ func (s *Server) dispatchMaintenanceChannels(ctx context.Context, state *sshauth
 	for newCh := range channels {
 		chType := newCh.ChannelType()
 		switch {
+		case chType == "session" && !served && s.draining.Load():
+			// §32 step 3: no new channels while draining for shutdown.
+			s.rec.ChannelRejected()
+			_ = newCh.Reject(ssh.Prohibited, "server is shutting down")
 		case chType == "session" && !served:
 			ch, requests, err := newCh.Accept()
 			if err != nil {
@@ -97,7 +103,11 @@ func (s *Server) dispatchMaintenanceChannels(ctx context.Context, state *sshauth
 				continue
 			}
 			served = true
+			s.rec.ChannelAccepted()
+			s.activeChannels.Add(1)
 			go func() {
+				defer s.activeChannels.Add(-1)
+				defer s.rec.ChannelClosed()
 				hctx := sshauth.WithConnScope(ctx, state.ID(), state.PeerAddr(), perms.SSHKeyID)
 				if err := s.cfg.MaintenanceHandler.Handle(hctx, ch, requests, perms.AccountID); err != nil {
 					log.Debug("maintenance session ended with error", slog.String("detail", err.Error()))
@@ -109,12 +119,15 @@ func (s *Server) dispatchMaintenanceChannels(ctx context.Context, state *sshauth
 			}()
 		case chType == "session":
 			log.Debug("rejecting second maintenance session channel (§8.3)")
+			s.rec.ChannelRejected()
 			_ = newCh.Reject(ssh.Prohibited, "maintenance permits a single session channel")
 		case chType == "direct-tcpip":
 			log.Debug("rejecting direct-tcpip in maintenance mode (§8.3)")
+			s.rec.ChannelRejected()
 			_ = newCh.Reject(ssh.Prohibited, "direct-tcpip is not permitted in maintenance mode")
 		default:
 			log.Debug("rejecting unsupported channel type in maintenance mode", slog.String("channel_type", chType))
+			s.rec.ChannelRejected()
 			_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
 		}
 	}
@@ -129,9 +142,17 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 		slog.String("account_id", perms.AccountID.String()),
 	)
 
+	// §32 step 3: reject new channel opens once shutdown drain has begun.
+	if s.draining.Load() {
+		s.rec.ChannelRejected()
+		_ = newCh.Reject(ssh.Prohibited, "server is shutting down")
+		return
+	}
+
 	// §19.1(2): defense in depth — a must_reconnect connection should have
 	// been closed right after the handshake (§13.6).
 	if perms.MustReconnect {
+		s.rec.ChannelRejected()
 		_ = newCh.Reject(ssh.Prohibited, "reconnect required")
 		return
 	}
@@ -139,6 +160,7 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 	// §19.1(3): decode the RFC 4254 payload.
 	var req directTCPIPRequest
 	if err := ssh.Unmarshal(newCh.ExtraData(), &req); err != nil {
+		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, "", false, core.ROUTE_INVALID_PAYLOAD)
 		_ = newCh.Reject(ssh.Prohibited, "invalid direct-tcpip payload")
 		return
@@ -154,6 +176,7 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 	// §19.1(4): strict target validation (§17.4/§17.5).
 	rt, err := s.cfg.RouteCodec.ParseDirectTCPIP(req.DestinationAddress, req.DestinationPort)
 	if err != nil {
+		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, "", false, route.CodeOf(err))
 		_ = newCh.Reject(ssh.Prohibited, "target not permitted")
 		return
@@ -163,17 +186,20 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 	// tunnel ends (§19.1 step 15); released immediately on later failure.
 	relChan, ok := s.cfg.Counters.AcquireChannel(state.ID())
 	if !ok {
+		s.rec.LimitRejection(string(limits.ReasonChannelConn))
 		s.rejectChannelLimit(state, perms, newCh)
 		return
 	}
 	relAcct, ok := s.cfg.Counters.AcquireChannelAccount(perms.AccountID)
 	if !ok {
+		s.rec.LimitRejection(string(limits.ReasonChannelAccount))
 		relChan()
 		s.rejectChannelLimit(state, perms, newCh)
 		return
 	}
 	relProc, ok := s.cfg.Counters.AcquireCoderProcess()
 	if !ok {
+		s.rec.LimitRejection(string(limits.ReasonCoderProcess))
 		relAcct()
 		relChan()
 		s.rejectChannelLimit(state, perms, newCh)
@@ -188,6 +214,7 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 	snap, err := s.cfg.Auth.Store.LoadCredential(ctx, perms.AccountID)
 	if err != nil {
 		log.Debug("credential load failed at channel open", slog.String("detail", err.Error()))
+		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, rt.DisplayTarget, false, core.STORE_UNAVAILABLE)
 		_ = newCh.Reject(ssh.ConnectionFailed, "credential store unavailable")
 		return
@@ -202,6 +229,7 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 		log.Info("credential no longer valid at channel open; closing transport",
 			slog.String("state", snap.State.String()),
 		)
+		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, rt.DisplayTarget, false, detail)
 		_ = newCh.Reject(ssh.Prohibited, "credential no longer valid; reconnect")
 		_ = state.Close()
@@ -232,6 +260,10 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 		log.Debug("channel accept failed", slog.String("detail", err.Error()))
 		return
 	}
+	s.rec.ChannelAccepted()
+	s.activeChannels.Add(1)
+	defer s.activeChannels.Add(-1)
+	defer s.rec.ChannelClosed()
 
 	// §19.10: a direct-tcpip channel ordinarily carries no requests, but
 	// the request channel must still be drained.
@@ -258,6 +290,7 @@ func (s *Server) rejectOnRevalidationFailure(ctx context.Context, state *sshauth
 	if core.KindOf(err) == core.ControlPlaneUnavailable {
 		// §11.4: unavailability is NOT a credential failure — reject the
 		// channel, never mark the credential invalid, keep the transport.
+		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, rt.DisplayTarget, false, core.AUTH_CODER_UNAVAILABLE)
 		_ = newCh.Reject(ssh.ConnectionFailed, "coder control plane unavailable")
 		return
@@ -266,12 +299,14 @@ func (s *Server) rejectOnRevalidationFailure(ctx context.Context, state *sshauth
 	// Missing/invalid (and non-renewable rejection kinds): §19.9 — reject
 	// the channel and close the entire outer transport so the next
 	// connection enters renewal.
+	s.rec.ChannelRejected()
 	s.auditChannelOpen(state, perms, rt.DisplayTarget, false, detail)
 	_ = newCh.Reject(ssh.Prohibited, "credential no longer valid; reconnect")
 	_ = state.Close()
 }
 
 func (s *Server) rejectChannelLimit(state *sshauth.ConnState, perms sshauth.FinalPerms, newCh ssh.NewChannel) {
+	s.rec.ChannelRejected()
 	s.auditChannelOpen(state, perms, "", false, core.TUNNEL_LIMIT_REACHED)
 	_ = newCh.Reject(ssh.ResourceShortage, "channel limit reached")
 }

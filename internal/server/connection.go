@@ -10,6 +10,8 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/taxilian/coder-ssh-gateway/internal/audit"
+	"github.com/taxilian/coder-ssh-gateway/internal/limits"
+	"github.com/taxilian/coder-ssh-gateway/internal/metrics"
 	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
 )
 
@@ -38,13 +40,22 @@ func (s *Server) handleConn(raw net.Conn) {
 	ip := peerIP(raw.RemoteAddr())
 	if s.cfg.PreAuthGate != nil && !s.cfg.PreAuthGate(ip) {
 		s.log.Debug("pre-auth rate gate refused connection", slog.String("peer", ip))
+		s.rec.LimitRejection(string(limits.ReasonPreAuthIP))
+		s.rec.ConnectionOpened()
+		s.rec.ConnectionClosed(metrics.ResultRejected)
 		_ = raw.Close()
 		return
 	}
 
+	s.rec.ConnectionOpened()
+	connResult := metrics.ResultFailure
+	defer func() { s.rec.ConnectionClosed(connResult) }()
+
 	releaseGlobal, ok := s.cfg.Counters.AcquireGlobal()
 	if !ok {
 		s.log.Debug("global unauthenticated connection limit reached", slog.String("peer", ip))
+		s.rec.LimitRejection(string(limits.ReasonGlobalConn))
+		connResult = metrics.ResultRejected
 		_ = raw.Close()
 		return
 	}
@@ -58,6 +69,8 @@ func (s *Server) handleConn(raw net.Conn) {
 	releaseIP, ok := s.cfg.Counters.AcquireIP(ip)
 	if !ok {
 		s.log.Debug("per-IP connection limit reached", slog.String("peer", ip))
+		s.rec.LimitRejection(string(limits.ReasonIPConn))
+		connResult = metrics.ResultRejected
 		_ = raw.Close()
 		return
 	}
@@ -66,6 +79,8 @@ func (s *Server) handleConn(raw net.Conn) {
 	releaseHandshake, ok := s.cfg.Counters.AcquireHandshake()
 	if !ok {
 		s.log.Debug("handshake concurrency limit reached", slog.String("peer", ip))
+		s.rec.LimitRejection(string(limits.ReasonHandshake))
+		connResult = metrics.ResultRejected
 		_ = raw.Close()
 		return
 	}
@@ -124,6 +139,11 @@ func (s *Server) handleConn(raw net.Conn) {
 	connCfg.VerifiedPublicKeyCallback = verifiedKeyCb
 	connCfg.PreAuthConnCallback = state.SetPreAuthConn
 	connCfg.AuthLogCallback = func(meta ssh.ConnMetadata, method string, err error) {
+		authResult := metrics.ResultFailure
+		if err == nil {
+			authResult = metrics.ResultSuccess
+		}
+		s.rec.AuthAttempt(method, authResult)
 		log.Debug("auth attempt",
 			slog.String("method", method),
 			slog.String("user", meta.User()),
@@ -131,12 +151,16 @@ func (s *Server) handleConn(raw net.Conn) {
 		)
 	}
 
+	handshakeStart := time.Now()
 	serverConn, channels, requests, err := ssh.NewServerConn(conn, &connCfg)
+	handshakeDur := time.Since(handshakeStart)
 	if err != nil {
+		s.rec.AuthDuration(metrics.ResultFailure, handshakeDur)
 		log.Debug("handshake failed", slog.String("detail", err.Error()))
 		s.auditHandshakeFailure(state)
 		return
 	}
+	s.rec.AuthDuration(metrics.ResultSuccess, handshakeDur)
 	defer serverConn.Close()
 
 	if err := conn.SetDeadline(time.Time{}); err != nil {
@@ -155,6 +179,28 @@ func (s *Server) handleConn(raw net.Conn) {
 		log.Warn("final permissions unparseable; closing", slog.String("detail", err.Error()))
 		return
 	}
+
+	// §20: per-key and per-account connection limits apply to authenticated
+	// connections and are held for the connection lifetime (the pre-auth
+	// global/per-IP slots are released above).
+	releaseKey, ok := s.cfg.Counters.AcquireKey(perms.SSHKeyID)
+	if !ok {
+		log.Info("per-key connection limit reached", slog.String("ssh_key_id", perms.SSHKeyID.String()))
+		s.rec.LimitRejection(string(limits.ReasonKeyConn))
+		connResult = metrics.ResultRejected
+		return
+	}
+	defer releaseKey()
+	releaseAccount, ok := s.cfg.Counters.AcquireAccount(perms.AccountID)
+	if !ok {
+		log.Info("per-account connection limit reached", slog.String("account_id", perms.AccountID.String()))
+		s.rec.LimitRejection(string(limits.ReasonAccountConn))
+		connResult = metrics.ResultRejected
+		return
+	}
+	defer releaseAccount()
+
+	connResult = metrics.ResultSuccess
 
 	if perms.MustReconnect {
 		// §13.6: renewal completed — close immediately, no dispatcher.

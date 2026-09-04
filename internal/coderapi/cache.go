@@ -20,9 +20,16 @@ type cachedResult struct {
 	cachedAt   time.Time
 }
 
+// VerifyCaller is the minimal verifier surface CachedVerifier needs.
+// *Verifier satisfies it; the T24 app assembly wraps the verifier with
+// concurrency-limit and metrics instrumentation and passes the wrapper here.
+type VerifyCaller interface {
+	Verify(ctx context.Context, token []byte) (core.CoderIdentity, error)
+}
+
 type CachedVerifier struct {
 	deploymentID uuid.UUID
-	verifier     *Verifier
+	verifier     VerifyCaller
 	ttl          time.Duration
 	sfGroup      singleflight.Group
 	mu           sync.Mutex
@@ -39,7 +46,7 @@ func (k cacheKey) String() string {
 	return k.deploymentID.String() + "/" + k.accountID.String() + "/" + string(rune(k.generation))
 }
 
-func NewCachedVerifier(deploymentID uuid.UUID, v *Verifier, ttl time.Duration) *CachedVerifier {
+func NewCachedVerifier(deploymentID uuid.UUID, v VerifyCaller, ttl time.Duration) *CachedVerifier {
 	if ttl <= 0 {
 		ttl = 15 * time.Second
 	}

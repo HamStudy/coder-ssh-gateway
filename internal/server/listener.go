@@ -14,12 +14,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/taxilian/coder-ssh-gateway/internal/audit"
 	"github.com/taxilian/coder-ssh-gateway/internal/limits"
+	"github.com/taxilian/coder-ssh-gateway/internal/metrics"
 	"github.com/taxilian/coder-ssh-gateway/internal/route"
 	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
 )
@@ -91,8 +93,16 @@ type ServerConfig struct {
 	// admitted session channel of maintenance-mode connections (T21). Nil
 	// keeps the reject-all behavior for maintenance mode (T15/T16 default).
 	MaintenanceHandler MaintenanceHandler
-	Logger             *slog.Logger
-	Audit              audit.Logger
+	// Metrics receives connection/auth/channel/limit events (§34.2). Nil
+	// selects a no-op recorder.
+	Metrics metrics.Recorder
+	// DrainPeriod is the §32 step-4 grace: on shutdown, active channels get
+	// this long to finish before remaining connections are cancelled (which
+	// triggers the tunnel supervisor's TERM/KILL ladder). Zero drains
+	// immediately.
+	DrainPeriod time.Duration
+	Logger      *slog.Logger
+	Audit       audit.Logger
 }
 
 // Server owns the immutable base ssh.ServerConfig and the accept loop.
@@ -101,10 +111,14 @@ type Server struct {
 	cfg  ServerConfig
 	base *ssh.ServerConfig
 	log  *slog.Logger
+	rec  metrics.Recorder
 
 	mu    sync.Mutex
 	conns map[string]*sshauth.ConnState
 	wg    sync.WaitGroup
+
+	draining       atomic.Bool
+	activeChannels atomic.Int64
 }
 
 // New validates cfg and builds the immutable base SSH configuration (§25.1).
@@ -140,11 +154,16 @@ func New(cfg ServerConfig) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	rec := cfg.Metrics
+	if rec == nil {
+		rec = metrics.NoopRecorder{}
+	}
 
 	s := &Server{
 		cfg:   cfg,
 		base:  buildBaseSSHConfig(cfg.ServerVersion, cfg.HostSigners),
 		log:   log,
+		rec:   rec,
 		conns: make(map[string]*sshauth.ConnState),
 	}
 	for _, signer := range cfg.HostSigners {
@@ -177,10 +196,13 @@ func buildBaseSSHConfig(serverVersion string, signers []ssh.Signer) *ssh.ServerC
 	return cfg
 }
 
-// Serve accepts connections on ln until ctx is cancelled. Graceful stop
-// closes the listener, stops taking connections, closes tracked connections,
-// and waits for per-connection handlers to exit; draining with a grace
-// period is T24. Serve returns nil on graceful shutdown.
+// Serve accepts connections on ln until ctx is cancelled. The §32 shutdown
+// sequence: stop accepting (listener close), mark draining (readiness goes
+// false via Draining, new channel opens are rejected), permit active
+// channels the DrainPeriod grace, then cancel remaining connection contexts
+// (tunnel supervisors escalate TERM/KILL on their child process groups,
+// T18) and wait for per-connection handlers. Serve returns nil on graceful
+// shutdown.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	done := make(chan struct{})
 	defer close(done)
@@ -188,6 +210,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		select {
 		case <-ctx.Done():
 			_ = ln.Close()
+			s.draining.Store(true)
+			s.waitDrain()
 			s.closeAllConns()
 		case <-done:
 		}
@@ -213,6 +237,29 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			defer s.wg.Done()
 			s.handleConn(raw)
 		}()
+	}
+}
+
+// Draining reports whether the server is in the §32 drain phase; the health
+// readiness check and channel admission consult it.
+func (s *Server) Draining() bool { return s.draining.Load() }
+
+// waitDrain permits active channels up to DrainPeriod to finish on their own
+// before the caller cancels connection contexts. Polls at a coarse interval;
+// zero DrainPeriod returns immediately.
+func (s *Server) waitDrain() {
+	if s.cfg.DrainPeriod <= 0 {
+		return
+	}
+	deadline := time.Now().Add(s.cfg.DrainPeriod)
+	for s.activeChannels.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := s.activeChannels.Load(); n > 0 {
+		s.log.Info("drain period elapsed with active channels; cancelling connections",
+			slog.Int64("active_channels", n),
+			slog.Duration("drain_period", s.cfg.DrainPeriod),
+		)
 	}
 }
 
