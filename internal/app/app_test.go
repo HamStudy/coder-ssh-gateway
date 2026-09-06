@@ -91,7 +91,7 @@ type cliFixture struct {
 func newCLIFixture(t *testing.T, useTLS bool) *cliFixture {
 	t.Helper()
 	dir := t.TempDir()
-	code, out, errOut := runCLI(t, "", "--state-dir", dir, "init")
+	code, out, errOut := runCLI(t, "", "--state-dir", dir, "init", "coder.example.com")
 	if code != 0 {
 		t.Fatalf("init: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
 	}
@@ -105,6 +105,49 @@ func newCLIFixture(t *testing.T, useTLS bool) *cliFixture {
 	return f
 }
 
+func TestServeRejectsSSHCertificateOptIn(t *testing.T) {
+	f := newCLIFixture(t, false)
+	configBytes, err := os.ReadFile(f.configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	configBytes = append(configBytes, []byte("ssh:\n  allow_ssh_certificates: true\n")...)
+	if err := os.WriteFile(f.configPath, configBytes, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	code, _, stderr := runCLI(t, "", "--state-dir", f.dir, "serve")
+	if code == 0 {
+		t.Fatal("serve accepted ssh.allow_ssh_certificates: true")
+	}
+	if !strings.Contains(stderr, "ssh.allow_ssh_certificates") {
+		t.Errorf("serve error does not name the rejected field: %q", stderr)
+	}
+}
+
+func TestServeRejectsInvalidBindAddressFlags(t *testing.T) {
+	f := newCLIFixture(t, true)
+	tests := []struct {
+		flag  string
+		field string
+	}{
+		{"--listen-address", "listen.address"},
+		{"--metrics-address", "observability.metrics_address"},
+		{"--health-address", "observability.health_address"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.flag, func(t *testing.T) {
+			code, _, stderr := runCLI(t, "", "--state-dir", f.dir, tt.flag, ":invalid", "serve")
+			if code == 0 {
+				t.Fatal("serve accepted an invalid bind-address flag")
+			}
+			if !strings.Contains(stderr, tt.field) || !strings.Contains(stderr, ":invalid") {
+				t.Errorf("serve error %q does not identify %s and its invalid value", stderr, tt.field)
+			}
+		})
+	}
+}
+
 // writeConfig overwrites the init-written starter config with a test config
 // pointing at the stub Coder. Parse-only consumers accept the http URL; TLS
 // fixtures additionally write the CA so serve's full validation passes.
@@ -116,7 +159,6 @@ func (f *cliFixture) writeConfig(t *testing.T, coderBinary string) {
 	fmt.Fprintf(&sb, "deployment:\n")
 	fmt.Fprintf(&sb, "  id: primary\n")
 	fmt.Fprintf(&sb, "  coder_url: %s\n", f.coder.url())
-	fmt.Fprintf(&sb, "  target_suffix: coder-gateway.example.com\n")
 	fmt.Fprintf(&sb, "  coder_binary: %s\n", coderBinary)
 	fmt.Fprintf(&sb, "  coder_global_config: %s\n", filepath.Join(f.dir, "coder-config"))
 	fmt.Fprintf(&sb, "  working_directory: %s\n", filepath.Join(f.dir, "run"))
