@@ -1,0 +1,274 @@
+# coder-ssh-gateway sample configuration.
+#
+# Annotation legend:
+#   [REQUIRED]   - you must replace this placeholder with your own value
+#                  before the gateway will start
+#   [DEPLOYMENT] - edit this to match your environment (defaults are
+#                  usually fine; change only when you know why)
+#   [DEFAULT]    - the shipped default; leave alone unless you have a
+#                  specific reason
+#   [SECURITY]   - security-sensitive; understand the trade before
+#                  changing
+#   [RUNTIME]    - override at runtime via env var or CLI flag instead
+#                  of editing this file
+#
+# Generate a working configuration with `coder-ssh-gateway init coder.example.com`.
+# init writes the supplied domain as an HTTPS deployment URL in a starter config.yaml
+# that OMITS state.dir, an Ed25519 host
+# key, and a 32-byte credential encryption key under
+# <state-dir>/secrets/ with safe permissions. The starter config uses
+# paths relative to its own directory; when the config lives INSIDE
+# the state directory (the canonical `init` layout), those relative
+# paths resolve correctly.
+#
+# Strict parser: unknown keys are rejected at startup. Durations are
+# strings ("30s", "5m"). Paths in this file resolve relative to THIS
+# FILE'S DIRECTORY; absolute paths resolve normally. `--state-dir`
+# supplies only the store directory (records, lock, audit). It fills
+# in `ssh.host_keys` / `encryption.keys` when those fields are
+# UNSET, but it does NOT rebase explicit non-empty configured paths:
+# if this sample sits outside the state directory, its explicit
+# relative `ssh.host_keys` / `encryption.keys` /
+# `deployment.coder_global_config` / `deployment.working_directory`
+# entries resolve against THIS file's parent, not the state directory.
+#
+# state.dir (optional):
+#   - You do NOT need to set state.dir if this file lives inside the
+#     state directory (the canonical layout produced by `init`), in
+#     which case the parser falls back to this file's parent.
+#   - If this file lives OUTSIDE the state directory, `--state-dir`
+#     alone does NOT fix the explicit relative host-key,
+#     encryption-key, coder-config, or working-directory paths below.
+#     Pick one of: move this file INSIDE the state directory;
+#     rewrite those four fields to be relative to this file's parent;
+#     or rewrite them to absolute paths.
+#   - --state-dir on the command line always wins.
+#   - Global flags, including bind-address flags, must precede the
+#     subcommand: `coder-ssh-gateway --listen-address :2222 serve`.
+#
+# Placeholders use neutral, non-deployment-specific names
+# (coder.example.com / gateway.example.com).
+# Replace them before use. No credentials, host private keys, or
+# encryption-key material are embedded in this sample.
+
+version: 1                                  # [DEFAULT] config schema marker.
+                                            # Set to 1 so the on-disk format
+                                            # is unambiguous.
+
+# Outer SSH listen address and connection deadlines.
+listen:
+  address: ":2222"                          # [RUNTIME] production
+                                            # default is ":22"; containers
+                                            # and dev hosts typically use
+                                            # ":2222" so port 22 stays
+                                            # free for the host's sshd.
+                                            # Override with
+                                            # CSGW_LISTEN_ADDRESS or
+                                            # --listen-address before
+                                            # the serve subcommand.
+  handshake_timeout: 30s                    # [DEFAULT] positive required
+  renewal_auth_timeout: 5m                  # [DEFAULT] positive required;
+                                            # handshake deadline extension
+                                            # while a credential renewal
+                                            # prompt is open
+  tcp_keepalive: 30s                        # [DEFAULT] positive required;
+                                            # 0 is rejected at startup
+                                            # (no OS-default escape)
+  proxy_protocol: false                     # [SECURITY] enable ONLY behind
+                                            # a trusted PROXY-v1 LB. The
+                                            # gateway never auto-detects
+                                            # PROXY headers; with this
+                                            # off, PROXY bytes are
+                                            # ignored and the socket peer
+                                            # is used.
+
+# SSH user namespaces.
+ssh:
+  transport_user: coder                     # [DEFAULT] username for
+                                            # workspace transport
+  maintenance_user: auth                    # [DEFAULT] username for the
+                                            # credential-maintenance
+                                            # session
+  server_version: "SSH-2.0-CoderSSHGW_0.1"  # [DEFAULT] banner clients see.
+                                            # Not a security boundary.
+  host_keys:
+    # [SECURITY] relative to this file's directory; absolute paths
+    # also resolve normally. Startup validation requires each file to
+    # exist, be a regular file, and NOT be group- or world-writable
+    # (mode 0600 satisfies; 0400 also satisfies). Multiple keys are
+    # allowed for rotation.
+    - secrets/ssh_host_ed25519_key
+  allow_ssh_certificates: false             # [SECURITY] reserved for
+                                            # schema compatibility;
+                                            # `true` is rejected at
+                                            # startup. SSH certificates
+                                            # are always rejected.
+
+# State directory layout.
+state:
+  # [OPTIONAL] the parser falls back to this file's parent directory
+  # when this key is omitted. Most operators pass --state-dir on the
+  # command line instead, which always wins over any YAML value.
+  # Uncomment and edit if you want this file to work standalone:
+  # dir: /var/lib/coder-ssh-gateway
+  audit_retention_days: 90                  # [DEPLOYMENT] days to retain
+                                            # audit/audit-YYYY-MM-DD.jsonl
+                                            # files. Must be positive
+                                            # (0 and negative rejected at
+                                            # startup; there is no opt-out
+                                            # for daily-file pruning).
+
+# Credential encryption key map.
+encryption:
+  provider: file                            # [DEFAULT] only "file" is
+                                            # implemented
+  active_key_id: v1                         # [DEPLOYMENT] key ID used for
+                                            # new credential writes. Old
+                                            # IDs listed under keys stay
+                                            # decryptable while listed.
+  keys:
+    # [SECURITY] BACK UP these files. Losing the active key orphans
+    # every stored token. Each file must exist, be a regular file,
+    # and NOT be group- or world-writable (mode 0600 satisfies; 0400
+    # also satisfies).
+    v1: secrets/credential-key-v1
+
+# Deployment wiring.
+deployment:
+  id: primary                               # [DEFAULT] deployment label;
+                                            # one deployment per gateway
+  coder_url: https://coder.example.com      # [REQUIRED] HTTPS only;
+                                            # HTTP is always rejected at
+                                            # startup
+  coder_binary: /usr/local/bin/coder        # [REQUIRED] path to the
+                                            # pinned Coder CLI. Must
+                                            # exist and be executable;
+                                            # must match the Coder
+                                            # server's release version
+  coder_global_config: coder-config         # [DEFAULT] isolated Coder
+                                            # CLI global config dir,
+                                            # relative to this file's
+                                            # directory
+  working_directory: run                    # [DEFAULT] working dir for
+                                            # spawned CLI processes,
+                                            # relative to this file's
+                                            # directory
+  autostart: true                           # [DEPLOYMENT] allow `coder
+                                            # ssh` to autostart stopped
+                                            # workspaces
+  wait: auto                                # [DEPLOYMENT] passed to
+                                            # `coder ssh --wait`:
+                                            # yes | no | auto
+
+  workspace_connect_timeout: 5m             # [DEPLOYMENT] bound on
+                                            # autostart waits
+  token_validation_timeout: 10s             # [DEPLOYMENT] HTTP timeout
+                                            # for /api/v2/users/me
+  token_validation_cache: 15s               # [DEPLOYMENT] TTL for
+                                            # cached validation results
+
+  # mTLS / custom CA for the Coder control plane. Leave empty for
+  # public CAs.
+  tls:
+    ca_file: ""                             # [DEPLOYMENT] custom CA
+                                            # bundle for the Coder
+                                            # deployment
+    client_cert_file: ""                    # [SECURITY] client
+                                            # certificate for mTLS to
+                                            # Coder. Set together with
+                                            # client_key_file; the key
+                                            # file must be mode 0600.
+    client_key_file: ""                     # [SECURITY] client key for
+                                            # mTLS to Coder
+
+  # Outbound networking for spawned Coder CLI processes.
+  network:
+    disable_coder_telemetry: true           # [SECURITY] sets
+                                            # CODER_DISABLE_NETWORK_TELEMETRY=1
+                                            # for the spawned CLI
+    https_proxy: ""                         # [DEPLOYMENT] HTTPS proxy
+                                            # for Coder API traffic
+                                            # (e.g. http://proxy.example.com:8080)
+    no_proxy: ""                            # [DEPLOYMENT] comma-
+                                            # separated host/CIDR list
+
+# Admission-control and rate limits. Every field must be > 0.
+limits:
+  unauthenticated_connections: 128          # [DEFAULT] global pre-auth
+                                            # connection cap
+  handshakes: 64                            # [DEFAULT] in-progress
+                                            # handshakes cap
+  connections_per_ip: 16                    # [DEFAULT] also pre-auth
+                                            # rate burst
+  connections_per_key: 8                    # [DEFAULT]
+  connections_per_account: 8                # [DEFAULT]
+  channels_per_connection: 4                # [DEFAULT]
+  channels_per_account: 8                   # [DEFAULT]
+  coder_processes: 128                      # [DEFAULT] max spawned CLI
+                                            # processes
+  coder_api_requests: 32                    # [DEFAULT] in-flight Coder
+                                            # API calls
+  renewal_attempts_per_connection: 3        # [DEFAULT] token submissions
+                                            # per connection
+  renewal_attempts_per_account_per_minute: 5 # [DEFAULT] renewal rate
+                                            # limit per account
+  process_shutdown_grace: 5s                # [DEFAULT] SIGTERM-to-SIGKILL
+                                            # window for children
+  stderr_buffer_bytes: 65536                # [DEFAULT] bounded ring for
+                                            # child stderr diagnostics
+
+# Maintenance session (auth@).
+maintenance:
+  enabled: true                             # [DEFAULT] enable the
+                                            # maintenance session
+  session_timeout: 5m                       # [DEFAULT] whole-session
+                                            # bound
+  input_timeout: 2m                         # [DEFAULT] negotiation and
+                                            # per-keystroke bound
+  bind_on_first_token_requires_admin_flag: true
+                                            # [SECURITY] first-token
+                                            # binding only for accounts
+                                            # created with
+                                            # --bind-on-first-token
+
+# Self-enrollment (init@).
+enrollment:
+  enabled: true                             # [DEPLOYMENT] primary
+                                            # onboarding path. Set to
+                                            # false for closed
+                                            # memberships where only
+                                            # out-of-band admin
+                                            # provisioning is permitted
+  user: init                                # [DEFAULT] SSH username that
+                                            # triggers enrollment; must
+                                            # differ from transport_user
+                                            # and maintenance_user
+  max_attempts: 3                           # [DEFAULT] token submissions
+                                            # allowed per enrollment
+                                            # connection
+  timeout: 5m                               # [DEFAULT] handshake
+                                            # deadline extension while
+                                            # an enrollment token prompt
+                                            # is open
+
+# Observability.
+observability:
+  log_format: json                          # [DEPLOYMENT] json | text
+  log_level: info                           # [DEPLOYMENT] debug | info
+                                            # | warn | error
+  metrics_address: "127.0.0.1:9090"         # [RUNTIME] Prometheus
+                                            # /metrics. Default binds
+                                            # loopback for safe single-
+                                            # host operation; override
+                                            # with CSGW_METRICS_ADDRESS
+                                            # or --metrics-address
+                                            # (e.g. "0.0.0.0:9090") for
+                                            # containers / Kubernetes.
+                                            # Runtime overrides apply only
+                                            # at serve time and leave
+                                            # this file untouched.
+  health_address: "127.0.0.1:9091"          # [RUNTIME] /livez and
+                                            # /readyz. Same override
+                                            # pattern as metrics_address
+                                            # via CSGW_HEALTH_ADDRESS or
+                                            # --health-address.

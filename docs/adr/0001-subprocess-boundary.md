@@ -23,8 +23,3 @@ Use the CLI subprocess boundary exclusively.
 - The subprocess is constructed with an explicit argv array; no shell interpolation.
 - The token is passed via environment (`CODER_SESSION_TOKEN`), never on the command line.
 - The stdin/stdout pipes carry the raw SSH protocol; stderr is collected for diagnostics only.
-
-## References
-
-- Design §18 "Coder CLI bridge"
-- Design §40 "Licensing boundary"

@@ -1,66 +1,180 @@
 # Operator Guide — coder-ssh-gateway
 
-This guide covers installing, configuring, enrolling users, and operating a
-single-instance coder-ssh-gateway. Paths and flags below reflect the shipped
-CLI; the global flags `--state-dir` and `--config` come **before** the
-subcommand in every invocation.
+How to install, configure, and operate the gateway on a single host
+(native, container, or Kubernetes). Pick the section that matches your
+deployment.
 
-## Installation
+- [Choose a deployment shape](#choose-a-deployment-shape)
+- [Native install (systemd)](#native-install-systemd)
+- [Container (standalone Docker)](#container-standalone-docker)
+- [Kubernetes](#kubernetes)
+- [First boot: init and doctor](#first-boot-init-and-doctor)
+- [Migrating from earlier releases](#migrating-from-earlier-releases)
+- [Self-enrollment (`init@`)](#self-enrollment-init)
+- [Enrolling a user out-of-band](#enrolling-a-user-out-of-band)
+- [Configuration reference](#configuration-reference)
+- [State directory layout](#state-directory-layout)
+- [Backup and restore](#backup-and-restore)
+- [Encryption-key rotation](#encryption-key-rotation)
+- [Host-key rotation](#host-key-rotation)
 
-### Binary (systemd host)
+Global flags (`--state-dir`, `--config`, `--listen-address`,
+`--metrics-address`, `--health-address`) come **before** the subcommand in
+every invocation. The example gateway uses the placeholders
+`gateway.example.com` (gateway hostname), `coder.example.com` (Coder
+deployment).
+Replace each with your real values before use.
 
-1. Build or install the binary and the pinned Coder CLI:
+## Choose a deployment shape
 
-   ```bash
-   go install github.com/taxilian/coder-ssh-gateway/cmd/coder-ssh-gateway@latest
-   install -m 0755 coder-ssh-gateway /usr/local/bin/
-   # Coder CLI, pinned to your deployment's version:
-   # https://coder.com/docs/install/cli (verify the checksum; section 31.2)
-   install -m 0755 coder /usr/local/bin/
-   ```
+| Deployment | External port on the network | Internal SSH port | Pros | Cons |
+| --- | --- | --- | --- | --- |
+| Native systemd host | `2222` (configurable) | `2222` | Single binary, host-managed | You maintain the host |
+| Standalone Docker | `2222` (host publish) | `2222` | Reproducible image, no host deps | You maintain the host |
+| Kubernetes | `22` on a LoadBalancer Service | `2222` in-pod | Public port 22, no host maintenance | Cluster-specific manifests |
 
-2. Create a dedicated user and state directory:
+The port you publish externally is independent of the in-process listener
+port. All three shapes listen on `2222` by default; the difference is how
+that port reaches the network. In Kubernetes, the typical choice is to map
+external 22 to in-pod 2222 so end users connect with plain `ssh host` and
+no port flag.
 
-   ```bash
-   useradd --system --home /var/lib/coder-ssh-gateway \
-     --shell /usr/sbin/nologin coder-ssh-gateway
-   coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway init
-   chown -R coder-ssh-gateway: /var/lib/coder-ssh-gateway
-   ```
+## Native install (systemd)
 
-3. Install the unit from `deploy/systemd/coder-ssh-gateway.service`, then
-   `systemctl enable --now coder-ssh-gateway`. The unit applies the section
-   31.1 hardening set; validate that the Coder CLI can still reach DERP
-   relays and direct UDP paths from inside the sandbox before exposing the
-   service.
+This is the canonical secure native install.
 
-### Container
+### 1. Install the binary
 
-`deploy/Dockerfile` builds a multi-stage, non-root image (distroless; no
-shell, no package manager). The Coder CLI version and sha256 are pinned in
-the Dockerfile, so no build args are required (both remain overridable for
-version bumps — pin BOTH together):
+```bash
+git clone https://github.com/taxilian/coder-ssh-gateway
+cd coder-ssh-gateway
+make
+sudo install -m 0755 ./bin/coder-ssh-gateway /usr/local/bin/
+
+# Coder CLI, pinned to your deployment's version (verify the checksum
+# against the release page):
+# https://coder.com/docs/install/cli
+sudo install -m 0755 coder /usr/local/bin/coder
+
+coder-ssh-gateway version
+coder version
+```
+
+### 2. Create the service user and state directory
+
+The service user owns everything the gateway writes. Pick a non-login
+system user.
+
+```bash
+sudo useradd --system --home /var/lib/coder-ssh-gateway \
+  --shell /usr/sbin/nologin coder-ssh-gateway
+sudo install -d -o coder-ssh-gateway -g coder-ssh-gateway -m 0700 \
+  /var/lib/coder-ssh-gateway
+```
+
+### 3. Initialize the state directory
+
+`init` requires the bare Coder domain and creates the layout, an Ed25519 host
+key, a 32-byte credential encryption key, and a starter `config.yaml` with
+that domain as its HTTPS `deployment.coder_url`. All secrets land under
+`<state-dir>/secrets/` with mode `0600`.
+
+```bash
+sudo -u coder-ssh-gateway \
+  coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway init coder.example.com
+```
+
+### 4. Edit the generated config
+
+Open the generated `config.yaml` with `sudoedit`, which runs the editor
+as you but saves the file in place — preserving the service-user owner
+and mode without a separate `chown`/`chmod`:
+
+```bash
+sudoedit /var/lib/coder-ssh-gateway/config.yaml
+```
+
+The full annotated reference is at [`config.example.yaml`](../config.example.yaml).
+Most keys ship with usable defaults, but `init` leaves the
+`deployment.coder_url`, `deployment.coder_binary`, and `deployment.id`
+fields for you to confirm — review the required `[REQUIRED]` and
+`[DEPLOYMENT]` annotations and adjust any values that do not match your
+environment before starting the service.
+
+### 5. Verify before opening the port
+
+```bash
+sudo -u coder-ssh-gateway \
+  coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway doctor
+```
+
+`doctor` prints PASS/WARN/FAIL per check. Exit code is non-zero only on a
+local FAIL — an unreachable Coder deployment is WARN, not FAIL. Optional
+flags:
+
+- `--account UUID` — also validate that account's stored credential.
+- `--probe-workspace NAME` — run a real `coder ssh --stdio` probe
+  (requires `--account`).
+
+### 6. Install the systemd unit
+
+The unit at `deploy/systemd/coder-ssh-gateway.service` runs the gateway as
+the service user under a hardened sandbox.
+
+```bash
+sudo install -m 0644 \
+  deploy/systemd/coder-ssh-gateway.service \
+  /etc/systemd/system/coder-ssh-gateway.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now coder-ssh-gateway
+```
+
+If the Coder CLI cannot reach workspaces after starting the unit (DERP
+relays, direct UDP paths, proxies), the sandbox is the first thing to
+suspect. Relax the minimum set of options in the unit, then re-verify
+connectivity before exposing the service.
+
+### 7. Hand users the four values
+
+Tell each user:
+
+1. Gateway hostname (`gateway.example.com`)
+2. External SSH port (`2222` by default for native installs)
+3. `/cli-auth` URL (`https://coder.example.com/cli-auth`)
+4. Gateway host-key fingerprint (publish through a trusted channel; users
+   verify on first connect)
+
+## Container (standalone Docker)
+
+The shipped image is multi-stage, distroless, non-root. The Coder CLI
+version and sha256 are baked in; both are overridable via `--build-arg`
+when you bump versions (pin both together).
+
+### 1. Build the image
 
 ```bash
 docker build -f deploy/Dockerfile -t coder-ssh-gateway:dev .
 docker run --rm coder-ssh-gateway:dev version
 ```
 
+### 2. Create a named volume and initialize
+
 One named volume holds everything (records, audit log, `secrets/`). The
-ENTRYPOINT already passes `--state-dir`; the subcommand goes last:
+entrypoint already passes `--state-dir`; the subcommand goes last.
 
 ```bash
 docker volume create csgw-state
 docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
-  coder-ssh-gateway:dev init
-docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
-  coder-ssh-gateway:dev doctor
+  coder-ssh-gateway:dev init coder.example.com
 ```
 
-`init` writes a starter `config.yaml` with `listen.address: ":2222"`, which
-works as-is for container port mapping. The runtime image is distroless —
-there is no shell inside the container, so edit config on the host via
-`docker cp`:
+`init` writes a starter `config.yaml` with `listen.address: ":2222"`,
+which is the right value for container port mapping.
+
+### 3. Edit config.yaml
+
+The image is distroless (no shell inside). Use `docker cp` to copy the
+file out, edit, and copy it back:
 
 ```bash
 c=$(docker create -v csgw-state:/var/lib/coder-ssh-gateway \
@@ -71,231 +185,525 @@ docker cp ./config.yaml "$c:/var/lib/coder-ssh-gateway/config.yaml"
 docker rm "$c"
 ```
 
-Metrics and health default to `127.0.0.1` and are NOT reachable through
-`-p` port mappings. Two ways to expose them — either set
-`observability.metrics_address` / `health_address` to `:9090` / `:9091` in
-config.yaml (per the procedure above), or leave the config untouched and
-pass the environment overrides at run time (see "Environment overrides"
-below; no config edit needed):
+Set at minimum:
+
+```yaml
+deployment:
+  coder_url: https://coder.example.com
+```
+
+### 4. Verify
+
+```bash
+docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
+  coder-ssh-gateway:dev doctor
+```
+
+### 5. Serve (hardened)
+
+This is the only `docker run ... serve` invocation you need. It publishes
+the SSH listener to all host interfaces, keeps metrics and health on host
+loopback only, and applies the standard four hardening flags
+(`--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`,
+`--tmpfs /tmp`):
 
 ```bash
 docker run -d --name coder-ssh-gateway \
-  -p 2222:2222 -p 9090:9090 -p 9091:9091 \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --tmpfs /tmp:rw,size=64m,mode=1777 \
+  -p 2222:2222 \
+  -p 127.0.0.1:9090:9090 \
+  -p 127.0.0.1:9091:9091 \
+  -e CSGW_LISTEN_ADDRESS=0.0.0.0:2222 \
   -e CSGW_METRICS_ADDRESS=0.0.0.0:9090 \
   -e CSGW_HEALTH_ADDRESS=0.0.0.0:9091 \
   -v csgw-state:/var/lib/coder-ssh-gateway \
   coder-ssh-gateway:dev serve
 ```
 
-With enrollment enabled (the default) users self-enroll via
-`ssh init@<gateway>` — the container enrollment below is the out-of-band
-alternative for operators who disable self-enrollment.
+The `CSGW_*` overrides only apply to those three configured bind
+addresses and only at `serve` time; they leave `config.yaml` untouched.
+Precedence for those three values is **CLI flag > env var > config file >
+default**. Environment variables remain the simplest option for containers
+and Kubernetes.
 
-Enroll (account, device key, credential) without exposing the token on
-argv. `--bind-on-first-token` asks for a `yes` confirmation on stdin after
-the token line:
+Named volumes inherit the image's prepared ownership (uid 65532). A host
+bind mount must be `chown 65532:65532` first.
 
-```bash
-docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
-  coder-ssh-gateway:dev admin account add --label "Laptop" --bind-on-first-token
-# add a device key: bind-mount the .pub read-only and pass --file
-docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway \
-  -v "$PWD/enroll:/mnt:ro" \
-  coder-ssh-gateway:dev admin key add --account <UUID> --file /mnt/laptop.pub --label laptop
-# store the Coder session token via stdin (token NEVER in argv):
-{ cat ~/.config/coderv2/session; echo; echo yes; } | \
-  docker run -i --rm -v csgw-state:/var/lib/coder-ssh-gateway \
-  coder-ssh-gateway:dev admin credential set --account <UUID> --stdin
-```
+### 6. Out-of-band enrollment (optional, if you disabled self-enrollment)
 
-Serve and connect:
+The serving container holds an exclusive lock on the state volume. Admin
+containers cannot overlap the running serve container; the second writer
+fails fast. Two safe orderings:
 
-```bash
-docker run -d --name coder-ssh-gateway -p 2222:2222 \
-  -v csgw-state:/var/lib/coder-ssh-gateway \
-  coder-ssh-gateway:dev serve
-```
+- Run the admin commands BEFORE the first `serve` (after `init` /
+  `doctor`), so no serve container holds the volume.
+- OR stop and remove the running serve container, run the admin commands
+  against the same volume, then rerun the hardened serve command above
+  to recreate it:
 
-Client side, note that a ProxyJump host (`-J user@host:port`) spawns a
-separate ssh child that does NOT inherit the parent's `-o` identity or
-known-hosts options — define the jump in a config file instead:
+  ```bash
+  docker stop coder-ssh-gateway && docker rm coder-ssh-gateway
+  # run admin commands ...
+  # rerun the hardened `docker run -d ... serve` from above
+  ```
 
-```
-Host csgw-jump
-  HostName 127.0.0.1
-  Port 2222
-  User coder
-  IdentityFile ~/.ssh/id_ed25519
-  IdentitiesOnly yes
-  StrictHostKeyChecking accept-new
-```
+The full enrollment sequence (account, key, token via stdin) is in
+[Enrolling a user out-of-band](#enrolling-a-user-out-of-band).
+
+### 7. Teardown
 
 ```bash
-ssh -J csgw-jump coder@<workspace>.<target-suffix> 'printf hello'
+docker stop coder-ssh-gateway && docker rm coder-ssh-gateway
 ```
 
-Teardown: `docker stop coder-ssh-gateway && docker rm coder-ssh-gateway`;
-the state volume persists across container replacement and can be removed
-with `docker volume rm csgw-state` when decommissioning.
+The state volume persists across container replacement. Decommission only
+when you no longer need the records:
 
-Named volumes inherit the image's prepared ownership (uid 65532); a host
-bind-mount must be chowned to 65532:65532 first. To keep secrets off the
-data volume, mount them read-only (for example `/run/secrets`) and point
-`ssh.host_keys` / `encryption.keys` at those paths. A read-only mounted
-Coder CLI binary is a supported alternative to baking it into the image.
+```bash
+docker volume rm csgw-state
+```
 
-### Kubernetes
+### Things to know
 
-See `deploy/k8s/` and its `NOTES.md`. Summary: one replica, `Recreate`
-strategy (the store flock makes a second writer fail fast), one RWO PVC at
-`/var/lib/coder-ssh-gateway`, `Service` type `LoadBalancer` mapping 22 to
-2222, probes on `/livez` and `/readyz`, `terminationGracePeriodSeconds: 90`.
+- **One `docker run` per stage.** The serving container is the only
+  long-running one.
+- **Metrics and health default to `127.0.0.1`.** The serve command above
+  exposes them via `CSGW_*` env vars and host loopback ports. If you
+  prefer to set them in `config.yaml` instead, use `0.0.0.0:9090` and
+  `0.0.0.0:9091` and skip the env vars.
+- **External secrets.** To keep secrets off the data volume, mount them
+  read-only (for example `/run/secrets`) and point `ssh.host_keys` and
+  `encryption.keys` in `config.yaml` at those paths. A read-only mounted
+  Coder CLI binary is a supported alternative to baking it into the
+  image.
+
+## Kubernetes
+
+End-to-end sequence from an empty namespace to a running gateway. Image,
+storage class, and addresses must be adapted to your environment.
+
+### What you need in the cluster
+
+- A namespace (e.g. `coder-ssh-gateway`).
+- A StorageClass that supports `ReadWriteOnce` (the store flock makes any
+  second writer fail fast).
+- An ingress path that exposes port 22 (TCP, not HTTP). An ordinary HTTP
+  Ingress does not work for SSH. Use a TCP-capable L4 load balancer.
+
+### 1. Create the namespace and PVC
+
+```bash
+kubectl create namespace coder-ssh-gateway
+kubectl -n coder-ssh-gateway apply -f deploy/k8s/pvc.yaml
+```
+
+`pvc.yaml` requests a 1 GiB `ReadWriteOnce` volume mounted at
+`/var/lib/coder-ssh-gateway`. Adjust `storageClassName` to your cluster.
+
+### 2. Push or load the image
+
+Build and load the image so the kubelet can pull it. For a registry:
+
+```bash
+docker build -f deploy/Dockerfile -t registry.example.com/coder-ssh-gateway:0.1.0 .
+docker push registry.example.com/coder-ssh-gateway:0.1.0
+```
+
+Edit the `image:` field in EACH of these three manifests so it
+matches your registry path — the init Job, the doctor Job, and the
+Deployment all run the same gateway image:
+
+- `deploy/k8s/csgw-init.Job.yaml`
+- `deploy/k8s/csgw-doctor.Job.yaml`
+- `deploy/k8s/deployment.yaml`
+
+The init and doctor Jobs are one-shots that mount the PVC and run as
+UID/GID/fsGroup 10001; using a different image tag than the
+Deployment risks version drift between bootstrap-time and serve-time
+checks.
+
+### 3. Run `init` once against the PVC
+
+The gateway image is distroless but it can run `init` directly. Use a
+**Job** rather than a bare Pod — Jobs give you reliable completion
+semantics (`kubectl wait --for=condition=complete`) and logs you can
+inspect after the fact.
+
+The Job must mount the PVC and run as UID/GID/fsGroup 10001 to match
+`deployment.yaml`, otherwise the artifacts land with the image's
+default non-root user (uid 65532) and `serve` cannot read them later.
+The complete Job is checked in at
+`deploy/k8s/csgw-init.Job.yaml`:
+
+```bash
+kubectl -n coder-ssh-gateway apply -f deploy/k8s/csgw-init.Job.yaml
+kubectl -n coder-ssh-gateway wait --for=condition=complete \
+  --timeout=120s job/csgw-init
+kubectl -n coder-ssh-gateway logs job/csgw-init
+kubectl -n coder-ssh-gateway delete job/csgw-init
+```
+
+`init` writes `config.yaml`, an Ed25519 host key, and a 32-byte
+encryption key to the PVC. There is no running `serve` yet, so the
+exclusive state lock is uncontended.
+
+### 4. Edit the generated `config.yaml`
+
+The gateway image has no shell and no `tar`, so the file is pulled
+out and pushed back via a Pod running an image that has both
+(`alpine:3.20` shown; `busybox` or `debian:bookworm-slim` work too).
+This Pod does not run `init`; it just exposes the PVC mount so
+`kubectl cp` can read and write `/state/config.yaml`:
+
+```bash
+kubectl -n coder-ssh-gateway apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: csgw-edit
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+  containers:
+    - name: edit
+      image: alpine:3.20
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - name: state
+          mountPath: /state
+  volumes:
+    - name: state
+      persistentVolumeClaim:
+        claimName: coder-ssh-gateway
+EOF
+kubectl -n coder-ssh-gateway wait --for=condition=Ready pod/csgw-edit --timeout=60s
+
+# Pull the file out for editing on your workstation
+kubectl -n coder-ssh-gateway cp csgw-edit:/state/config.yaml ./config.yaml
+$EDITOR ./config.yaml       # set at minimum:
+                            #   deployment.coder_url: https://coder.example.com
+
+# Push the edited file back. `kubectl cp` runs in the edit pod's
+# securityContext (uid 10001), so the file comes back owned 10001:10001.
+kubectl -n coder-ssh-gateway cp ./config.yaml csgw-edit:/state/config.yaml
+
+# tar inside `kubectl cp` may rewrite the mode to 0644; force 0600
+# (matches the rest of the secrets under <state-dir>) and verify.
+kubectl -n coder-ssh-gateway exec pod/csgw-edit -- chmod 0600 /state/config.yaml
+kubectl -n coder-ssh-gateway exec pod/csgw-edit -- \
+  stat -c "expected 600 10001:10001; got %a %U:%G" /state/config.yaml
+
+kubectl -n coder-ssh-gateway delete pod csgw-edit
+```
+
+### 5. Run `doctor` once before starting `serve`
+
+`doctor` is a non-serving command: it does NOT bind listeners and
+exits as soon as it finishes. Run it as a **Job** so you can wait for
+completion deterministically. The Job must mount the PVC and run as
+UID/GID/fsGroup 10001 — `doctor` reads the same files `serve` reads,
+so it must have the same access. The complete Job is checked in at
+`deploy/k8s/csgw-doctor.Job.yaml`:
+
+```bash
+kubectl -n coder-ssh-gateway apply -f deploy/k8s/csgw-doctor.Job.yaml
+kubectl -n coder-ssh-gateway wait --for=condition=complete \
+  --timeout=120s job/csgw-doctor
+kubectl -n coder-ssh-gateway logs job/csgw-doctor
+kubectl -n coder-ssh-gateway delete job/csgw-doctor
+```
+
+If doctor WARNs on an unreachable Coder deployment, fix the egress
+policy before exposing the gateway. If doctor FAILs, fix the listed
+check before continuing.
+
+### 6. Apply the Deployment and Service
+
+```bash
+kubectl -n coder-ssh-gateway apply -f deploy/k8s/deployment.yaml
+kubectl -n coder-ssh-gateway apply -f deploy/k8s/service.yaml
+```
+
+`deployment.yaml` runs one replica with `Recreate` strategy (required —
+two pods cannot share the PVC), a 90-second termination grace period,
+non-root execution at UID 10001 with the matching fsGroup, a read-only
+root filesystem, all capabilities dropped, an emptyDir `/tmp` for
+scratch, and `CSGW_*` env vars so the kubelet can reach `/livez` and
+`/readyz` on the in-pod bind.
+
+`service.yaml` is a `LoadBalancer` Service mapping external port 22 to
+in-pod 2222. Metrics and health stay cluster-internal; expose them via a
+separate `ClusterIP` service only if your monitoring runs outside the
+cluster.
+
+### 7. Verify
+
+```bash
+kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
+kubectl -n coder-ssh-gateway get svc coder-ssh-gateway
+# Confirm the LB IP or hostname is reachable on port 22.
+```
+
+### Re-running `doctor` after deploy
+
+`serve` holds the exclusive state lock for its process lifetime, so
+you cannot run `doctor` while the Deployment is up. Scale to zero,
+wait for the serving pod to disappear, run the same `csgw-doctor` Job
+manifest from step 5, then restore the replica count and wait for
+rollout:
+
+```bash
+kubectl -n coder-ssh-gateway scale deploy/coder-ssh-gateway --replicas=0
+kubectl -n coder-ssh-gateway wait --for=delete pod \
+  -l app=coder-ssh-gateway --timeout=120s
+# Apply the same csgw-doctor Job from step 5 — the checked-in
+# manifest at deploy/k8s/csgw-doctor.Job.yaml. The Job mounts the
+# PVC and runs as UID/GID/fsGroup 10001, matching the deployment's
+# UID so it can read the state directory.
+kubectl -n coder-ssh-gateway apply -f deploy/k8s/csgw-doctor.Job.yaml
+kubectl -n coder-ssh-gateway wait --for=condition=complete \
+  --timeout=120s job/csgw-doctor
+kubectl -n coder-ssh-gateway logs job/csgw-doctor
+kubectl -n coder-ssh-gateway delete job/csgw-doctor
+kubectl -n coder-ssh-gateway scale deploy/coder-ssh-gateway --replicas=1
+kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
+```
+
+The `csgw-doctor` Job is checked in at
+`deploy/k8s/csgw-doctor.Job.yaml` and is the exact same manifest
+applied in step 5 — re-apply it with `kubectl apply` rather than
+retyping the YAML.
+
+A scale-to-zero preserves the Deployment definition (replica count,
+selector, env vars, probes) — restoring `--replicas=1` brings the
+gateway back without re-applying Deployment YAML.
+
+### Why one replica, why `Recreate`
+
+The store takes an exclusive lock on `<state-dir>/lock` for the process
+lifetime. A second pod mounting the same PVC fails fast at startup.
+Scaling this Deployment is unsafe; there is no midstream failover. Active
+tunnels die with the pod and clients reconnect.
+
+### Config and bootstrap alternatives
+
+- Maintain `config.yaml` as a ConfigMap mounted read-only over
+  `/var/lib/coder-ssh-gateway/config.yaml`, and pass `--config
+  /path/to/config.yaml` before `serve` in the container args. Edit the
+  ConfigMap directly to change settings; restart the Deployment to
+  re-read.
+- If your policy requires Kubernetes Secrets for the host key or
+  encryption key, create two Secrets, mount them read-only (e.g.
+  `/run/secrets/host-key`, `/run/secrets/encryption-key`, `defaultMode
+  0400`), and point `ssh.host_keys` / `encryption.keys` in `config.yaml`
+  at those paths. The PVC then holds only non-secret records and audit
+  logs.
+
+### Egress network policy
+
+Egress must permit more than the Coder API hostname, or workspace
+connections degrade to relay-only or break:
+
+- Coder access URL (HTTPS)
+- Configured workspace proxies
+- Configured DERP servers
+- DNS
+- NTP
+- Direct peer UDP paths when Coder uses direct tailnet connectivity
+
+Ingress: only the SSH listener (port 22 on the Service, mapping to 2222
+in-pod) needs to admit traffic, and only from the load balancer.
+
+### PROXY protocol
+
+If your load balancer speaks PROXY v1, set `listen.proxy_protocol: true`
+in `config.yaml` and restrict the Service to the balancer's source
+ranges. The gateway never auto-detects PROXY headers; with the option
+off, PROXY bytes are ignored and the socket peer is used.
 
 ## First boot: init and doctor
 
-```bash
-coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway init
-coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway doctor
-```
+`init` is idempotent. `--force` asks for an explicit `overwrite`
+confirmation per artifact (host key, encryption key, starter config).
+Back up `secrets/` immediately — losing the active key orphans every
+stored token.
 
-`init` creates the store layout, an Ed25519 host key, a 32-byte credential
-encryption key (both mode 0600 under `secrets/`), and a starter
-`config.yaml`. It is idempotent; `--force` still asks for an explicit
-`overwrite` confirmation per artifact. Back up `secrets/` immediately
-(section 22.4).
+`doctor` checks: config parse, state dir (VERSION + flock), encryption
+key (seal/open self-test), host key (fingerprints), Coder TLS dial, Coder
+`/api/v2/buildinfo`, Coder CLI binary (version parse and CLI/server
+match), writable directories, process limits. An
+unreachable Coder deployment is WARN, not FAIL — it will not block a
+rollout but you should still fix it before opening the port.
 
-`doctor` prints PASS/WARN/FAIL per check and exits 1 only on a local FAIL.
-An unreachable Coder deployment is WARN, not FAIL. Checks: config parse,
-state dir (VERSION + flock), encryption key (seal/open self-test), host key
-(fingerprints), Coder TLS dial, Coder `/api/v2/buildinfo`, Coder CLI binary
-(version parse and CLI/server match), target suffix, writable dirs, process
-limits. Optional: `--account UUID` also validates that account's stored
-credential; `--probe-workspace NAME` runs a real `coder ssh --stdio` probe.
+## Migrating from earlier releases
 
-## Self-enrollment (init@)
+Two surface changes affect operators upgrading from a pre-`target_suffix`
+release. Apply both before restarting `serve` — unknown config keys are
+rejected at startup, so a leftover `deployment.target_suffix` will fail
+the boot:
 
-With `enrollment.enabled: true` (the default), users onboard themselves:
-`ssh init@<gateway>` from any device prompts for a Coder token, links that
-device's SSH key to the caller's Coder account, stores the token, and
-closes the connection. The next connection uses the normal transport path
-(`coder@…`). The "Enrolling a user" section below remains available as the
-out-of-band alternative.
+- Remove `deployment.target_suffix` from `config.yaml`. The gateway no
+  longer rewrites the outer username (`<target>.<suffix>`) into Coder
+  CLI argv; the inner username is always the configured transport user.
+- Stop appending a gateway suffix to workspace targets. The Coder CLI's
+  `--hostname-suffix` flag is no longer used; workspace hostnames are
+  exactly what users pass (`dev`, `dev.main`, or `main.dev.alice` —
+  one, two, or three labels in the form `workspace`, `workspace.agent`,
+  or `agent.workspace.owner`).
 
-### How it works
+## Self-enrollment (`init@`)
 
-1. The client connects to the enrollment username (`init` by default) and
-   proves possession of its private key. Proof of key possession always
-   comes first — the gateway never prompts for a token before the key is
-   verified.
-2. Only then does it show the enrollment banner with the deployment's
-   `/cli-auth` URL and prompt `Coder token: ` (keyboard-interactive, with a
-   password-method parity path for clients that do not render
-   keyboard-interactive prompts).
-3. The submitted token is validated against Coder `/api/v2/users/me`. The
-   returned Coder user UUID anchors the account: an existing account bound
-   to that UUID is reused (and the new key added to it), otherwise a new
-   account is created for that UUID. The token is stored (generation CAS,
-   same as renewal) and the key is registered with the label
-   `enrolled <timestamp> via init@`.
-4. Success banner, one reconnect allowance, connection closed. The client
-   must reconnect — the enrolled credential is live for the next transport
-   connection immediately.
+With `enrollment.enabled: true` (the default), users onboard
+themselves from any device. The exact SSH command they run depends on
+their local `~/.ssh/config` — they must use the configured
+`coder-gateway-init` host alias (defined in the
+[Client Setup](./client-setup.md#initial-enrollment-the-one-time-step)
+guide) so OpenSSH selects the correct key, permits follow-up auth
+methods, and pins the gateway port. A bare `ssh -p 2222 init@<gateway>`
+does not satisfy any of those on a typical OpenSSH install.
 
-Idempotency: re-enrolling the same key with a token for the same Coder user
-is a no-op success (the existing key record is recovered). A key already
-linked to a *different* account is a hard rejection (`key_already_linked`
-audit event, explanatory banner, no mutation) — this check runs before any
-account creation, so a wrong-identity token cannot create an account.
+The gateway's behavior once the user connects to `init@`:
 
-### Security model
+1. Verifies the device's public-key proof of possession.
+2. Prompts for a Coder session token (input is hidden).
+3. Validates the token against Coder's `/api/v2/users/me`. **The Coder
+   identity that owns the token anchors the gateway account** — the
+   account is created or reused for that Coder user UUID, and the
+   presented key is added to it.
+4. Stores the token, prints "Enrolled.", and closes the connection by
+   design. Reconnect with the normal `coder@…` workspace entry.
 
-- **Token possession is enrollment authority.** Whoever presents a valid
-  Coder token enrolls the presented key for that token's Coder user. The
-  blast radius of a stolen token used this way is the same as the token
-  itself: the attacker could already impersonate that user against Coder
-  directly. See SECURITY.md.
-- **Proof-before-prompt.** Key possession is verified before any token
-  prompt, so unauthenticated scanners never reach the token path.
-- **Rate limits.** Per-IP pre-token gate (the pre-auth unknown-key bucket)
-  plus per-connection and per-account attempt bounds shared with the
-  renewal flow. Refusals are audited.
-- **Key-conflict policy.** Cross-account key reuse is rejected outright,
-  never re-linked.
-- **Audit + metrics.** Every outcome is an audit event
-  (`enrollment_success` / `enrollment_rejected` with detail codes) and a
-  `coder_ssh_gateway_enrollments_total{result}` counter increment
-  (`success|rejected|key_conflict|rate_limited`). Alert on rejections.
-- **No existence oracle.** With enrollment disabled — or for a client that
-  fails key verification — the `init` username rejects byte-identically to
-  any unknown username.
+Idempotency: re-enrolling the same key with a token for the same Coder
+user is a no-op success. A key already linked to a *different* account
+is a hard rejection — nothing is mutated. The same wrong-identity
+rejection applies on later renewals (the maintenance session): a
+bound account will refuse a token for any Coder user other than the one
+the account is bound to. On a *fresh* enrollment key (no prior
+binding), the first valid token wins and binds that key — there is no
+"wrong identity" for a fresh key, because identity is exactly what the
+fresh key is asking to acquire.
 
-### Disabling self-enrollment
+To disable self-enrollment for closed memberships:
 
 ```yaml
 enrollment:
   enabled: false
 ```
 
-Disable it for closed memberships — deployments where the set of users is
-fixed and provisioned out-of-band, where any holder of a valid Coder token
-must NOT be able to attach a new key to their gateway account, or where
-policy requires an administrator to approve every device key. With it off,
-the `init` username behaves exactly like an unknown username and the
-admin-driven flow below is the only enrollment path.
+With it off, the `init` username behaves exactly like an unknown
+username and the out-of-band flow below is the only enrollment path.
 
-Note: this flow deliberately reverses design section 10.5 ("an unknown SSH
-key must never be allowed to create an account simply by supplying a valid
-Coder token"). That reversal is a product decision: token-anchored
-self-enrollment is the primary onboarding path, secured by the controls
-above rather than by prohibiting key-first account creation.
+Security model: see [SECURITY.md](../SECURITY.md) for the threat model,
+what the gateway protects, and what it cannot.
 
-## Enrolling a user (out-of-band)
+## Enrolling a user out-of-band
 
-Enrollment is offline administration against the state dir; the gateway
-does not have to be running, but it must NOT be running (the flock is
-exclusive).
+Use this when self-enrollment is disabled, or when you need to provision
+a user before handing them a token. The gateway does not need to be
+running, but it must NOT be running — the store lock is exclusive. On a
+systemd host, stop the gateway first, run every mutation as the service
+user so on-disk records land owned correctly with the expected `0600` /
+`0700` modes, and restart the gateway afterward.
 
-1. **Account.** Either bind to a known Coder user UUID or defer binding to
-   the first valid token:
+Tokens never travel through argv or environment variables. They cross
+stdin into the service-user process via `--stdin` (or a hidden TTY
+prompt). Only the SSH public key file needs to be staged for the
+service user, because `admin key add --file` opens the path as the
+service user.
 
-   ```bash
-   coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
-     admin account add --label "Ada" --bind-on-first-token
-   # or: admin account add --label "Ada" --coder-user-id <uuid>
-   ```
+### 1. Stop the gateway
 
-2. **Key.** Register the user's SSH public key (authorized_keys format):
+```bash
+sudo systemctl stop coder-ssh-gateway
+```
 
-   ```bash
-   coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
-     admin key add --account <account-uuid> --file ./ada.pub --label "ada-laptop"
-   ```
+### 2. Stage the public key
 
-3. **Credential.** Store the user's Coder session token. Tokens never
-   travel on argv: use `--stdin` or the hidden TTY prompt (section 29).
+```bash
+sudo install -d -o coder-ssh-gateway -g coder-ssh-gateway -m 0750 \
+  /etc/coder-ssh-gateway.d
+sudo install -o coder-ssh-gateway -g coder-ssh-gateway -m 0640 \
+  ./ada.pub /etc/coder-ssh-gateway.d/ada.pub
+```
 
-   ```bash
-   coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
-     admin credential set --account <account-uuid> --stdin < token.txt
-   ```
+### 3. Create the account
 
-   The token is validated against Coder before storage. With
-   `--bind-on-first-token`, this first valid token binds the account's
-   Coder user UUID.
+Either bind to a known Coder user UUID, or defer binding to the first
+valid token.
 
-4. **Verify.**
+```bash
+sudo -u coder-ssh-gateway \
+  coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
+    admin account add --label "Ada" --bind-on-first-token
+# or: admin account add --label "Ada" --coder-user-id <uuid>
+```
 
-   ```bash
-   coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
-     doctor --account <account-uuid>
-   ```
+### 4. Register the SSH public key
 
-Other admin operations: `admin account list`, `admin account
-disable|enable --account UUID`, `admin key list --account UUID`,
-`admin key disable|enable --key UUID`, `admin credential status --account
-UUID` (state + generation), `admin credential clear --account UUID`
-(tombstones the credential; it does NOT revoke the token in Coder),
-`admin disconnect --account UUID` (terminates the account's active tunnels).
+```bash
+sudo -u coder-ssh-gateway \
+  coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
+    admin key add --account <account-uuid> \
+    --file /etc/coder-ssh-gateway.d/ada.pub --label "ada-laptop"
+```
+
+### 5. Store the Coder session token via stdin
+
+The token is read by your operator shell and only the resulting bytes
+cross stdin into the service-user process. The token never appears on
+the service user's filesystem, on argv, in an environment variable, or
+in a displayed command substitution. The pipeline below emits exactly
+two logical lines on stdin (the token, then `yes`) regardless of whether
+the source file ends in a trailing newline:
+
+```bash
+{ awk 'NR == 1 { sub(/[[:space:]]+$/, ""); print; exit }' ./token.txt; printf '%s\n' yes; } | \
+  sudo -u coder-ssh-gateway \
+    coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
+      admin credential set --account <account-uuid> --stdin
+```
+
+The `yes` confirmation is only required with `--bind-on-first-token`
+(the deferred-binding path); with `--coder-user-id <uuid>` the account
+is bound immediately and `credential set` only needs the token on
+stdin:
+
+```bash
+{ awk 'NR == 1 { sub(/[[:space:]]+$/, ""); print; exit }' ./token.txt; } | \
+  sudo -u coder-ssh-gateway \
+    coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
+      admin credential set --account <account-uuid> --stdin
+```
+
+### 6. Verify and restart
+
+```bash
+sudo -u coder-ssh-gateway \
+  coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
+    doctor --account <account-uuid>
+sudo systemctl start coder-ssh-gateway
+```
+
+### Other admin operations
+
+- `admin account list`
+- `admin account disable --account UUID` / `admin account enable --account UUID`
+- `admin key list --account UUID`
+- `admin key disable --key UUID` / `admin key enable --key UUID`
+- `admin credential status --account UUID` (state + generation)
+- `admin credential clear --account UUID` (tombstones the credential —
+  does NOT revoke the token in Coder)
+- `admin disconnect --account UUID` — disables the account so new SSH
+  authentication is blocked immediately. Does **not** terminate
+  established tunnels and does **not** release their admission
+  semaphore slots; those release only when the client disconnects or
+  the spawned `coder` process exits.
 
 ## Configuration reference
 
@@ -303,37 +711,82 @@ Config file: `<state-dir>/config.yaml` by default; override with `--config`.
 Relative paths in the file resolve against the config file's directory.
 Unknown keys are rejected. Durations are strings like `30s`, `5m`.
 
-### Environment overrides
+The full annotated key reference lives at
+[`config.example.yaml`](../config.example.yaml). Use it as the starting
+point for review and customization; `init` is the recommended way to
+generate secrets and the state layout.
 
-Three bind addresses can be overridden by environment variables, applied by
-`serve` after config parse and before validation. Precedence is uniform:
-**CLI flag > env var > config file > default**. An unset or empty variable
-is ignored; an invalid value (not `host:port`, non-numeric or out-of-range
-port) fails startup naming the variable, leaving the config unmutated.
-Wildcard binds (`0.0.0.0`, `[::]`, empty host) are accepted — that is the
-container use case. Applied overrides are logged at startup.
+### Path resolution: where do relative paths start?
 
-| Variable | Overrides | Typical container value |
-| --- | --- | --- |
-| `CSGW_LISTEN_ADDRESS` | `listen.address` | `0.0.0.0:2222` |
-| `CSGW_METRICS_ADDRESS` | `observability.metrics_address` | `0.0.0.0:9090` |
-| `CSGW_HEALTH_ADDRESS` | `observability.health_address` | `0.0.0.0:9091` |
+The exact rule: **every explicit relative path in `config.yaml`
+resolves against the directory containing `config.yaml`**, not
+against `--state-dir`. `--state-dir` supplies only the store
+directory (records, lock, audit); it does NOT choose where
+`secrets/` lives — the secrets/ layout is determined by the
+relative `ssh.host_keys` / `encryption.keys` paths. `--state-dir`
+fills in those path fields only when they are UNSET; explicit
+non-empty configured paths are NEVER rebased.
 
-Kubernetes example (see `deploy/k8s/deployment.yaml`): the health/metrics
-Service ports and probes need a non-loopback bind, so set the env vars
-instead of editing config.yaml:
+Concretely:
 
-```yaml
-env:
-  - name: CSGW_LISTEN_ADDRESS
-    value: "0.0.0.0:2222"
-  - name: CSGW_METRICS_ADDRESS
-    value: "0.0.0.0:9090"
-  - name: CSGW_HEALTH_ADDRESS
-    value: "0.0.0.0:9091"
+- **Generated config omits `state.dir`.** `init` writes the starter
+  config WITHOUT a `state.dir` key. The state dir is then determined
+  by, in order: `--state-dir` CLI flag → `state.dir` YAML value →
+  the directory containing `config.yaml` (parser fallback to the
+  config's parent). When `init` lays down the config inside the
+  state directory it just created, that fallback is exactly the
+  state dir, and the relative paths below resolve correctly.
+- **Generated relative paths are config-file-relative.** `secrets/...`,
+  `coder-config`, and `run` paths written by `init` resolve against
+  the directory containing `config.yaml`. They do NOT depend on
+  `--state-dir` or on your current shell.
+- **`--state-dir` does not rebase configured paths.** If the config
+  sits outside the state directory and `ssh.host_keys` /
+  `encryption.keys` / `deployment.coder_global_config` /
+  `deployment.working_directory` are explicit non-empty relative
+  paths, those paths resolve against the config's parent regardless
+  of `--state-dir`. The fix is one of: move the config file INSIDE
+  the state directory; rewrite those four fields relative to the
+  config's parent; or rewrite them as absolute paths. Setting
+  `state.dir` to a different absolute path, or pairing
+  `--state-dir` with `--config`, does NOT make those relative
+  entries point at the state directory.
+- **`init` writes no absolute state-owned paths.** Every path `init`
+  emits is config-file-relative: `secrets/ssh_host_ed25519_key`,
+  `secrets/credential-key-v1`, `coder-config`, `run`. There is no
+  step in `init` that fills in absolute paths; if you see absolute
+  paths in a YAML you wrote or edited yourself, those are
+  operator-authored and need rebasing on a path change.
+
+### Bind-address overrides
+
+Three bind addresses can be overridden at `serve` time, after config
+parse and before validation. Precedence for these three values is **CLI
+flag > env var > config file > default**. An unset or empty environment
+variable is ignored. Wildcard binds (`0.0.0.0`, `[::]`, empty host) are
+accepted — that is the container use case. Applied CLI overrides are logged
+at startup with their field, source, and non-secret address value.
+
+| Global CLI flag | Environment variable | Overrides | Typical container value |
+| --- | --- | --- | --- |
+| `--listen-address` | `CSGW_LISTEN_ADDRESS` | `listen.address` | `0.0.0.0:2222` |
+| `--metrics-address` | `CSGW_METRICS_ADDRESS` | `observability.metrics_address` | `0.0.0.0:9090` |
+| `--health-address` | `CSGW_HEALTH_ADDRESS` | `observability.health_address` | `0.0.0.0:9091` |
+
+Global flags must precede the subcommand. For example:
+
+```bash
+coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway \
+  --listen-address 0.0.0.0:2222 \
+  --metrics-address 0.0.0.0:9090 \
+  --health-address 0.0.0.0:9091 serve
 ```
 
-`doctor` never binds listeners, so the overrides only affect `serve`.
+`doctor` never binds listeners, so address overrides only affect `serve`.
+Use `--state-dir` to override the state directory; that flag always
+wins over both `state.dir` in YAML and any default.
+
+### Field reference
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -341,24 +794,23 @@ env:
 | `listen.address` | `:22` | Outer SSH listen address (`:2222` in containers/dev). |
 | `listen.handshake_timeout` | `30s` | Max time for the SSH handshake to complete. |
 | `listen.renewal_auth_timeout` | `5m` | Handshake deadline extension while a credential renewal prompt is open. |
-| `listen.tcp_keepalive` | `30s` | TCP keepalive on accepted connections (0 = OS defaults). |
+| `listen.tcp_keepalive` | `30s` | TCP keepalive on accepted connections. Must be positive; 0 is rejected at startup. |
 | `listen.proxy_protocol` | `false` | Accept PROXY v1 headers. Enable only behind a trusted balancer; never auto-detected. |
 | `ssh.transport_user` | `coder` | SSH username for workspace transport connections. |
 | `ssh.maintenance_user` | `auth` | SSH username for the credential-maintenance session. |
 | `ssh.server_version` | `SSH-2.0-CoderSSHGW_0.1` | SSH protocol version banner. |
-| `ssh.host_keys` | `<state-dir>/secrets/ssh_host_ed25519_key` | Host private key paths. Multiple keys supported for rotation. Startup fails if none load. |
-| `ssh.allow_ssh_certificates` | `false` | Accept SSH user certificates (section 10.3). |
+| `ssh.host_keys` | `secrets/ssh_host_ed25519_key` (config-file-relative) | Host private key paths. Multiple keys supported for rotation. Startup fails if none load. |
+| `ssh.allow_ssh_certificates` | `false` | Reserved for schema compatibility; `true` is rejected at startup. |
 | `state.dir` | (none) | State directory; `--state-dir` flag wins over this. |
 | `state.audit_retention_days` | `90` | Days to retain `audit/audit-YYYY-MM-DD.jsonl` files. |
 | `encryption.provider` | `file` | Key provider. Only `file` is implemented. |
 | `encryption.active_key_id` | `v1` | Key ID used for new writes. |
-| `encryption.keys` | `v1: <state-dir>/secrets/credential-key-v1` | Map of key ID to key file (raw 32 bytes or base64). Old IDs stay decryptable while listed. |
-| `deployment.id` | `primary` | Deployment label. One deployment per gateway (MVP). |
+| `encryption.keys` | `v1: secrets/credential-key-v1` (config-file-relative) | Map of key ID to key file (raw 32 bytes or base64). Old IDs stay decryptable while listed. |
+| `deployment.id` | `primary` | Deployment label. One deployment per gateway. |
 | `deployment.coder_url` | (none) | Coder access URL. HTTPS only; HTTP is always rejected. |
-| `deployment.target_suffix` | (none) | DNS suffix for workspace targets, e.g. `coder-gateway.example.com`. Lowercase labels, at least two labels. |
 | `deployment.coder_binary` | `/usr/local/bin/coder` | Path to the pinned Coder CLI. |
-| `deployment.coder_global_config` | `/var/lib/coder-ssh-gateway/coder-config` | Isolated Coder CLI global config dir (section 18.4). |
-| `deployment.working_directory` | `/var/empty/coder-ssh-gateway` | Working directory for spawned CLI processes. |
+| `deployment.coder_global_config` | `coder-config` (config-file-relative) | Isolated Coder CLI global config dir. |
+| `deployment.working_directory` | `run` (config-file-relative) | Working directory for spawned CLI processes. |
 | `deployment.autostart` | `true` | Allow `coder ssh` to autostart stopped workspaces. |
 | `deployment.wait` | `auto` | `coder ssh --wait` mode: `yes`, `no`, or `auto`. |
 | `deployment.workspace_connect_timeout` | `5m` | Bound on workspace connect/autostart waits. |
@@ -387,7 +839,7 @@ env:
 | `maintenance.session_timeout` | `5m` | Whole-session bound for maintenance. |
 | `maintenance.input_timeout` | `2m` | Negotiation and per-keystroke bound. |
 | `maintenance.bind_on_first_token_requires_admin_flag` | `true` | First-token binding only for accounts created with `--bind-on-first-token`. |
-| `enrollment.enabled` | `true` | Enable the init@ token-anchored self-enrollment flow (see "Self-enrollment"). |
+| `enrollment.enabled` | `true` | Enable the init@ token-anchored self-enrollment flow. |
 | `enrollment.user` | `init` | SSH username that triggers enrollment; must differ from transport and maintenance users. |
 | `enrollment.max_attempts` | `3` | Token submissions allowed per enrollment connection. |
 | `enrollment.timeout` | `5m` | Handshake deadline extension while an enrollment token prompt is open. |
@@ -417,64 +869,163 @@ Everything lives under one directory:
   run/                             # working dir for spawned CLI (init starter)
 ```
 
-All store mutations are write-temp, fsync, rename, fsync(dir). Record files
-are 0600, directories 0700. The flock is held for the process lifetime, so
-exactly one gateway process may use a state dir; admin commands and `serve`
-cannot overlap on the same dir.
+All store mutations are write-temp, fsync, rename, fsync(dir). Record
+files are 0600, directories 0700. The flock is held for the process
+lifetime, so exactly one gateway process may use a state dir; admin
+commands and `serve` cannot overlap on the same dir.
 
 ## Backup and restore
 
-Back up the **whole state dir** (config, records, audit) and the
-`secrets/` subdirectory **separately, to separately restricted storage**
-(section 22.4):
+Back up the state dir and the `secrets/` subdirectory **separately, to
+separately restricted storage**:
 
 - State dir without the encryption key cannot recover tokens.
 - The encryption key without the state dir identifies nothing.
 - Together they recover everything, so never store both in one backup
   bucket.
 
+Two archives produced by separate `tar` invocations on disjoint paths so
+a single bucket never holds both halves:
+
 ```bash
-systemctl stop coder-ssh-gateway            # release the flock first
-cp -a /var/lib/coder-ssh-gateway /backup/csgw-state-$(date +%F)
-# copy secrets/ to your secure secret store separately
-systemctl start coder-ssh-gateway
+sudo systemctl stop coder-ssh-gateway            # release the flock first
+# Ordinary state: EXCLUDE secrets/ so this archive is safe to drop in
+# standard storage without exposing the encryption key.
+sudo tar --exclude='./secrets' -C /var/lib/coder-ssh-gateway \
+  -czf /backup/csgw-state-$(date +%F).tgz .
+# Secrets: write to a separately restricted location (different bucket,
+# different ACL, ideally different machine). NEVER in the same directory
+# tree as the state archive.
+sudo tar -C /var/lib/coder-ssh-gateway/secrets \
+  -czf /secure-store/csgw-secrets-$(date +%F).tgz .
+sudo systemctl start coder-ssh-gateway
 ```
 
-Restore is the reverse: stop, `cp -a` the tree back (preserve modes and
-ownership), restore secrets, start. Restoring to the SAME path works as-is
-and the copied dir boots unchanged. Restoring to a DIFFERENT path requires
-rebasing the absolute paths in `config.yaml` (`state.dir`, `ssh.host_keys`,
-`encryption.keys`, `deployment.coder_global_config`,
-`deployment.working_directory`): `init` writes absolute paths into the
-starter config, and explicit config values always win over `--state-dir`
-conventions.
+### Restore
+
+Restore is the reverse: stop the service, move the existing state tree
+aside to a timestamped quarantine path (so a failed restore can be
+recovered), create a clean `0700` target directory and a clean
+`$STATE/secrets` subdirectory owned by the service user, extract the
+ordinary state archive and the secrets archive separately as root with
+`--no-same-owner`, chown the extracted tree to the service user,
+normalize the canonical modes, and start the service.
+
+The two archives MUST come from the same backup point; mismatched dates
+will produce a tree where the encryption key belongs to a different
+state version than the encrypted credentials.
+
+```bash
+set -euo pipefail
+sudo systemctl stop coder-ssh-gateway            # release the flock first
+STATE=/var/lib/coder-ssh-gateway
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+# Move the current tree aside so an overlay restore can never leave a
+# mixed snapshot behind. Keep the quarantine until the restored gateway
+# boots and `doctor` passes.
+if [ -d "$STATE" ]; then
+  sudo mv "$STATE" "${STATE}.quarantine.${TS}"
+fi
+sudo install -d -o coder-ssh-gateway -g coder-ssh-gateway -m 0700 "$STATE"
+sudo install -d -o coder-ssh-gateway -g coder-ssh-gateway -m 0700 "$STATE/secrets"
+sudo tar -C "$STATE" --no-same-owner --preserve-permissions \
+  -xzf /backup/csgw-state-<date>.tgz
+sudo tar -C "$STATE/secrets" --no-same-owner --preserve-permissions \
+  -xzf /secure-store/csgw-secrets-<date>.tgz
+sudo chown -R coder-ssh-gateway:coder-ssh-gateway "$STATE"
+sudo find "$STATE" -type d -exec chmod 0700 {} +
+sudo find "$STATE" -type f -exec chmod 0600 {} +
+sudo systemctl start coder-ssh-gateway
+# After a successful first boot and `doctor` run, the quarantined tree
+# can be deleted: sudo rm -rf "${STATE}.quarantine.${TS}".
+```
+
+After restore, run `doctor --account <uuid>` for one known account to
+confirm the recovered credentials decrypt with the recovered key.
+
+### Rebasing after a restore to a different path
+
+`init` writes no absolute state-owned paths. Every path the starter
+config contains is config-file-relative (`secrets/...`, `coder-config`,
+`run`), so a config restored INSIDE its target state directory
+re-resolves correctly with no edits — `state.dir` (if you set one)
+becomes the only path you need to update.
+
+If you restore to a different absolute path (different host, same path
+no longer applies), edit the explicit operator-authored absolute
+fields. `init` did not write these — they are values you added to
+the YAML after `init` finished:
+
+- `state.dir` (only if you set it explicitly)
+- `ssh.host_keys` (only if you changed any entry to an absolute path)
+- `encryption.keys` (only if you changed any entry to an absolute path)
+- `deployment.coder_global_config` (only if you changed it from the
+  shipped config-file-relative default)
+- `deployment.working_directory` (only if you changed it from the
+  shipped config-file-relative default)
+
+Move each to its new absolute location; the relative default paths
+keep working as long as the config file lives under the state
+directory.
+
+### Container and Kubernetes
+
+The same split-archive principle holds, with paths adjusted:
+
+- **Standalone Docker:** the named volume is the state dir. Stop the
+  serve container, run a one-shot helper image (`busybox`, `alpine`,
+  `debian:bookworm-slim`) with the volume mounted, and `tar` the two
+  halves out to separate destinations. Restore the other way: stop the
+  serve container, run a one-shot helper with the volume mounted,
+  extract the two archives to the right paths inside the volume, then
+  start the serve container. The distroless gateway image itself has
+  no shell or `tar`, so it cannot serve as the helper.
+- **Kubernetes:** PVC snapshot or `kubectl cp` for ordinary state. The
+  distroless gateway image has no `tar`, so the extraction side of a
+  restore needs a sidecar pod (for example the same busybox or alpine
+  image) running with the PVC mounted read-write. Back up the two
+  archives separately (for example a Velero schedule on the PVC plus
+  an out-of-band copy of the encryption key Secret if you used a split
+  mount).
 
 ## Encryption-key rotation
 
-Multiple key versions are supported: every entry under `encryption.keys`
-stays available for decryption; `encryption.active_key_id` selects the key
-for new writes (section 22.3).
+Multiple key versions are supported: every entry under
+`encryption.keys` stays available for decryption while it remains
+listed; `encryption.active_key_id` selects the key for new writes.
+Until you remove the old key ID (or the key file), existing records
+encrypted with the old key continue to decrypt. Removing the key file
+is what breaks old records, not adding a new one.
 
-1. Generate a new key and place it at `<state-dir>/secrets/credential-key-v2`
-   (mode 0600).
-2. Add `v2: <state-dir>/secrets/credential-key-v2` under `encryption.keys`
-   and set `active_key_id: v2`.
-3. Restart the gateway. New credential writes now use v2.
-4. **Re-encrypt existing records:** the store implements transactional
-   re-encryption (`ReencryptAll`), but the current CLI has no admin command
-   wired to it. This is a known gap. Until an `admin credential reencrypt`
-   command ships, step 4 requires a maintenance build calling
-   `store.ReencryptAll`, or waiting for each credential to be replaced
-   naturally (renewals and `admin credential set` re-seal with the active
-   key).
-5. Verify no records reference the old `key_version` (inspect
-   `credentials/*.json` — ciphertext records carry a `key_version` field).
-6. Retire the old key file only after your backup retention permits:
-   backups taken before rotation still need it.
+1. Generate a new 32-byte key and place it at
+   `<state-dir>/secrets/credential-key-v2` (mode 0600, owned by the
+   service user).
+2. Add `v2: <state-dir>/secrets/credential-key-v2` under
+   `encryption.keys` alongside `v1`, and set `active_key_id: v2`.
+3. Restart the gateway. New credential writes (renewals, `admin
+   credential set`) now use v2 automatically.
+4. Old records stay readable as long as `v1` stays under
+   `encryption.keys`. The shipping CLI does not currently provide a
+   built-in command to re-encrypt existing records in place; old
+   records will progressively migrate as users renew their tokens.
+   This is a deliberate gap: forcing a bulk re-encryption requires
+   coordinated downtime, and any tool that re-writes ciphertexts at
+   rest deserves operator review before shipping. Plan rotations
+   accordingly.
+5. Retire the old key ONLY after every record either references the
+   new key version or has been deleted, AND after your oldest backup
+   that still needs the old key has aged out. Inspect
+   `credentials/*.json` — the `key_version` field names the key used
+   to seal each record.
+6. To retire the old key, remove its entry from `encryption.keys` AND
+   delete its file under `<state-dir>/secrets/`. Do this in one
+   maintenance window: stopping the gateway before editing config and
+   restarting after, so you can roll back if a record fails to decrypt.
 
-## Host-key rotation (section 30.2)
+## Host-key rotation
 
-1. Generate the new key: `ssh-keygen -t ed25519 -f ssh_host_ed25519_key.new -N ''`.
+1. Generate the new key:
+   `ssh-keygen -t ed25519 -f ssh_host_ed25519_key.new -N ''`.
 2. Publish the new fingerprint through your trusted channel.
 3. Add the new path to `ssh.host_keys` alongside the old one (the gateway
    loads and offers all listed keys) and restart.
@@ -482,5 +1033,6 @@ for new writes (section 22.3).
 5. Remove the old key after a defined overlap period.
 
 Client behavior during overlap varies; test Moshi specifically before
-relying on seamless rotation. Never auto-generate a host key at startup:
-with no configured keys the gateway fails to boot, deliberately.
+relying on seamless rotation. The gateway never auto-generates a host
+key at startup: with no configured keys the gateway fails to boot,
+deliberately.

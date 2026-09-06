@@ -19,8 +19,3 @@ There is no TLS-SNI-like target name in the initial SSH transport handshake. A s
 - One `--coder-url`, one token store, one set of account bindings per listener.
 - Multi-deployment routing requires explicit selectors (outer username suffix, dedicated listener, dedicated port/IP, or unique-key mapping) deferred to future work.
 - The storage schema includes `deployment_id` now so a future migration is possible without a schema change.
-
-## References
-
-- Design §16 "Single-deployment MVP and multi-deployment limitation"
-- Design §42 "Chosen: single deployment per listener for MVP"

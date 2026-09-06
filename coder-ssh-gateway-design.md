@@ -78,7 +78,7 @@ A Moshi connection should be configured approximately as:
 
 ```text
 Connection type: SSH
-Host:             herdr-workspace.coder-gateway.example.com
+Host:             herdr-workspace
 Port:             22
 Workspace user:   coder (or the user's normal Coder SSH username)
 
@@ -100,9 +100,8 @@ CODER_SESSION_TOKEN='<stored-user-token>' \
   --global-config /var/lib/coder-ssh-gateway/coder-config \
   ssh \
   --stdio \
-  --hostname-suffix coder-gateway.example.com \
   --wait=auto \
-  herdr-workspace.coder-gateway.example.com
+  herdr-workspace
 ```
 
 No shell is involved. Every argument is passed separately after strict validation.
@@ -169,7 +168,7 @@ The first release must:
 - Support interactive replacement of an invalid credential.
 - Bind replacement credentials to the same immutable Coder user UUID.
 - Disconnect after successful credential replacement.
-- Accept only `direct-tcpip` transport to an approved workspace hostname suffix and port 22.
+- Accept only `direct-tcpip` transport to a strict bare workspace target and port 22.
 - Preserve the complete inner SSH protocol without translating it.
 - Use the official Coder CLI's `ssh --stdio` path rather than reproducing Coder tailnet behavior.
 - Never place the Coder token on a command line.
@@ -424,7 +423,7 @@ Use the RFC 4254 reason codes consistently:
 
 | Condition | SSH channel-open reason |
 |---|---|
-| target suffix/grammar/port not allowed | `SSH_OPEN_ADMINISTRATIVELY_PROHIBITED` |
+| target grammar/port not allowed | `SSH_OPEN_ADMINISTRATIVELY_PROHIBITED` |
 | unsupported channel type | `SSH_OPEN_UNKNOWN_CHANNEL_TYPE` |
 | global/process/account limit reached | `SSH_OPEN_RESOURCE_SHORTAGE` |
 | Coder child cannot establish transport | channel is normally already accepted; close it and audit as connect failure |
@@ -1172,7 +1171,7 @@ It is not required for the jump-proxy MVP or the user's token-paste renewal requ
 
 SSH user authentication completes before the client opens a `direct-tcpip` channel.
 
-Therefore, at the moment the gateway must validate a stored Coder token, it does not yet know the requested workspace target hostname. A single listener cannot safely select among multiple Coder deployments solely from the later target suffix.
+Therefore, at the moment the gateway must validate a stored Coder token, it does not yet know the requested workspace target hostname. A single listener cannot safely select among multiple Coder deployments solely from the later target.
 
 There is no TLS-SNI-like target name in the initial SSH transport handshake.
 
@@ -1216,29 +1215,11 @@ The storage schema should include `deployment_id` now, but configuration validat
 
 ## 17. Workspace target naming
 
-### 17.1 Recommended suffix
-
-Use a dedicated suffix, for example:
-
-```text
-coder-gateway.example.com
-```
-
-Examples:
-
-```text
-dev.coder-gateway.example.com
-api.dev.coder-gateway.example.com
-agent.dev.richard.coder-gateway.example.com
-```
-
-A DNS record for every workspace is not required by standard SSH jump-host behavior because the target name is carried in `direct-tcpip` and interpreted by the jump host. Some clients may perform local validation or DNS-related canonicalization, so wildcard DNS can be offered as an optional compatibility measure, not a protocol requirement.
-
-### 17.2 Route forms
+### 17.1 Route forms
 
 Adopt forms already understood by Coder's hostname normalization:
 
-| Labels before suffix | Meaning | Coder input after normalization |
+| Labels | Meaning | Coder input after normalization |
 |---|---|---|
 | `workspace` | current user's workspace | `workspace` |
 | `workspace.agent` | current user's named agent | `workspace.agent` |
@@ -1248,42 +1229,36 @@ Do not define a two-label `workspace.owner` form. Coder interprets two dot-separ
 
 For a multi-agent workspace, clients should use either:
 
-```text
-workspace.agent.coder-gateway.example.com
-```
+`workspace.agent`
 
 for the current user, or:
 
-```text
-agent.workspace.owner.coder-gateway.example.com
-```
+`agent.workspace.owner`
 
 for an explicit owner.
 
-### 17.3 Let Coder perform final normalization
+### 17.2 Let Coder perform final normalization
 
 The gateway should validate the target namespace and then invoke:
 
 ```bash
 coder ssh \
   --stdio \
-  --hostname-suffix coder-gateway.example.com \
-  <full-requested-target-host>
+  <bare-target>
 ```
 
-Coder's [`findWorkspaceAndAgentByHostname`](https://github.com/coder/coder/blob/v2.36.4/cli/ssh.go) strips the suffix and applies Coder's own supported normalization.
+Coder applies its own supported workspace and agent normalization.
 
 This avoids copying Coder's workspace parsing into the gateway.
 
-### 17.4 Strict target validation
+### 17.3 Strict target validation
 
 Before invoking Coder:
 
 - normalize one optional trailing root dot;
 - lowercase ASCII hostname labels;
-- require an exact suffix match on a DNS-label boundary;
 - require target port exactly `22`;
-- require one, two, or three nonempty labels before the suffix;
+- require one, two, or three nonempty labels;
 - require every label to be 1–63 bytes;
 - require the whole hostname to be no more than 253 bytes;
 - allow only lowercase ASCII letters, digits, and internal hyphens;
@@ -1305,7 +1280,7 @@ A reasonable label expression is:
 
 Verify this against Coder's actual workspace, user, and agent naming rules in the supported-version tests. It is acceptable for the gateway to be more restrictive than Coder initially.
 
-### 17.5 Route codec interface
+### 17.4 Route codec interface
 
 Keep routing separate from SSH handling:
 
@@ -1362,7 +1337,6 @@ args := []string{
     "--global-config", cfg.CoderGlobalConfig,
     "ssh",
     "--stdio",
-    "--hostname-suffix", deployment.TargetSuffix,
     "--wait=" + deployment.WaitMode,
 }
 
@@ -1521,7 +1495,7 @@ On a `direct-tcpip` channel request:
 1. Confirm outer permissions contain `mode=transport`.
 2. Reject if `must_reconnect=true`.
 3. Decode the payload with `ssh.Unmarshal`.
-4. Validate destination suffix, grammar, and port.
+4. Validate destination grammar and port.
 5. Ignore the client-supplied originator address for authorization.
 6. Enforce per-connection, per-account, per-key, per-IP, and global limits.
 7. Load the latest credential generation from storage.
@@ -1796,7 +1770,6 @@ CREATE TABLE deployments (
     id                  TEXT PRIMARY KEY,
     name                TEXT NOT NULL UNIQUE,
     coder_url           TEXT NOT NULL,
-    target_suffix       TEXT NOT NULL UNIQUE,
     enabled             INTEGER NOT NULL DEFAULT 1,
     autostart           INTEGER NOT NULL DEFAULT 1,
     wait_mode           TEXT NOT NULL DEFAULT 'auto',
@@ -2679,8 +2652,6 @@ encryption:
 deployment:
   id: primary
   coder_url: https://coder.example.com
-  target_suffix: coder-gateway.example.com
-
   coder_binary: /usr/local/bin/coder
   coder_global_config: /var/lib/coder-ssh-gateway/coder-config
   working_directory: /var/empty/coder-ssh-gateway
@@ -2740,8 +2711,6 @@ Fail startup on:
 - active encryption key ID not found;
 - invalid Coder URL;
 - HTTP Coder URL outside explicit development mode;
-- invalid or public-suffix-like target suffix;
-- target suffix equal to the jump-host name when that creates ambiguity;
 - invalid wait mode;
 - writable secret files by group/world, unless an explicit override is used;
 - SQLite with configured replica count greater than one;
@@ -2839,7 +2808,6 @@ Rules:
 - `/api/v2/buildinfo` or equivalent deployment reachability;
 - Coder CLI executable and version;
 - Coder CLI/server version compatibility warning;
-- target suffix grammar;
 - writable state and temp directories;
 - process limits;
 - optional real credential validation for a selected account;
@@ -2906,7 +2874,7 @@ Recommended service properties:
 [Service]
 User=coder-ssh-gateway
 Group=coder-ssh-gateway
-ExecStart=/usr/local/bin/coder-ssh-gateway serve --config /etc/coder-ssh-gateway/config.yaml
+ExecStart=/usr/local/bin/coder-ssh-gateway --config /etc/coder-ssh-gateway/config.yaml serve
 Restart=on-failure
 RestartSec=2
 
@@ -3284,7 +3252,7 @@ Do not send internal IDs to untrusted clients except a short support reference w
 | TLS validation fails | temporary/config fail | secure connection to Coder failed |
 | DB unavailable | fail closed | gateway storage unavailable |
 | encryption key unavailable | gateway not ready | gateway credential storage unavailable |
-| invalid target suffix/port | reject channel | target not permitted |
+| invalid target/port | reject channel | target not permitted |
 | workspace does not exist | child closes | Coder could not resolve target; see gateway logs |
 | workspace startup fails | child closes | Coder could not start workspace |
 | process limit reached | reject channel | gateway temporarily at capacity |
@@ -3383,7 +3351,7 @@ Treat the gateway as a high-value credential broker.
 Mitigations:
 
 - strict DNS-label grammar;
-- exact suffix and port;
+- strict bare target and port;
 - argv construction;
 - no shell;
 - no arbitrary flags;
@@ -3394,7 +3362,7 @@ Mitigations:
 Mitigations:
 
 - `direct-tcpip` target is never passed to `net.Dial`;
-- exact workspace suffix only;
+- strict bare workspace target only;
 - port 22 only;
 - route passed only to `coder ssh`;
 - reverse forwarding/global forwarding rejected.
@@ -3502,8 +3470,7 @@ Test and fuzz:
 - valid `agent.workspace.owner`;
 - upper-case normalization;
 - optional trailing dot;
-- exact suffix boundary;
-- suffix lookalikes;
+- excessive labels;
 - missing labels;
 - empty labels;
 - label length 63/64;
@@ -3644,37 +3611,40 @@ Test:
 
 Run real OpenSSH in CI where practical.
 
-Representative commands:
+Direct outer-session (enrolled key, bare workspace target as the outer username):
 
 ```bash
 ssh \
+  -p 2222 \
   -o IdentitiesOnly=yes \
   -o IdentityFile=./test-key \
-  -J coder@127.0.0.1:2222 \
-  coder@workspace.coder-gateway.test \
+  dev@gateway.example.com \
   'printf hello'
 ```
 
-Renewal:
+Renewal through the configured maintenance user:
 
 ```bash
 ssh \
+  -p 2222 \
   -o PreferredAuthentications=publickey,keyboard-interactive,password \
   -o KbdInteractiveAuthentication=yes \
   -o PasswordAuthentication=yes \
   -o IdentitiesOnly=yes \
   -o IdentityFile=./test-key \
-  -J coder@127.0.0.1:2222 \
-  coder@workspace.coder-gateway.test
+  auth@gateway.example.com
 ```
 
 Automate interactive tests with a Go SSH client first. Use a PTY/Expect-style harness for OpenSSH compatibility without putting tokens on command lines or environment visible to unrelated processes.
 
-Test `ProxyJump` and the lower-level equivalent:
+`ProxyJump` and the lower-level `-W` equivalent against a workspace target passed unchanged to Coder:
 
 ```bash
-ssh -W workspace.coder-gateway.test:22 coder@gateway.test
+ssh -J coder@gateway.example.com dev
+ssh -W dev:22 coder@gateway.example.com
 ```
+
+The `-J` form authenticates the outer gateway as the transport user and forwards the bare workspace target to the inner Coder SSH server. The `-W` form is the raw direct-tcpip equivalent against the same outer username and inner target; outer port 2222 native, 22 on Kubernetes, inner Coder SSH port 22.
 
 ### 38.4 Real Coder compatibility matrix
 
@@ -3815,7 +3785,7 @@ The MVP is complete only when all of the following are true.
 - Outer session shell is unavailable in transport mode.
 - Outer arbitrary TCP forwarding is impossible.
 - Destination port other than 22 is rejected.
-- Unapproved target suffix is rejected.
+- Invalid bare target is rejected.
 - No shell command is constructed from the target.
 - Coder token is absent from argv, logs, metrics, audit, and database plaintext.
 - Coder token at rest is authenticated-encrypted.
@@ -4102,7 +4072,7 @@ expired token
 - forced disconnect after credential replacement.
 - SQLite single-replica baseline.
 - encrypted credential storage.
-- exact target suffix and port 22.
+- strict bare target and port 22.
 - no outer general-purpose shell or forwarding.
 
 ### Deferred
@@ -4200,7 +4170,7 @@ This prevents support instructions from depending on unstable raw Coder CLI mess
 A direct per-host configuration:
 
 ```sshconfig
-Host *.coder-gateway.example.com
+Host herdr-workspace
     User coder
     ProxyJump coder@gateway.example.com
     IdentitiesOnly yes
@@ -4219,7 +4189,7 @@ Host coder-jump
     IdentitiesOnly yes
     IdentityFile ~/.ssh/coder-gateway
 
-Host *.coder-gateway.example.com
+Host herdr-workspace
     User coder
     ProxyJump coder-jump
 ```
@@ -4238,7 +4208,7 @@ Host coder-gateway-auth
 Then:
 
 ```bash
-ssh dev.coder-gateway.example.com
+ssh dev
 ssh coder-gateway-auth
 ```
 
@@ -4260,7 +4230,7 @@ Create one saved workspace connection:
 ```text
 Name:             Coder - dev
 Connection type:  SSH
-Host:             dev.coder-gateway.example.com
+Host:             dev
 Port:             22
 Username:         coder
 Jump host:        gateway.example.com
@@ -4294,11 +4264,11 @@ Expected expired-token workflow:
 The client authenticates two different SSH servers:
 
 - `gateway.example.com`: the outer Coder SSH Gateway host key;
-- `dev.coder-gateway.example.com`: the inner Coder workspace agent host key.
+- `dev`: the inner Coder workspace agent host key.
 
 The outer host-key fingerprint should be published by the gateway operator. The inner key follows Coder's normal SSH behavior.
 
-Do not instruct users to globally disable host-key checking. Any relaxed inner-host policy should be narrowly scoped to the Coder workspace suffix and should accurately reflect Coder's own trust model.
+Do not instruct users to globally disable host-key checking. Any relaxed inner-host policy should be narrowly scoped to the Coder workspace targets and should accurately reflect Coder's own trust model.
 
 ---
 
