@@ -42,8 +42,7 @@ jobs:
           cache: true
 
       - name: Build
-        # TODO-remove: tolerate no-packages warning until packages exist
-        run: go build ./... 2>&1 | grep -v 'matched no packages' || true
+        run: go build ./...
 
   # Test gate
   test:
@@ -111,7 +110,7 @@ jobs:
           cache: true
 
       - name: Install staticcheck
-        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
 
       - name: Staticcheck
         run: staticcheck ./...
@@ -128,13 +127,32 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: false
           cache: true
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # The official action installs @latest and exposes no analyzer-version
+      # input. Install the pin where its setup-go step puts first on PATH,
+      # and isolate the action's floating install in a different GOBIN.
+      - name: Install pinned govulncheck
+        run: |
+          pinned_gobin="$(go env GOPATH)/bin"
+          mkdir -p "$pinned_gobin" "${RUNNER_TEMP}/govulncheck-action-gobin"
+          GOBIN="$pinned_gobin" go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          go version -m "$pinned_gobin/govulncheck" | grep -F 'golang.org/x/vuln v1.7.0'
+          test "$(command -v govulncheck)" = "$pinned_gobin/govulncheck"
+          echo "$pinned_gobin" >> "$GITHUB_PATH"
 
       - name: Govulncheck
-        run: govulncheck ./...
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        env:
+          GOBIN: ${{ runner.temp }}/govulncheck-action-gobin
+        with:
+          repo-checkout: false
+          go-version-file: go.mod
+          check-latest: false
+          go-package: ./...
+          cache: true
+          cache-dependency-path: go.sum
 
   # Fuzz smoke test — runs only if fuzz targets exist
   fuzz-smoke:
@@ -157,5 +175,10 @@ jobs:
           if grep -r "func Fuzz" internal/route/*.go >/dev/null 2>&1; then
             go test -run=Fuzz ./internal/route/... -fuzz=FuzzParseDirectTCPIP -fuzztime=30s
           else
-            echo "No fuzz targets found, skipping"
+            status=$?
+            if [ "$status" -eq 1 ]; then
+              echo "No fuzz targets found, skipping"
+            else
+              exit "$status"
+            fi
           fi

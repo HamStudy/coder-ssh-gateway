@@ -4,6 +4,10 @@
 # Gateway state
 state/
 *.state/
+tmpstate/
+
+# Default Make build output (Makefile uses BINDIR=./bin by default)
+/bin/
 
 # SSH key files
 *_key
