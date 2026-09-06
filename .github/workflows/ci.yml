@@ -115,7 +115,10 @@ jobs:
       - name: Staticcheck
         run: staticcheck ./...
 
-  # Govulncheck gate
+  # Govulncheck gate — pinned analyzer under the module's own toolchain.
+  # The golang/govulncheck-action wrapper installs "stable" Go (go-version-
+  # input: stable), which drifts ahead of go.mod's toolchain and breaks the
+  # pinned analyzer's stdlib type-checking; a direct run stays deterministic.
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest
@@ -127,35 +130,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          check-latest: false
           cache: true
 
-      # The official action installs @latest and exposes no analyzer-version
-      # input. Install the pin where its setup-go step puts first on PATH,
-      # and isolate the action's floating install in a different GOBIN.
-      # go version -m emits tab-separated mod lines; verify with awk (a
-      # space-separated grep pattern never matches).
       - name: Install pinned govulncheck
-        run: |
-          pinned_gobin="$(go env GOPATH)/bin"
-          mkdir -p "$pinned_gobin" "${RUNNER_TEMP}/govulncheck-action-gobin"
-          GOBIN="$pinned_gobin" go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
-          go version -m "$pinned_gobin/govulncheck" \
-            | awk '$1=="mod" && $2=="golang.org/x/vuln" && $3=="v1.7.0" {found=1} END {exit !found}'
-          test -x "$pinned_gobin/govulncheck"
-          echo "$pinned_gobin" >> "$GITHUB_PATH"
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
       - name: Govulncheck
-        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
-        env:
-          GOBIN: ${{ runner.temp }}/govulncheck-action-gobin
-        with:
-          repo-checkout: false
-          go-version-file: go.mod
-          check-latest: false
-          go-package: ./...
-          cache: true
-          cache-dependency-path: go.sum
+        run: govulncheck ./...
 
   # Container image build smoke — catches Dockerfile breakage on PRs
   docker-build:
