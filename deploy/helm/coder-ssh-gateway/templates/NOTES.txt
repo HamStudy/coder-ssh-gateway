@@ -1,0 +1,27 @@
+{{ .Release.Name }} has been deployed.
+
+1. Wait for the rollout:
+
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "csgw.fullname" . }}
+
+2. Get the external SSH address:
+
+   kubectl -n {{ .Release.Namespace }} get svc {{ include "csgw.fullname" . }}
+
+   Point your DNS at the LoadBalancer address. External port is
+   {{ .Values.service.port }}; users connect with
+   `ssh -p {{ .Values.service.port }} <workspace>@<hostname>`.
+
+3. Get the host-key fingerprint to publish to users (trusted channel):
+
+   kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "csgw.fullname" . }} \
+     | grep -o 'SHA256:[A-Za-z0-9/+=-]*' | sort -u
+
+4. Enroll a device:
+
+   ssh -p {{ .Values.service.port }} init@<hostname>
+   (paste a Coder token from {{ printf "https://%s/cli-auth" .Values.coder.domain }})
+
+Rotation note: key files reach the pod through subPath mounts, which do not
+update in place. After `helm upgrade` changes either key, run
+`kubectl -n {{ .Release.Namespace }} rollout restart deploy/{{ include "csgw.fullname" . }}`.

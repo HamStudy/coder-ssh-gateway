@@ -1,0 +1,134 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "csgw.fullname" . }}
+  labels:
+    {{- include "csgw.labels" . | nindent 4 }}
+spec:
+  # Single replica: the store takes an exclusive flock on the state dir and
+  # a second replica fails fast. Recreate prevents overlap during rollout.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "csgw.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "csgw.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # 90s drain: SIGTERM -> stop accepting -> drain active tunnels.
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      {{/*
+        init is idempotent: it keeps existing keys/config/store and exits 0,
+        so it runs on every boot and no-ops once the PVC is initialized.
+        Mounted Secret files (host key, encryption key) and the ConfigMap
+        config are "kept existing" and never rewritten.
+      */}}
+      initContainers:
+        - name: init
+          image: {{ include "csgw.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--state-dir", "/var/lib/coder-ssh-gateway", "init", {{ .Values.coder.domain | quote }}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/coder-ssh-gateway
+            - name: config
+              mountPath: /var/lib/coder-ssh-gateway/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: keys
+              mountPath: /var/lib/coder-ssh-gateway/secrets/ssh_host_ed25519_key
+              subPath: ssh_host_ed25519_key
+              readOnly: true
+            - name: keys
+              mountPath: /var/lib/coder-ssh-gateway/secrets/credential-key-v1
+              subPath: credential-key-v1
+              readOnly: true
+      containers:
+        - name: gateway
+          image: {{ include "csgw.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--state-dir", "/var/lib/coder-ssh-gateway", "serve"]
+          ports:
+            - name: ssh
+              containerPort: 2222
+            - name: metrics
+              containerPort: 9090
+            - name: health
+              containerPort: 9091
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: health
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/coder-ssh-gateway
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /var/lib/coder-ssh-gateway/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: keys
+              mountPath: /var/lib/coder-ssh-gateway/secrets/ssh_host_ed25519_key
+              subPath: ssh_host_ed25519_key
+              readOnly: true
+            - name: keys
+              mountPath: /var/lib/coder-ssh-gateway/secrets/credential-key-v1
+              subPath: credential-key-v1
+              readOnly: true
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "csgw.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "csgw.fullname" . }}
+        - name: keys
+          secret:
+            secretName: {{ include "csgw.secretName" . }}
+            defaultMode: 0400
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

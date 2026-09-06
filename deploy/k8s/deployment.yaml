@@ -5,14 +5,17 @@
 # fast at startup. Recreate strategy prevents two pods from overlapping
 # during rollout.
 #
-# This manifest assumes the PVC at pvc.yaml is already applied and the
-# state dir has been initialized (see Operator Guide → Kubernetes for
-# the end-to-end sequence).
+# The init container runs `init` on every boot: it generates the state
+# layout on an empty PVC and no-ops (exit 0, "kept existing") once the
+# state directory is initialized. Domain argument: edit before apply.
 #
 # Health probes need a non-loopback bind — config defaults are
 # 127.0.0.1 and would be unreachable from the kubelet. The CSGW_*
 # environment overrides below set them to wildcard at serve time and
 # leave config.yaml untouched.
+#
+# Prefer Helm? deploy/helm/coder-ssh-gateway wraps this manifest with a
+# Secret for the host/encryption keys and a rendered config.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -41,6 +44,24 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: init
+          image: registry.example.com/coder-ssh-gateway:0.1.0
+          args:
+            - --state-dir
+            - /var/lib/coder-ssh-gateway
+            - init
+            - coder.example.com
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/coder-ssh-gateway
+            - name: tmp
+              mountPath: /tmp
       containers:
         - name: gateway
           image: registry.example.com/coder-ssh-gateway:0.1.0

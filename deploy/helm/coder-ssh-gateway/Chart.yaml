@@ -1,0 +1,11 @@
+apiVersion: v2
+name: coder-ssh-gateway
+description: >
+  SSH gateway in front of a Coder deployment: any SSH client reaches a
+  workspace by hostname with no client-side software.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0"
+home: https://github.com/taxilian/coder-ssh-gateway
+license: Apache-2.0

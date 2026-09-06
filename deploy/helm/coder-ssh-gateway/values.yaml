@@ -1,0 +1,59 @@
+# Default values for coder-ssh-gateway.
+# Keep the generated config minimal; use configOverride for anything else.
+
+image:
+  repository: ghcr.io/taxilian/coder-ssh-gateway
+  tag: ""            # defaults to .Chart.appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Hostname of the Coder deployment the gateway fronts. https://<domain>
+# becomes deployment.coder_url. Defaults to Coder's public service; set
+# your own hostname for self-hosted deployments.
+coder:
+  domain: coder.com
+
+gateway:
+  transportUser: coder
+  maintenanceUser: auth
+  autostart: true
+  wait: auto          # yes | no | auto
+  auditRetentionDays: 90
+
+# Deep-merged over the generated config. Any key accepted by the gateway's
+# config schema; see config.example.yaml for the full reference.
+#   helm upgrade --set configOverride.deployment.autostart=false
+configOverride: {}
+
+# SSH host key (OpenSSH PEM, ed25519) and credential encryption key
+# (base64 of exactly 32 bytes: openssl rand -base64 32).
+secrets:
+  create: true
+  # Set to an existing Secret name to manage keys yourself; the Secret must
+  # contain the items ssh_host_ed25519_key and credential-key-v1.
+  existingSecret: ""
+  hostKey: ""
+  encryptionKey: ""
+
+service:
+  type: LoadBalancer
+  port: 22            # external SSH port; maps to the gateway's 2222
+  annotations: {}
+  loadBalancerIP: ""
+
+metrics:
+  service:
+    enabled: false    # ClusterIP on 9090 for Prometheus scraping
+    annotations: {}
+
+persistence:
+  size: 1Gi
+  storageClass: ""
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+nameOverride: ""
+fullnameOverride: ""
