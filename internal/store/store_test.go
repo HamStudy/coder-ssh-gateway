@@ -29,14 +29,13 @@ import (
 // --- helpers ---------------------------------------------------------------
 
 func testDeployment() core.Deployment {
-	u, err := url.Parse("https://example.test")
+	u, err := url.Parse("https://coder.example.com")
 	if err != nil {
 		panic(err)
 	}
 	return core.Deployment{
 		ID:           uuid.MustParse("11111111-1111-1111-1111-111111111111"),
 		CoderURL:     u,
-		TargetSuffix: "coder-gateway.example.com",
 		CoderBinary:  "/usr/local/bin/coder",
 		GlobalConfig: "/tmp/coder-global",
 		WorkingDir:   "/tmp",
@@ -406,7 +405,7 @@ func TestEnsureDeploymentIdempotentUpsert(t *testing.T) {
 	if second["coder_binary"] != "/usr/bin/coder" {
 		t.Errorf("coder_binary = %v", second["coder_binary"])
 	}
-	if second["coder_url"] != "https://example.test" {
+	if second["coder_url"] != "https://coder.example.com" {
 		t.Errorf("coder_url = %v", second["coder_url"])
 	}
 

@@ -21,7 +21,6 @@ func testDeploymentEnv(t *testing.T) core.Deployment {
 	return core.Deployment{
 		ID:           uuid.New(),
 		CoderURL:     u,
-		TargetSuffix: "coder-gateway.example.com",
 		CoderBinary:  "/usr/local/bin/coder",
 		GlobalConfig: "/var/lib/coder-ssh-gateway/coder-config",
 		WorkingDir:   "/var/empty/coder-ssh-gateway",

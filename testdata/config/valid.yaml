@@ -1,4 +1,4 @@
-# Example gateway configuration for the ham.dev development environment.
+# Example gateway configuration using RFC-reserved domains.
 # Secret/binary/state paths below are placeholders: tests repoint them at
 # real temp files before validation (committed secrets are forbidden).
 version: 1
@@ -30,8 +30,7 @@ encryption:
 
 deployment:
   id: primary
-  coder_url: https://example.test
-  target_suffix: coder-gateway.example.com
+  coder_url: https://coder.example.com
 
   coder_binary: /usr/local/bin/coder
   coder_global_config: /var/lib/coder-ssh-gateway/coder-config

@@ -106,7 +106,7 @@ func (f *fakeChannel) IsClosed() bool {
 func spawnFakeProcess(t *testing.T, knobs ...string) (*Process, *atomic.Int32) {
 	t.Helper()
 	bin := testutil.BuildFakeCoder(t)
-	args := testutil.FakeArgv(t.TempDir(), "coder-gateway.example.com", "auto", "w.coder-gateway.example.com", false)
+	args := testutil.FakeArgv(t.TempDir(), "auto", "w", false)
 	env := append(testutil.FakeEnv("test-token-supervise"), knobs...)
 	cmd := testutil.NewFakeCmd(t, bin, env, args...)
 	cmd.Dir = t.TempDir()

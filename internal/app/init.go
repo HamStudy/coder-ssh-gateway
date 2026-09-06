@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -24,10 +26,16 @@ func (c *cli) cmdInit(args []string) int {
 	fs := c.newFlagSet("init")
 	force := fs.Bool("force", false, "overwrite existing secrets/config (asks for confirmation)")
 	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(c.stderr, "error: init requires exactly one Coder domain argument (for example: coder.example.com)")
 		return exitUsage
 	}
-	if fs.NArg() != 0 {
-		fmt.Fprintf(c.stderr, "error: init takes no arguments\n")
+	if fs.NArg() != 1 {
+		fmt.Fprintf(c.stderr, "error: init requires exactly one Coder domain argument (for example: coder.example.com)\n")
+		return exitUsage
+	}
+	coderURL, err := coderURLFromDomain(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintf(c.stderr, "error: invalid Coder domain %q: %v\n", fs.Arg(0), err)
 		return exitUsage
 	}
 
@@ -67,7 +75,7 @@ func (c *cli) cmdInit(args []string) int {
 	}) && ok
 	configPath := config.DefaultConfigPath(dir)
 	ok = c.initStep(*force, configPath, "starter config", func() ([]byte, error) {
-		return []byte(starterConfig(dir)), nil
+		return []byte(starterConfig(coderURL)), nil
 	}) && ok
 	if !ok {
 		return exitError
@@ -84,7 +92,7 @@ func (c *cli) cmdInit(args []string) int {
 		config.ApplyStateDir(cfg, c.stateDir)
 		if dep, depErr := DeploymentFromConfig(cfg); depErr == nil {
 			if err := st.EnsureDeployment(dep); err != nil {
-				cfgErr = depErr
+				cfgErr = err
 			}
 		} else {
 			cfgErr = depErr
@@ -110,6 +118,57 @@ func (c *cli) cmdInit(args []string) int {
 
 	c.printInitSummary(dir, hostKeyPath, encKeyPath, configPath)
 	return exitOK
+}
+
+func coderURLFromDomain(domain string) (string, error) {
+	if domain == "" || strings.TrimSpace(domain) != domain {
+		return "", errors.New("must be a non-empty bare DNS domain")
+	}
+	if strings.Contains(domain, "://") {
+		return "", errors.New("must not include a URL scheme")
+	}
+
+	u, err := url.Parse("https://" + domain)
+	if err != nil {
+		return "", fmt.Errorf("parse domain: %w", err)
+	}
+	if u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Host == "" {
+		return "", errors.New("must be a bare DNS domain, optionally followed by a port")
+	}
+
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if !validDNSDomain(host) {
+		return "", errors.New("must be a valid DNS domain")
+	}
+	port := u.Port()
+	if port != "" {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return "", errors.New("port must be between 1 and 65535")
+		}
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return "https://" + host, nil
+}
+
+func validDNSDomain(domain string) bool {
+	labels := strings.Split(domain, ".")
+	if len(labels) < 2 || len(domain) > 253 {
+		return false
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if !('a' <= char && char <= 'z') && !('0' <= char && char <= '9') && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // initStep writes one init artifact, keeping existing files unless --force
@@ -171,27 +230,52 @@ func generateHostKey() ([]byte, error) {
 
 // writeSecretFile writes data mode 0600 (explicit chmod, umask-safe).
 func writeSecretFile(path string, data []byte, overwrite bool) (err error) {
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	if overwrite {
-		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	if !overwrite {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return fmt.Errorf("create %s: %w", path, fs.ErrExist)
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			return statErr
+		}
 	}
-	f, err := os.OpenFile(path, flags, 0o600)
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
-	if err = f.Chmod(0o600); err != nil {
-		f.Close()
+	tmpPath := tmp.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
 		return err
 	}
-	if _, err = f.Write(data); err != nil {
-		f.Close()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
 		return err
 	}
-	if err = f.Sync(); err != nil {
-		f.Close()
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
 		return err
 	}
-	return f.Close()
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	tmpPath = ""
+
+	dirFile, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer dirFile.Close()
+	return dirFile.Sync()
 }
 
 func ensureDir(path string, perm os.FileMode) error {
@@ -240,10 +324,10 @@ Next steps:
 `, dir, hostKeyPath, fp, encKeyPath, configPath, filepath.Join(dir, "secrets"), configPath, dir, dir, dir)
 }
 
-// starterConfig returns the commented starter configuration with ham.dev
-// defaults. Paths are absolute so the file can be moved without rebasing.
-func starterConfig(dir string) string {
-	return fmt.Sprintf(`# coder-ssh-gateway configuration (design section 28).
+// starterConfig returns a commented configuration for coderURL. State-owned
+// paths are relative to the config file.
+func starterConfig(coderURL string) string {
+	return fmt.Sprintf(`# coder-ssh-gateway configuration.
 # Written by 'coder-ssh-gateway init'. Edit, then run 'doctor'.
 version: 1
 
@@ -257,34 +341,26 @@ ssh:
   transport_user: coder         # SSH username for workspace transport
   maintenance_user: auth        # SSH username for the credential-maintenance session
   host_keys:
-    - %s # BACK UP (section 30.1)
+    - secrets/ssh_host_ed25519_key # BACK UP
 
 state:
-  dir: %s
   audit_retention_days: 90
 
 encryption:
   provider: file
   active_key_id: v1
   keys:
-    v1: %s # BACK UP: losing this orphans all stored tokens (section 22)
+    v1: secrets/credential-key-v1 # BACK UP: losing this orphans all stored tokens
 
 deployment:
   id: primary
-  coder_url: https://example.test
-  target_suffix: coder-gateway.example.com
+  coder_url: %s
   coder_binary: /usr/local/bin/coder
-  coder_global_config: %s
-  working_directory: %s
+  coder_global_config: coder-config
+  working_directory: run
   autostart: true
   wait: auto                    # yes|no|auto
   # tls:
   #   ca_file: /path/to/ca.pem  # custom CA for the Coder deployment
-`,
-		config.DefaultHostKeyPath(dir),
-		dir,
-		config.DefaultEncryptionKeyPath(dir),
-		filepath.Join(dir, "coder-config"),
-		filepath.Join(dir, "run"),
-	)
+`, coderURL)
 }

@@ -23,7 +23,6 @@ func testDeployment(t *testing.T) core.Deployment {
 	return core.Deployment{
 		ID:           uuid.New(),
 		CoderURL:     u,
-		TargetSuffix: "coder-gateway.example.com",
 		CoderBinary:  "/usr/local/bin/coder",
 		GlobalConfig: "/var/lib/coder-ssh-gateway/coder-config",
 		WorkingDir:   "/var/empty/coder-ssh-gateway",
@@ -55,58 +54,54 @@ func TestBuildArgv(t *testing.T) {
 			name:      "autostart on, wait auto",
 			autostart: true,
 			waitMode:  "auto",
-			target:    "examtools-docs.coder-gateway.example.com",
+			target:    "examtools-docs",
 			want: []string{
 				"--global-config", "/var/lib/coder-ssh-gateway/coder-config",
 				"ssh",
 				"--stdio",
-				"--hostname-suffix", "coder-gateway.example.com",
 				"--wait=auto",
-				"examtools-docs.coder-gateway.example.com",
+				"examtools-docs",
 			},
 		},
 		{
 			name:      "autostart off, wait yes",
 			autostart: false,
 			waitMode:  "yes",
-			target:    "general.coder-gateway.example.com",
+			target:    "general",
 			want: []string{
 				"--global-config", "/var/lib/coder-ssh-gateway/coder-config",
 				"ssh",
 				"--stdio",
-				"--hostname-suffix", "coder-gateway.example.com",
 				"--wait=yes",
 				"--disable-autostart=true",
-				"general.coder-gateway.example.com",
+				"general",
 			},
 		},
 		{
 			name:      "autostart on, wait no",
 			autostart: true,
 			waitMode:  "no",
-			target:    "w.coder-gateway.example.com",
+			target:    "w.agent",
 			want: []string{
 				"--global-config", "/var/lib/coder-ssh-gateway/coder-config",
 				"ssh",
 				"--stdio",
-				"--hostname-suffix", "coder-gateway.example.com",
 				"--wait=no",
-				"w.coder-gateway.example.com",
+				"w.agent",
 			},
 		},
 		{
 			name:      "autostart off, wait auto",
 			autostart: false,
 			waitMode:  "auto",
-			target:    "w.coder-gateway.example.com",
+			target:    "agent.w.owner",
 			want: []string{
 				"--global-config", "/var/lib/coder-ssh-gateway/coder-config",
 				"ssh",
 				"--stdio",
-				"--hostname-suffix", "coder-gateway.example.com",
 				"--wait=auto",
 				"--disable-autostart=true",
-				"w.coder-gateway.example.com",
+				"agent.w.owner",
 			},
 		},
 	}
@@ -143,7 +138,7 @@ func TestBuildArgv(t *testing.T) {
 func TestBuildArgvNeverContainsToken(t *testing.T) {
 	const marker = "marker-token-9f8e7d6c5b4a"
 	dep := testDeployment(t)
-	argv := tunnel.BuildArgv(dep, testRoute("w.coder-gateway.example.com"))
+	argv := tunnel.BuildArgv(dep, testRoute("w"))
 	for i, a := range argv {
 		if strings.Contains(a, marker) {
 			t.Fatalf("marker token present in argv[%d]=%q", i, a)

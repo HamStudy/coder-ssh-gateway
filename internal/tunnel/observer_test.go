@@ -64,7 +64,6 @@ func testDeploymentObs(t *testing.T, bin string) core.Deployment {
 	return core.Deployment{
 		ID:           uuid.New(),
 		CoderURL:     u,
-		TargetSuffix: "coder-gateway.example.com",
 		CoderBinary:  bin,
 		GlobalConfig: t.TempDir(),
 		WorkingDir:   t.TempDir(),
@@ -108,10 +107,10 @@ func TestObserverHappyPath(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- ts.Start(context.Background(), ch, core.Route{
-			RequestedHost: "w.coder-gateway.example.com",
+			RequestedHost: "w",
 			RequestedPort: 22,
-			WorkspaceHost: "w.coder-gateway.example.com",
-			DisplayTarget: "w.coder-gateway.example.com:22",
+			WorkspaceHost: "w",
+			DisplayTarget: "w",
 		}, core.CredentialSnapshot{
 			AccountID:  uuid.New(),
 			Generation: 1,

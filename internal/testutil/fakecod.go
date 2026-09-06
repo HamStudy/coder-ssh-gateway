@@ -82,12 +82,11 @@ func FakeEnv(token string) []string {
 // FakeArgv returns the canonical §18.2 argv the gateway builds for a
 // transport tunnel. Tests mutate copies of it to exercise the fake's
 // contract checks.
-func FakeArgv(globalConfigDir, suffix, waitMode, target string, disableAutostart bool) []string {
+func FakeArgv(globalConfigDir, waitMode, target string, disableAutostart bool) []string {
 	args := []string{
 		"--global-config", globalConfigDir,
 		"ssh",
 		"--stdio",
-		"--hostname-suffix", suffix,
 		"--wait=" + waitMode,
 	}
 	if disableAutostart {

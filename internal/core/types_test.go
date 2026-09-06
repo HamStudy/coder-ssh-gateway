@@ -13,8 +13,8 @@ import (
 func TestCredentialState(t *testing.T) {
 	t.Run("String", func(t *testing.T) {
 		tests := []struct {
-			state   core.CredentialState
-			want    string
+			state core.CredentialState
+			want  string
 		}{
 			{core.CredentialStateMissing, "missing"},
 			{core.CredentialStateUnknown, "unknown"},
@@ -57,7 +57,7 @@ func TestCredentialState(t *testing.T) {
 
 func TestCredentialErrorKind_Renewable(t *testing.T) {
 	tests := []struct {
-		kind     core.CredentialErrorKind
+		kind          core.CredentialErrorKind
 		wantRenewable bool
 	}{
 		// Only missing and invalid are renewable
@@ -131,9 +131,9 @@ func TestCredentialError_Error_DoesNotLeak(t *testing.T) {
 
 func TestCredentialError_Error_Format(t *testing.T) {
 	tests := []struct {
-		name  string
-		err   core.CredentialError
-		want  string
+		name string
+		err  core.CredentialError
+		want string
 	}{
 		{
 			name: "kind only",
@@ -274,14 +274,13 @@ func TestDeployment(t *testing.T) {
 	coderURL, _ := url.Parse("https://coder.example.com")
 
 	deployment := core.Deployment{
-		ID:             id,
-		CoderURL:       coderURL,
-		TargetSuffix:   "coder-gateway.example.com",
-		CoderBinary:    "/usr/local/bin/coder",
-		GlobalConfig:   "/var/lib/coder",
-		WorkingDir:     "/var/empty",
-		Autostart:      true,
-		WaitMode:       "auto",
+		ID:           id,
+		CoderURL:     coderURL,
+		CoderBinary:  "/usr/local/bin/coder",
+		GlobalConfig: "/var/lib/coder",
+		WorkingDir:   "/var/empty",
+		Autostart:    true,
+		WaitMode:     "auto",
 	}
 
 	if deployment.ID != id {
@@ -289,9 +288,6 @@ func TestDeployment(t *testing.T) {
 	}
 	if deployment.CoderURL.String() != "https://coder.example.com" {
 		t.Errorf("Deployment.CoderURL = %v, want %v", deployment.CoderURL.String(), "https://coder.example.com")
-	}
-	if deployment.TargetSuffix != "coder-gateway.example.com" {
-		t.Errorf("Deployment.TargetSuffix = %v, want %v", deployment.TargetSuffix, "coder-gateway.example.com")
 	}
 	if deployment.CoderBinary != "/usr/local/bin/coder" {
 		t.Errorf("Deployment.CoderBinary = %v, want %v", deployment.CoderBinary, "/usr/local/bin/coder")
@@ -306,14 +302,14 @@ func TestDeployment(t *testing.T) {
 
 func TestRoute(t *testing.T) {
 	route := core.Route{
-		RequestedHost:  "dev.coder-gateway.example.com",
+		RequestedHost: "dev",
 		RequestedPort: 22,
-		WorkspaceHost:  "dev",
-		DisplayTarget:  "dev",
+		WorkspaceHost: "dev",
+		DisplayTarget: "dev",
 	}
 
-	if route.RequestedHost != "dev.coder-gateway.example.com" {
-		t.Errorf("Route.RequestedHost = %v, want %v", route.RequestedHost, "dev.coder-gateway.example.com")
+	if route.RequestedHost != "dev" {
+		t.Errorf("Route.RequestedHost = %v, want %v", route.RequestedHost, "dev")
 	}
 	if route.RequestedPort != 22 {
 		t.Errorf("Route.RequestedPort = %v, want %v", route.RequestedPort, 22)

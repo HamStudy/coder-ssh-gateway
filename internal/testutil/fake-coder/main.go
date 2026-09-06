@@ -104,8 +104,8 @@ func main() {
 
 // validateArgv enforces the exact §18.2 process form:
 //
-//	--global-config <dir> ssh --stdio --hostname-suffix <suffix>
-//	--wait=<yes|no|auto> [--disable-autostart=true] <target>
+//	--global-config <dir> ssh --stdio --wait=<yes|no|auto>
+//	[--disable-autostart=true] <target>
 //
 // It also requires CODER_SESSION_TOKEN in the environment and rejects any
 // argv element containing the token value (§18.3).
@@ -117,8 +117,8 @@ func validateArgv() {
 		os.Exit(exitContract)
 	}
 
-	if len(args) != 8 && len(args) != 9 {
-		fail("want 8 or 9 arguments, got %d", len(args))
+	if len(args) != 6 && len(args) != 7 {
+		fail("want 6 or 7 arguments, got %d", len(args))
 	}
 	if args[0] != "--global-config" {
 		fail("arg[0]: want --global-config, got %q", args[0])
@@ -132,28 +132,22 @@ func validateArgv() {
 	if args[3] != "--stdio" {
 		fail("arg[3]: want --stdio, got %q", args[3])
 	}
-	if args[4] != "--hostname-suffix" {
-		fail("arg[4]: want --hostname-suffix, got %q", args[4])
-	}
-	if args[5] == "" || strings.HasPrefix(args[5], "-") {
-		fail("arg[5]: --hostname-suffix value missing or looks like a flag: %q", args[5])
-	}
-	mode, ok := strings.CutPrefix(args[6], "--wait=")
+	mode, ok := strings.CutPrefix(args[4], "--wait=")
 	if !ok {
-		fail("arg[6]: want --wait=<mode>, got %q", args[6])
+		fail("arg[4]: want --wait=<mode>, got %q", args[4])
 	}
 	switch mode {
 	case "yes", "no", "auto":
 	default:
-		fail("arg[6]: invalid --wait mode %q", mode)
+		fail("arg[4]: invalid --wait mode %q", mode)
 	}
 
-	target := args[7]
-	if len(args) == 9 {
-		if args[7] != "--disable-autostart=true" {
-			fail("arg[7]: want --disable-autostart=true, got %q", args[7])
+	target := args[5]
+	if len(args) == 7 {
+		if args[5] != "--disable-autostart=true" {
+			fail("arg[5]: want --disable-autostart=true, got %q", args[5])
 		}
-		target = args[8]
+		target = args[6]
 	}
 	if target == "" || strings.HasPrefix(target, "-") {
 		fail("target positional missing or looks like a flag: %q", target)

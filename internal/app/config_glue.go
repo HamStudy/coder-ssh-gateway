@@ -56,7 +56,6 @@ func DeploymentUUID(label string) uuid.UUID {
 func DeploymentFromConfig(cfg *config.Config) (core.Deployment, error) {
 	dep := core.Deployment{
 		ID:           DeploymentUUID(cfg.Deployment.ID),
-		TargetSuffix: cfg.Deployment.TargetSuffix,
 		CoderBinary:  cfg.Deployment.CoderBinary,
 		GlobalConfig: cfg.Deployment.CoderGlobalConfig,
 		WorkingDir:   cfg.Deployment.WorkingDirectory,

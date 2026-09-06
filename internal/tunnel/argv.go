@@ -16,7 +16,6 @@ func BuildArgv(dep core.Deployment, route core.Route) []string {
 		"--global-config", dep.GlobalConfig,
 		"ssh",
 		"--stdio",
-		"--hostname-suffix", dep.TargetSuffix,
 		"--wait=" + dep.WaitMode,
 	}
 	if !dep.Autostart {

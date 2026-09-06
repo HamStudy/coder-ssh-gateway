@@ -319,7 +319,6 @@ func nowMs() int64 { return time.Now().UnixMilli() }
 type deploymentRecord struct {
 	ID           string `json:"id"`
 	CoderURL     string `json:"coder_url"`
-	TargetSuffix string `json:"target_suffix"`
 	CoderBinary  string `json:"coder_binary"`
 	GlobalConfig string `json:"global_config"`
 	WorkingDir   string `json:"working_dir"`
@@ -352,7 +351,6 @@ func (s *Store) EnsureDeployment(d core.Deployment) error {
 	} else {
 		rec.CoderURL = ""
 	}
-	rec.TargetSuffix = d.TargetSuffix
 	rec.CoderBinary = d.CoderBinary
 	rec.GlobalConfig = d.GlobalConfig
 	rec.WorkingDir = d.WorkingDir

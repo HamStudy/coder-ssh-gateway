@@ -61,8 +61,7 @@ encryption:
     v1: %s
 deployment:
   id: primary
-  coder_url: https://example.test
-  target_suffix: coder-gateway.example.com
+  coder_url: https://coder.example.com
   coder_binary: %s
 state:
   dir: %s
@@ -84,8 +83,7 @@ func validConfig(t *testing.T) (*Config, validEnv) {
 	cfg.SSH.HostKeys = []string{env.hostKey}
 	cfg.Encryption.Keys = map[string]string{"v1": env.encKey}
 	cfg.Encryption.ActiveKeyID = "v1"
-	cfg.Deployment.CoderURL = "https://example.test"
-	cfg.Deployment.TargetSuffix = "coder-gateway.example.com"
+	cfg.Deployment.CoderURL = "https://coder.example.com"
 	cfg.Deployment.CoderBinary = env.coderBin
 	cfg.State.Dir = env.stateDir
 	return cfg, env
@@ -124,7 +122,7 @@ func TestLoadValidAppliesDefaults(t *testing.T) {
 	if cfg.Observability.LogLevel != "info" {
 		t.Errorf("log_level = %q, want info", cfg.Observability.LogLevel)
 	}
-	if cfg.Deployment.CoderURL != "https://example.test" {
+	if cfg.Deployment.CoderURL != "https://coder.example.com" {
 		t.Errorf("coder_url = %q", cfg.Deployment.CoderURL)
 	}
 }
@@ -134,11 +132,8 @@ func TestParseValidFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse fixture: %v", err)
 	}
-	if cfg.Deployment.CoderURL != "https://example.test" {
-		t.Errorf("fixture coder_url = %q, want https://example.test", cfg.Deployment.CoderURL)
-	}
-	if cfg.Deployment.TargetSuffix != "coder-gateway.example.com" {
-		t.Errorf("fixture target_suffix = %q, want coder-gateway.example.com", cfg.Deployment.TargetSuffix)
+	if cfg.Deployment.CoderURL != "https://coder.example.com" {
+		t.Errorf("fixture coder_url = %q, want https://coder.example.com", cfg.Deployment.CoderURL)
 	}
 	if cfg.Listen.Address != ":2222" {
 		t.Errorf("fixture listen.address = %q, want :2222", cfg.Listen.Address)
@@ -159,12 +154,123 @@ func TestParseValidFixture(t *testing.T) {
 	}
 }
 
+func TestParsePathSemantics(t *testing.T) {
+	tests := []struct {
+		name      string
+		stateYAML string
+		wantState func(configDir, stateDir string) string
+	}{
+		{
+			name: "config parent is fallback state directory",
+			wantState: func(configDir, _ string) string {
+				return configDir
+			},
+		},
+		{
+			name:      "relative explicit state directory is config relative",
+			stateYAML: "state:\n  dir: ../state\n",
+			wantState: func(_, stateDir string) string {
+				return stateDir
+			},
+		},
+		{
+			name: "absolute explicit state directory is preserved",
+			wantState: func(_, stateDir string) string {
+				return stateDir
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			configDir := filepath.Join(root, "config")
+			stateDir := filepath.Join(root, "state")
+			if err := os.MkdirAll(configDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			stateYAML := tt.stateYAML
+			if tt.name == "absolute explicit state directory is preserved" {
+				stateYAML = fmt.Sprintf("state:\n  dir: %s\n", stateDir)
+			}
+			configPath := filepath.Join(configDir, "gateway.yaml")
+			yaml := `ssh:
+  host_keys: [secrets/host-key]
+encryption:
+  active_key_id: v1
+  keys:
+    v1: secrets/encryption-key
+deployment:
+  coder_binary: bin/coder
+  coder_global_config: coder-config
+  working_directory: run
+  tls:
+    ca_file: tls/ca.pem
+    client_cert_file: tls/client.pem
+    client_key_file: tls/client-key.pem
+` + stateYAML
+			writeFile(t, configPath, []byte(yaml), 0o600)
+			workingDir, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			relativeConfigPath, err := filepath.Rel(workingDir, configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			cfg, err := Parse(relativeConfigPath)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got, want := cfg.State.Dir, tt.wantState(configDir, stateDir); got != want {
+				t.Errorf("state.dir = %q, want %q", got, want)
+			}
+			paths := map[string]string{
+				"ssh.host_keys":                   cfg.SSH.HostKeys[0],
+				"encryption.keys.v1":              cfg.Encryption.Keys["v1"],
+				"deployment.coder_binary":         cfg.Deployment.CoderBinary,
+				"deployment.coder_global_config":  cfg.Deployment.CoderGlobalConfig,
+				"deployment.working_directory":    cfg.Deployment.WorkingDirectory,
+				"deployment.tls.ca_file":          cfg.Deployment.TLS.CAFile,
+				"deployment.tls.client_cert_file": cfg.Deployment.TLS.ClientCertFile,
+				"deployment.tls.client_key_file":  cfg.Deployment.TLS.ClientKeyFile,
+			}
+			wantPaths := map[string]string{
+				"ssh.host_keys":                   filepath.Join(configDir, "secrets", "host-key"),
+				"encryption.keys.v1":              filepath.Join(configDir, "secrets", "encryption-key"),
+				"deployment.coder_binary":         filepath.Join(configDir, "bin", "coder"),
+				"deployment.coder_global_config":  filepath.Join(configDir, "coder-config"),
+				"deployment.working_directory":    filepath.Join(configDir, "run"),
+				"deployment.tls.ca_file":          filepath.Join(configDir, "tls", "ca.pem"),
+				"deployment.tls.client_cert_file": filepath.Join(configDir, "tls", "client.pem"),
+				"deployment.tls.client_key_file":  filepath.Join(configDir, "tls", "client-key.pem"),
+			}
+			for field, got := range paths {
+				if want := wantPaths[field]; got != want {
+					t.Errorf("%s = %q, want %q", field, got, want)
+				}
+			}
+
+			override := filepath.Join(root, "cli-state")
+			ApplyStateDir(cfg, override)
+			if cfg.State.Dir != override {
+				t.Errorf("CLI state override = %q, want %q", cfg.State.Dir, override)
+			}
+			if cfg.SSH.HostKeys[0] != wantPaths["ssh.host_keys"] || cfg.Encryption.Keys["v1"] != wantPaths["encryption.keys.v1"] {
+				t.Error("CLI state override relocated explicit YAML secret paths")
+			}
+		})
+	}
+}
+
 func TestLoadRejectsUnknownFields(t *testing.T) {
 	env := newValidEnv(t)
 	cases := map[string]string{
 		"database section":   env.yaml() + "database:\n  driver: sqlite\n",
 		"deployments plural": strings.Replace(env.yaml(), "deployment:", "deployments:", 1),
 		"bogus top-level":    env.yaml() + "bogus_field: true\n",
+		"removed field":      env.yaml() + "deployment:\n  target" + "_suffix: gateway.example.com\n",
 	}
 	for name, yaml := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -304,8 +410,7 @@ func TestDefaultPathHelpers(t *testing.T) {
 func TestApplyStateDir(t *testing.T) {
 	env := newValidEnv(t)
 	cfg := Default()
-	cfg.Deployment.CoderURL = "https://example.test"
-	cfg.Deployment.TargetSuffix = "coder-gateway.example.com"
+	cfg.Deployment.CoderURL = "https://coder.example.com"
 	cfg.Deployment.CoderBinary = env.coderBin
 
 	// CLI flag wins: state dir comes from the flag, secret defaults derive from it.
@@ -355,6 +460,9 @@ func TestValidate(t *testing.T) {
 			writeFile(t, p, []byte("k"), 0o602)
 			c.SSH.HostKeys = []string{p}
 		}, "ssh.host_keys"},
+		{"ssh certificates enabled", func(t *testing.T, c *Config, e validEnv) {
+			c.SSH.AllowSSHCertificates = true
+		}, "ssh.allow_ssh_certificates"},
 
 		{"no encryption key", func(t *testing.T, c *Config, e validEnv) {
 			c.Encryption.Keys = nil
@@ -381,33 +489,11 @@ func TestValidate(t *testing.T) {
 			c.Deployment.CoderURL = "://not-a-url"
 		}, "deployment.coder_url"},
 		{"coder_url http rejected", func(t *testing.T, c *Config, e validEnv) {
-			c.Deployment.CoderURL = "http://example.test"
+			c.Deployment.CoderURL = "http://coder.example.com"
 		}, "deployment.coder_url"},
 		{"coder_url empty", func(t *testing.T, c *Config, e validEnv) {
 			c.Deployment.CoderURL = ""
 		}, "deployment.coder_url"},
-
-		{"target_suffix bare tld", func(t *testing.T, c *Config, e validEnv) {
-			c.Deployment.TargetSuffix = "dev"
-		}, "deployment.target_suffix"},
-		{"target_suffix leading hyphen label", func(t *testing.T, c *Config, e validEnv) {
-			c.Deployment.TargetSuffix = "-bad.ham.dev"
-		}, "deployment.target_suffix"},
-		{"target_suffix trailing hyphen label", func(t *testing.T, c *Config, e validEnv) {
-			c.Deployment.TargetSuffix = "coder-gateway.example.com-"
-		}, "deployment.target_suffix"},
-		{"target_suffix whitespace", func(t *testing.T, c *Config, e validEnv) {
-			c.Deployment.TargetSuffix = "coder gateway.ham.dev"
-		}, "deployment.target_suffix"},
-		{"target_suffix uppercase", func(t *testing.T, c *Config, e validEnv) {
-			c.Deployment.TargetSuffix = "Coder-Gateway.HAM.dev"
-		}, "deployment.target_suffix"},
-		{"target_suffix wildcard", func(t *testing.T, c *Config, e validEnv) {
-			c.Deployment.TargetSuffix = "*.ham.dev"
-		}, "deployment.target_suffix"},
-		{"target_suffix empty", func(t *testing.T, c *Config, e validEnv) {
-			c.Deployment.TargetSuffix = ""
-		}, "deployment.target_suffix"},
 
 		{"wait mode invalid", func(t *testing.T, c *Config, e validEnv) {
 			c.Deployment.Wait = "maybe"

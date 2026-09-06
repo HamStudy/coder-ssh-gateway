@@ -80,7 +80,6 @@ type DeploymentNetwork struct {
 type Deployment struct {
 	ID           uuid.UUID
 	CoderURL     *url.URL
-	TargetSuffix string
 	CoderBinary  string
 	GlobalConfig string
 	WorkingDir   string
@@ -91,10 +90,10 @@ type Deployment struct {
 }
 
 type Route struct {
-	RequestedHost  string
-	RequestedPort  uint32
-	WorkspaceHost  string
-	DisplayTarget  string
+	RequestedHost string
+	RequestedPort uint32
+	WorkspaceHost string
+	DisplayTarget string
 }
 
 type CoderIdentity struct {

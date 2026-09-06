@@ -33,7 +33,6 @@ func testDeploymentStarter(t *testing.T) core.Deployment {
 	return core.Deployment{
 		ID:           uuid.New(),
 		CoderURL:     u,
-		TargetSuffix: "coder-gateway.example.com",
 		CoderBinary:  testutil.BuildFakeCoder(t),
 		GlobalConfig: "/var/lib/coder-ssh-gateway/coder-config",
 		WorkingDir:   workDir,
@@ -58,7 +57,7 @@ func TestLauncherLaunchHappy(t *testing.T) {
 	dep := testDeploymentStarter(t)
 	dep.CoderBinary = bin
 
-	route := testRouteStarter("examtools-docs.coder-gateway.example.com")
+	route := testRouteStarter("examtools-docs")
 	cred := core.CredentialSnapshot{
 		AccountID:  uuid.New(),
 		Generation: 1,
@@ -119,7 +118,6 @@ func TestLauncherLaunchMissingBinary(t *testing.T) {
 	dep := core.Deployment{
 		ID:           uuid.New(),
 		CoderURL:     u,
-		TargetSuffix: "coder-gateway.example.com",
 		CoderBinary:  "/nonexistent/binary/coder",
 		GlobalConfig: "/var/lib/coder-ssh-gateway/coder-config",
 		WorkingDir:   "/var/empty/coder-ssh-gateway",
@@ -127,7 +125,7 @@ func TestLauncherLaunchMissingBinary(t *testing.T) {
 		WaitMode:     "auto",
 	}
 
-	route := testRouteStarter("w.coder-gateway.example.com")
+	route := testRouteStarter("w")
 	cred := core.CredentialSnapshot{
 		AccountID:  uuid.New(),
 		Generation: 1,
@@ -155,7 +153,7 @@ func TestLauncherTokenNeverInArgv(t *testing.T) {
 	dep.CoderBinary = bin
 
 	const marker = "MARKERTOKEN1234567890ABCDEFGH"
-	route := testRouteStarter("w.coder-gateway.example.com")
+	route := testRouteStarter("w")
 	cred := core.CredentialSnapshot{
 		AccountID:  uuid.New(),
 		Generation: 1,
@@ -202,7 +200,7 @@ func TestLauncherWaitReturnsExactlyOnce(t *testing.T) {
 	dep := testDeploymentStarter(t)
 	dep.CoderBinary = bin
 
-	route := testRouteStarter("examtools-docs.coder-gateway.example.com")
+	route := testRouteStarter("examtools-docs")
 	cred := core.CredentialSnapshot{
 		AccountID:  uuid.New(),
 		Generation: 1,
@@ -251,7 +249,7 @@ func TestLauncherProcessGroupKill(t *testing.T) {
 	dep := testDeploymentStarter(t)
 	dep.CoderBinary = bin
 
-	route := testRouteStarter("examtools-docs.coder-gateway.example.com")
+	route := testRouteStarter("examtools-docs")
 	cred := core.CredentialSnapshot{
 		AccountID:  uuid.New(),
 		Generation: 1,

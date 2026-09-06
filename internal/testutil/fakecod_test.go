@@ -25,9 +25,8 @@ const testToken = "test-session-token-0123456789abcdef"
 func baseArgv() []string {
 	return testutil.FakeArgv(
 		"/tmp/fake-global-config",
-		"coder-gateway.example.com",
 		"auto",
-		"examtools-docs.coder-gateway.example.com",
+		"examtools-docs",
 		false,
 	)
 }
@@ -70,8 +69,7 @@ func TestFakeCoderContract(t *testing.T) {
 		{
 			name: "valid argv, autostart disabled",
 			mutateArgs: func(a []string) []string {
-				return testutil.FakeArgv("/tmp/fake-global-config", "coder-gateway.example.com", "yes",
-					"general.coder-gateway.example.com", true)
+				return testutil.FakeArgv("/tmp/fake-global-config", "yes", "general", true)
 			},
 			extraEnv: []string{"FAKE_CODER_EXIT_AFTER_MS=1"},
 			wantCode: 0,
@@ -90,7 +88,7 @@ func TestFakeCoderContract(t *testing.T) {
 		},
 		{
 			name:       "invalid wait mode",
-			mutateArgs: func(a []string) []string { a[6] = "--wait=sometimes"; return a },
+			mutateArgs: func(a []string) []string { a[4] = "--wait=sometimes"; return a },
 			wantCode:   70,
 			wantStderr: "--wait",
 		},
@@ -102,7 +100,7 @@ func TestFakeCoderContract(t *testing.T) {
 		},
 		{
 			name:       "token leaked into argv target",
-			mutateArgs: func(a []string) []string { a[7] = testToken; return a },
+			mutateArgs: func(a []string) []string { a[5] = testToken; return a },
 			wantCode:   70,
 			wantStderr: "token leaked",
 		},

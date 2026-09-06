@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -80,7 +81,6 @@ func (c *cli) cmdDoctor(args []string) int {
 	r.checkHostKeys(cfg)
 	serverVersion := r.checkCoderReachability(cfg)
 	r.checkCoderBinary(cfg, serverVersion)
-	r.checkTargetSuffix(cfg)
 	r.checkWritableDirs(cfg)
 	r.checkProcessLimits()
 
@@ -320,14 +320,6 @@ func sameMajorMinor(a, b string) bool {
 	return cut(a) == cut(b)
 }
 
-func (r *doctorReport) checkTargetSuffix(cfg *config.Config) {
-	if _, err := route.NewCodec(cfg.Deployment.TargetSuffix); err != nil {
-		r.emit("target-suffix", statusFail, "%v", err)
-		return
-	}
-	r.emit("target-suffix", statusPass, "%q is a valid target suffix", cfg.Deployment.TargetSuffix)
-}
-
 func (r *doctorReport) checkWritableDirs(cfg *config.Config) {
 	const name = "writable-dirs"
 	for _, d := range []string{cfg.State.Dir, os.TempDir()} {
@@ -386,6 +378,7 @@ func (r *doctorReport) checkAccountCredential(cfg *config.Config, accountFlag st
 		r.emit(name, statusFail, "loading credential: %v", err)
 		return nil
 	}
+	defer secretbox.BestEffortWipe(snap.Token)
 	if snap.State == core.CredentialStateMissing || len(snap.Token) == 0 {
 		r.emit(name, statusWarn, "account %s (%q) has no stored credential (state=%s)", id, acct.Label, snap.State)
 		return nil
@@ -412,7 +405,7 @@ func (r *doctorReport) checkAccountCredential(cfg *config.Config, accountFlag st
 			return nil
 		}
 		r.emit(name, statusPass, "stored credential is valid (Coder user %q, generation %d)", ident.Username, snap.Generation)
-		return snap.Token
+		return slices.Clone(snap.Token)
 	}
 	switch core.KindOf(err) {
 	case core.CredentialInvalid:
@@ -446,12 +439,7 @@ func (r *doctorReport) checkWorkspaceProbe(cfg *config.Config, workspace, accoun
 		r.emit(name, statusFail, "%v", err)
 		return
 	}
-	codec, err := route.NewCodec(cfg.Deployment.TargetSuffix)
-	if err != nil {
-		r.emit(name, statusFail, "%v", err)
-		return
-	}
-	rt, err := codec.ParseDirectTCPIP(workspace+"."+cfg.Deployment.TargetSuffix, 22)
+	rt, err := route.ParseBareTarget(workspace)
 	if err != nil {
 		r.emit(name, statusFail, "workspace name %q is not a valid target: %v", workspace, err)
 		return
@@ -473,7 +461,7 @@ func (r *doctorReport) checkWorkspaceProbe(cfg *config.Config, workspace, accoun
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(ctx, dep.CoderBinary, argv...)
 	cmd.Env = env
 	if dep.WorkingDir != "" {
 		cmd.Dir = dep.WorkingDir
