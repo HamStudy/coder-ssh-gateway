@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -284,19 +285,39 @@ func TestPollLimitsUsage(t *testing.T) {
 		close(done)
 	}()
 
+	// Assert through the public /metrics exposition, not the gauges.
+	scrape := func() map[string]string {
+		rec := httptest.NewRecorder()
+		m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		values := make(map[string]string)
+		for _, line := range strings.Split(rec.Body.String(), "\n") {
+			if strings.HasPrefix(line, "#") {
+				continue
+			}
+			if name, value, ok := strings.Cut(line, " "); ok {
+				values[name] = value
+			}
+		}
+		return values
+	}
+
+	usage := `coder_ssh_gateway_limits_usage{limit="` + string(limits.ReasonGlobalConn) + `"}`
+	max := `coder_ssh_gateway_limits_max{limit="` + string(limits.ReasonGlobalConn) + `"}`
+	wantMax := strconv.FormatFloat(float64(cfg.Limits.UnauthenticatedConnections), 'g', -1, 64)
+
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		v := testutil.ToFloat64(m.limitsUsage.WithLabelValues(string(limits.ReasonGlobalConn)))
-		if v == 1 {
+		values := scrape()
+		if values[usage] == "1" {
+			if got := values[max]; got != wantMax {
+				t.Errorf("limits_max = %q, want %q", got, wantMax)
+			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("limits_usage gauge never reached 1, last=%v", v)
+			t.Fatalf("limits_usage never reached 1 in exposition")
 		}
 		time.Sleep(5 * time.Millisecond)
-	}
-	if got := testutil.ToFloat64(m.limitsMax.WithLabelValues(string(limits.ReasonGlobalConn))); got != 128 {
-		t.Errorf("limits_max = %v, want 128", got)
 	}
 	cancel()
 	<-done
