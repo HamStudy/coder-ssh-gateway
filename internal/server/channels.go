@@ -325,6 +325,9 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 // rejectOnRevalidationFailure maps a failed channel-open revalidation to
 // §8.5 reasons and the §19.9/§11.4 transport-level consequences.
 func (s *Server) rejectOnRevalidationFailure(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, rt core.Route, newCh ssh.NewChannel, err error) {
+	s.log.Debug("channel-open revalidation failed",
+		slog.String("connection_id", state.ID()),
+		slog.String("detail", err.Error()))
 	detail := core.AUTH_CREDENTIAL_UNAUTHORIZED
 	var ce *core.CredentialError
 	if errors.As(err, &ce) && ce.DetailCode != "" {
