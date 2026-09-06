@@ -66,6 +66,43 @@ type coderStub struct {
 	statuses map[string]int
 }
 
+type cachedVerifierBarrier struct {
+	inner   sshauth.CachedTokenVerifier
+	mu      sync.Mutex
+	waiting int
+	want    int
+	ready   chan struct{}
+}
+
+func newCachedVerifierBarrier(inner sshauth.CachedTokenVerifier, want int) *cachedVerifierBarrier {
+	return &cachedVerifierBarrier{
+		inner: inner,
+		want:  want,
+		ready: make(chan struct{}),
+	}
+}
+
+func (b *cachedVerifierBarrier) VerifyCached(
+	ctx context.Context,
+	accountID uuid.UUID,
+	generation int64,
+	token []byte,
+) (core.CoderIdentity, error) {
+	b.mu.Lock()
+	b.waiting++
+	if b.waiting == b.want {
+		close(b.ready)
+	}
+	b.mu.Unlock()
+
+	select {
+	case <-b.ready:
+	case <-ctx.Done():
+		return core.CoderIdentity{}, ctx.Err()
+	}
+	return b.inner.VerifyCached(ctx, accountID, generation, token)
+}
+
 func newCoderStub(id uuid.UUID) *coderStub {
 	return &coderStub{id: id, statuses: map[string]int{}}
 }
@@ -576,7 +613,9 @@ func TestWireRenewalConcurrent(t *testing.T) {
 	defer f.close(t)
 	f.installCredential(t, stubOldToken)
 
-	ws := startWireServer(t, f.authConfig())
+	cfg := f.authConfig()
+	cfg.Verifier = newCachedVerifierBarrier(f.verifier, 2)
+	ws := startWireServer(t, cfg)
 	defer ws.shutdown()
 
 	var wg sync.WaitGroup

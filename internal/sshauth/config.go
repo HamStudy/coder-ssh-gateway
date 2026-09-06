@@ -36,9 +36,6 @@ type AuthConfig struct {
 	// MaintenanceUser is the outer username for credential maintenance
 	// (§8.1, default "auth").
 	MaintenanceUser string
-	// AllowSSHCertificates permits *ssh.Certificate keys (§10.3; default
-	// false — MVP rejects certificates).
-	AllowSSHCertificates bool
 	// DeploymentID scopes key lookup and credential verification to one
 	// Coder deployment.
 	DeploymentID uuid.UUID

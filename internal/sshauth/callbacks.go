@@ -71,13 +71,14 @@ func (c AuthConfig) publicKeyCallback(state *ConnState, cfgErr error, meta ssh.C
 		if c.enrollmentEnabled() && user == c.enrollmentUser() {
 			return c.enrollmentCandidate(state, key)
 		}
-		return nil, reject("unknown_username", core.AUTH_UNKNOWN_KEY)
+		// Every non-reserved username is a potential direct workspace route.
+		// Deliberately defer route parsing until after enrolled-key resolution
+		// and proof, so neither malformed routes nor workspace existence become
+		// a pre-auth oracle.
 	}
 
-	if !c.AllowSSHCertificates {
-		if _, isCert := key.(*ssh.Certificate); isCert {
-			return nil, reject("certificate_not_allowed", core.AUTH_UNKNOWN_KEY)
-		}
+	if _, isCert := key.(*ssh.Certificate); isCert {
+		return nil, reject("certificate_not_allowed", core.AUTH_UNKNOWN_KEY)
 	}
 
 	account, keyRecord, err := c.Store.LookupByPublicKey(state.Context(), c.DeploymentID, key)
@@ -169,7 +170,10 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 				slog.String("account_id", account.ID.String()))
 			return nil, reject("wrong_coder_identity", core.AUTH_WRONG_CODER_IDENTITY, account.ID, keyRecord.ID)
 		}
-		return FinalTransportPermissions(account.ID, c.DeploymentID, keyRecord.ID, snap.Generation, false), nil
+		if meta.User() == c.TransportUser {
+			return FinalTransportPermissions(account.ID, c.DeploymentID, keyRecord.ID, snap.Generation, false), nil
+		}
+		return FinalWorkspacePermissions(account.ID, c.DeploymentID, keyRecord.ID, snap.Generation), nil
 	}
 
 	kind := core.KindOf(err)

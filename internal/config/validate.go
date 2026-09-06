@@ -5,13 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"regexp"
-	"strings"
 )
-
-// labelRE is the §17.4 DNS label grammar: 1-63 bytes, lowercase ASCII
-// letters/digits, internal hyphens only.
-var labelRE = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 var validWaitModes = map[string]bool{"yes": true, "no": true, "auto": true}
 
@@ -21,6 +15,7 @@ var validWaitModes = map[string]bool{"yes": true, "no": true, "auto": true}
 func (c *Config) Validate() error {
 	var errs []error
 
+	c.validateBindAddresses(&errs)
 	c.validateSSH(&errs)
 	c.validateState(&errs)
 	c.validateEncryption(&errs)
@@ -32,7 +27,30 @@ func (c *Config) Validate() error {
 	return errors.Join(errs...)
 }
 
+func (c *Config) validateBindAddresses(errs *[]error) {
+	addresses := []struct {
+		field    string
+		value    string
+		optional bool
+	}{
+		{"listen.address", c.Listen.Address, false},
+		{"observability.metrics_address", c.Observability.MetricsAddress, true},
+		{"observability.health_address", c.Observability.HealthAddress, true},
+	}
+	for _, address := range addresses {
+		if address.optional && address.value == "" {
+			continue
+		}
+		if err := checkListenAddress(address.value); err != nil {
+			*errs = append(*errs, fmt.Errorf("%s: %w", address.field, err))
+		}
+	}
+}
+
 func (c *Config) validateSSH(errs *[]error) {
+	if c.SSH.AllowSSHCertificates {
+		*errs = append(*errs, errors.New("ssh.allow_ssh_certificates: true is unsupported; SSH certificates are always rejected"))
+	}
 	if len(c.SSH.HostKeys) == 0 {
 		*errs = append(*errs, errors.New("ssh.host_keys: at least one host key is required"))
 	}
@@ -89,10 +107,6 @@ func (c *Config) validateDeployment(errs *[]error) {
 		*errs = append(*errs, fmt.Errorf("deployment.coder_url: invalid URL %q", c.Deployment.CoderURL))
 	} else if u.Scheme != "https" {
 		*errs = append(*errs, fmt.Errorf("deployment.coder_url: must be HTTPS, got scheme %q", u.Scheme))
-	}
-
-	if msg := checkTargetSuffix(c.Deployment.TargetSuffix); msg != "" {
-		*errs = append(*errs, fmt.Errorf("deployment.target_suffix: %s", msg))
 	}
 
 	if !validWaitModes[c.Deployment.Wait] {
@@ -215,27 +229,4 @@ func checkReadableFile(errs *[]error, field, path string) (os.FileInfo, bool) {
 		return nil, false
 	}
 	return fi, true
-}
-
-// checkTargetSuffix enforces §17.4 grammar on the configured suffix: at
-// least two valid DNS labels (a bare TLD or single label is public-suffix-like
-// and rejected), total length within DNS limits.
-func checkTargetSuffix(s string) string {
-	if s == "" {
-		return "required"
-	}
-	s = strings.TrimSuffix(s, ".")
-	if len(s) > 253 {
-		return fmt.Sprintf("%q exceeds 253 bytes", s)
-	}
-	labels := strings.Split(s, ".")
-	if len(labels) < 2 {
-		return fmt.Sprintf("%q must have at least two DNS labels (a bare TLD is not allowed)", s)
-	}
-	for _, l := range labels {
-		if !labelRE.MatchString(l) {
-			return fmt.Sprintf("label %q in %q is not a valid lowercase DNS label", l, s)
-		}
-	}
-	return ""
 }

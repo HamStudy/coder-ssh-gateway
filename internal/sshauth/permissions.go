@@ -29,6 +29,9 @@ const (
 	ModeCandidate   = "candidate"
 	ModeTransport   = "transport"
 	ModeMaintenance = "maintenance"
+	// ModeWorkspace is an authenticated direct workspace session. Its target
+	// comes from the outer SSH username and is parsed only after key proof.
+	ModeWorkspace = "workspace"
 	// ModeEnrollment marks candidate permissions for the init@ self-
 	// enrollment flow (CD-2): the key is not (yet) linked to any account.
 	ModeEnrollment = "enrollment"
@@ -79,9 +82,20 @@ func EnrollmentCandidatePermissions(keyDigestHex string) *ssh.Permissions {
 }
 
 func FinalTransportPermissions(accountID, deploymentID, keyID uuid.UUID, generation int64, mustReconnect bool) *ssh.Permissions {
+	return finalWorkspacePermissions(ModeTransport, accountID, deploymentID, keyID, generation, mustReconnect)
+}
+
+// FinalWorkspacePermissions records an authenticated workspace-session mode.
+// The route itself is intentionally not copied into Permissions: it remains
+// the SSH username and is parsed after authentication by the server.
+func FinalWorkspacePermissions(accountID, deploymentID, keyID uuid.UUID, generation int64) *ssh.Permissions {
+	return finalWorkspacePermissions(ModeWorkspace, accountID, deploymentID, keyID, generation, false)
+}
+
+func finalWorkspacePermissions(mode string, accountID, deploymentID, keyID uuid.UUID, generation int64, mustReconnect bool) *ssh.Permissions {
 	return &ssh.Permissions{
 		Extensions: map[string]string{
-			PermissionMode:                 ModeTransport,
+			PermissionMode:                 mode,
 			PermissionAccountID:            accountID.String(),
 			PermissionDeploymentID:         deploymentID.String(),
 			PermissionSSHKeyID:             keyID.String(),
@@ -130,7 +144,7 @@ func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
 	ext := perms.Extensions
 
 	mode := ext[PermissionMode]
-	if mode != ModeTransport && mode != ModeMaintenance {
+	if mode != ModeTransport && mode != ModeMaintenance && mode != ModeWorkspace {
 		return FinalPerms{}, fmt.Errorf("%w: %q", ErrInvalidMode, mode)
 	}
 
@@ -166,7 +180,7 @@ func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
 		if deploymentID == uuid.Nil {
 			return FinalPerms{}, ErrZeroDeploymentID
 		}
-	} else if mode == ModeTransport {
+	} else if mode == ModeTransport || mode == ModeWorkspace {
 		return FinalPerms{}, ErrMissingDeploymentID
 	}
 

@@ -72,7 +72,6 @@ type Encryption struct {
 type Deployment struct {
 	ID                      string   `yaml:"id"`
 	CoderURL                string   `yaml:"coder_url"`
-	TargetSuffix            string   `yaml:"target_suffix"`
 	CoderBinary             string   `yaml:"coder_binary"`
 	CoderGlobalConfig       string   `yaml:"coder_global_config"`
 	WorkingDirectory        string   `yaml:"working_directory"`
@@ -233,7 +232,14 @@ func Parse(path string) (*Config, error) {
 	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	resolveRelativePaths(cfg, filepath.Dir(path))
+	base, err := filepath.Abs(filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("resolve config directory %s: %w", filepath.Dir(path), err)
+	}
+	resolveRelativePaths(cfg, base)
+	if cfg.State.Dir == "" {
+		cfg.State.Dir = base
+	}
 	return cfg, nil
 }
 

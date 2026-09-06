@@ -185,12 +185,10 @@ func (c AuthConfig) enrollmentCandidate(state *ConnState, key ssh.PublicKey) (*s
 		slog.String("connection_id", state.ID()),
 		slog.String("peer", state.PeerAddr()),
 	)
-	if !c.AllowSSHCertificates {
-		if _, isCert := key.(*ssh.Certificate); isCert {
-			log.Debug("enrollment candidate rejected: certificate")
-			c.recordAuthRejected(state.Context(), state, core.AUTH_UNKNOWN_KEY, uuid.Nil, uuid.Nil)
-			return nil, ErrPublicKeyRejected
-		}
+	if _, isCert := key.(*ssh.Certificate); isCert {
+		log.Debug("enrollment candidate rejected: certificate")
+		c.recordAuthRejected(state.Context(), state, core.AUTH_UNKNOWN_KEY, uuid.Nil, uuid.Nil)
+		return nil, ErrPublicKeyRejected
 	}
 	digest := KeyDigestHex(key)
 	log.Debug("enrollment candidate accepted",

@@ -158,11 +158,10 @@ func newFixture(t *testing.T, handler http.Handler) *fixture {
 	f.store = s
 
 	f.dep = core.Deployment{
-		ID:           uuid.New(),
-		CoderURL:     coderURL,
-		TargetSuffix: "coder-gateway.example.com",
-		CoderBinary:  "/usr/local/bin/coder",
-		WaitMode:     "auto",
+		ID:          uuid.New(),
+		CoderURL:    coderURL,
+		CoderBinary: "/usr/local/bin/coder",
+		WaitMode:    "auto",
 	}
 	if err := s.EnsureDeployment(f.dep); err != nil {
 		t.Fatalf("EnsureDeployment: %v", err)
@@ -279,6 +278,7 @@ type wireServer struct {
 
 	mu      sync.Mutex
 	results []wireResult
+	read    int
 	states  []*sshauth.ConnState
 	conns   []*ssh.ServerConn
 	wg      sync.WaitGroup
@@ -378,10 +378,23 @@ func (ws *wireServer) shutdown() {
 	ws.wg.Wait()
 }
 
-// lastResult blocks until the server has completed at least one handshake.
+// lastResult blocks until the server completes the next unread handshake.
 func (ws *wireServer) lastResult() wireResult {
-	results := ws.waitResults(1)
-	return results[len(results)-1]
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ws.mu.Lock()
+		if ws.read < len(ws.results) {
+			result := ws.results[ws.read]
+			ws.read++
+			ws.mu.Unlock()
+			return result
+		}
+		ws.mu.Unlock()
+		if time.Now().After(deadline) {
+			ws.t.Fatal("timed out waiting for next server handshake result")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // waitResults blocks until the server has completed at least n handshakes.
@@ -574,6 +587,7 @@ func TestWireRejectUniformity(t *testing.T) {
 
 	f := newFixture(t, coderOKHandler(uuid.New()))
 	defer f.close(t)
+	authCfg := f.authConfig()
 
 	// (5) Build an SSH certificate over the registered key.
 	_, caPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -616,15 +630,15 @@ func TestWireRejectUniformity(t *testing.T) {
 		user   string
 		signer ssh.Signer
 	}{
-		"unknown key":          {"coder", unknownSigner},
-		"known key wrong user": {"root", f.signer},
-		"certificate offered":  {"coder", certSigner},
+		"unknown key":            {"coder", unknownSigner},
+		"unknown key wrong user": {"root", unknownSigner},
+		"certificate offered":    {"coder", certSigner},
 	}
 
 	msgs := make(map[string]string, len(cases))
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			ws := startWireServer(t, f.authConfig())
+			ws := startWireServer(t, authCfg)
 			defer ws.shutdown()
 			client, err := dialGateway(ws.addr(), tc.user, &clientProbe{}, allAuthMethods(tc.signer)...)
 			if client != nil {
@@ -658,7 +672,7 @@ func TestWireRejectUniformity(t *testing.T) {
 				t.Fatalf("re-enable: %v", err)
 			}
 		}()
-		ws := startWireServer(t, f.authConfig())
+		ws := startWireServer(t, authCfg)
 		defer ws.shutdown()
 		client, err := dialGateway(ws.addr(), "coder", &clientProbe{}, allAuthMethods(f.signer)...)
 		if client != nil {

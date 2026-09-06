@@ -1,6 +1,7 @@
 package sshauth_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,6 +82,110 @@ func enrollmentAuditEvents(f *fixture, eventType, result, detailContains string)
 		n++
 	}
 	return n
+}
+
+type countingEnrollmentVerifier struct {
+	inner sshauth.EnrollmentVerifier
+	calls atomic.Int32
+}
+
+type enrollmentStateSnapshot struct {
+	accounts []core.Account
+	keys     map[uuid.UUID][]core.SSHKeyRecord
+}
+
+func wipeTestBytes(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+func snapshotEnrollmentState(t *testing.T, f *fixture) enrollmentStateSnapshot {
+	t.Helper()
+	accounts, err := f.store.ListAccounts()
+	if err != nil {
+		t.Fatalf("ListAccounts: %v", err)
+	}
+	keys := make(map[uuid.UUID][]core.SSHKeyRecord, len(accounts))
+	for _, account := range accounts {
+		accountKeys, err := f.store.ListKeysForAccount(account.ID)
+		if err != nil {
+			t.Fatalf("ListKeysForAccount(%s): %v", account.ID, err)
+		}
+		keys[account.ID] = accountKeys
+	}
+	return enrollmentStateSnapshot{accounts: accounts, keys: keys}
+}
+
+func sameAccount(a, b core.Account) bool {
+	if a.ID != b.ID || a.DeploymentID != b.DeploymentID || a.Label != b.Label ||
+		a.CachedUsername != b.CachedUsername || a.BindOnFirstToken != b.BindOnFirstToken ||
+		a.Enabled != b.Enabled {
+		return false
+	}
+	if a.CoderUserID == nil || b.CoderUserID == nil {
+		return a.CoderUserID == nil && b.CoderUserID == nil
+	}
+	return *a.CoderUserID == *b.CoderUserID
+}
+
+func sameKey(a, b core.SSHKeyRecord) bool {
+	return a == b
+}
+
+func assertEnrollmentStateUnchanged(t *testing.T, before, after enrollmentStateSnapshot) {
+	t.Helper()
+	if len(after.accounts) != len(before.accounts) {
+		t.Errorf("account count changed: before=%d after=%d", len(before.accounts), len(after.accounts))
+	}
+	for i, beforeAccount := range before.accounts {
+		if i >= len(after.accounts) {
+			break
+		}
+		afterAccount := after.accounts[i]
+		if !sameAccount(beforeAccount, afterAccount) {
+			t.Errorf("account[%d] changed: before=%+v after=%+v", i, beforeAccount, afterAccount)
+			continue
+		}
+
+		beforeKeys := before.keys[beforeAccount.ID]
+		afterKeys := after.keys[afterAccount.ID]
+		if len(afterKeys) != len(beforeKeys) {
+			t.Errorf("account %s key count changed: before=%d after=%d", beforeAccount.ID, len(beforeKeys), len(afterKeys))
+		}
+		for j, beforeKey := range beforeKeys {
+			if j >= len(afterKeys) {
+				break
+			}
+			if !sameKey(beforeKey, afterKeys[j]) {
+				t.Errorf("account %s key[%d] changed: before=%+v after=%+v", beforeAccount.ID, j, beforeKey, afterKeys[j])
+			}
+		}
+	}
+	for accountID, beforeKeys := range before.keys {
+		afterKeys, ok := after.keys[accountID]
+		if !ok {
+			continue
+		}
+		if len(afterKeys) != len(beforeKeys) {
+			continue
+		}
+		for i := range beforeKeys {
+			if !sameKey(beforeKeys[i], afterKeys[i]) {
+				t.Errorf("account %s key[%d] changed outside aligned account list: before=%+v after=%+v", accountID, i, beforeKeys[i], afterKeys[i])
+			}
+		}
+	}
+	for accountID := range after.keys {
+		if _, ok := before.keys[accountID]; !ok {
+			t.Errorf("new key state appeared for account %s", accountID)
+		}
+	}
+}
+
+func (v *countingEnrollmentVerifier) Verify(ctx context.Context, token []byte) (core.CoderIdentity, error) {
+	v.calls.Add(1)
+	return v.inner.Verify(ctx, token)
 }
 
 // accountForCoderID finds the account bound to the given Coder user UUID.
@@ -533,7 +639,16 @@ func TestWireEnrollmentRejectsCertificate(t *testing.T) {
 	f := newFixture(t, stub)
 	defer f.close(t)
 
-	ws := startWireServer(t, f.enrollmentAuthConfig())
+	cfg := f.enrollmentAuthConfig()
+	verifier := &countingEnrollmentVerifier{inner: cfg.Enrollment.Verifier}
+	cfg.Enrollment.Verifier = verifier
+	const initialToken = "original-enrollment-token-0123456789"
+	initial := f.installCredential(t, initialToken)
+	defer wipeTestBytes(initial.Token)
+	expectedToken := []byte(initialToken)
+	defer wipeTestBytes(expectedToken)
+	stateBefore := snapshotEnrollmentState(t, f)
+	ws := startWireServer(t, cfg)
 	defer ws.shutdown()
 
 	keySigner := newSigner(t)
@@ -572,6 +687,38 @@ func TestWireEnrollmentRejectsCertificate(t *testing.T) {
 	}
 	if ki.promptCount() != 0 {
 		t.Errorf("token challenges = %d, want 0 (certificate rejected at candidate stage)", ki.promptCount())
+	}
+	if got := verifier.calls.Load(); got != 0 {
+		t.Errorf("enrollment verifier calls = %d, want 0", got)
+	}
+	stateAfter := snapshotEnrollmentState(t, f)
+	assertEnrollmentStateUnchanged(t, stateBefore, stateAfter)
+	after, err := f.store.LoadCredential(context.Background(), f.acct.ID)
+	if err != nil {
+		t.Fatalf("LoadCredential after certificate: %v", err)
+	}
+	defer wipeTestBytes(after.Token)
+	tokenEqual := bytes.Equal(after.Token, expectedToken)
+	if after.AccountID != initial.AccountID ||
+		after.Generation != initial.Generation ||
+		after.State != initial.State ||
+		!tokenEqual ||
+		!after.LastValidatedAt.Equal(initial.LastValidatedAt) {
+		t.Errorf(
+			"credential changed: account_id %s generation %d state %q token_equal=%t last_validated_at %s; want account_id %s generation %d state %q token_equal=true last_validated_at %s",
+			after.AccountID,
+			after.Generation,
+			after.State,
+			tokenEqual,
+			after.LastValidatedAt,
+			initial.AccountID,
+			initial.Generation,
+			initial.State,
+			initial.LastValidatedAt,
+		)
+	}
+	if f.rate.grants != 0 {
+		t.Errorf("reconnect allowance grants = %d, want 0", f.rate.grants)
 	}
 	if got := enrollmentAuditEvents(f, sshauth.EventTypeEnrollmentSuccess, sshauth.ResultSuccess, ""); got != 0 {
 		t.Errorf("enrollment success events = %d, want 0", got)
