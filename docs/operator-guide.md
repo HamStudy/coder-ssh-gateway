@@ -487,8 +487,22 @@ rollout but you should still fix it before opening the port.
 
 ## Migrating from earlier releases
 
-Two surface changes affect operators upgrading from a pre-`target_suffix`
-release. Apply both before restarting `serve` — unknown config keys are
+### Upgrading to 0.2.0 (breaking)
+
+Two reserved usernames and their config keys are gone:
+
+- Remove `transport_user:` and `maintenance_user:` from the `ssh:` block
+  of `config.yaml` — unknown keys are rejected at startup.
+- `auth@gateway` no longer exists. When a stored token expires, the next
+  workspace connection prompts for a fresh token inline and continues
+  into the workspace — no separate renewal connection, no reconnect.
+- `coder@gateway` is no longer special. ProxyJump works with any
+  username: `ssh -J you@gateway dev@workspace`.
+
+### From a pre-`target_suffix` release
+
+
+Apply before restarting `serve` — unknown config keys are
 rejected at startup, so a leftover `deployment.target_suffix` will fail
 the boot:
 
