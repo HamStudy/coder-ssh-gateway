@@ -71,11 +71,13 @@ func (s *Server) dispatchWorkspaceChannels(ctx context.Context, state *sshauth.C
 		case "session":
 			if served || s.cfg.WorkspaceSessionStarter == nil {
 				s.rec.ChannelRejected()
+				s.log.Info("session channel rejected", "reason_reason", "already served or no starter", "served", served, "starter_nil", s.cfg.WorkspaceSessionStarter == nil)
 				_ = newCh.Reject(ssh.Prohibited, "workspace connections permit one session channel")
 				continue
 			}
 			if s.draining.Load() {
 				s.rec.ChannelRejected()
+				s.log.Info("session channel rejected", "reason", "draining")
 				_ = newCh.Reject(ssh.Prohibited, "server is shutting down")
 				continue
 			}
