@@ -65,6 +65,15 @@ func TestAdmissionGlobalUnauthLimit(t *testing.T) {
 	held := dialRaw(t, ts.addr()) // occupies the single unauth slot
 	defer held.Close()
 
+	// The listener accepts dial-backlog in arrival order, which under load
+	// is not dial order: wait until the server has actually accepted (and
+	// banner-greeted) the held connection before dialing the over-limit one.
+	_ = held.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := held.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("held connection never accepted: %v", err)
+	}
+	_ = held.SetReadDeadline(time.Time{})
+
 	start := time.Now()
 	over := dialRaw(t, ts.addr())
 	defer over.Close()
