@@ -2,7 +2,7 @@
 # Keep the generated config minimal; use configOverride for anything else.
 
 image:
-  repository: ghcr.io/taxilian/coder-ssh-gateway
+  repository: ghcr.io/hamstudy/coder-ssh-gateway
   tag: ""            # defaults to .Chart.appVersion
   pullPolicy: IfNotPresent
 imagePullSecrets: []

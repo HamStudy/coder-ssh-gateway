@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 // ConnState holds the mutable per-connection state that the per-connection

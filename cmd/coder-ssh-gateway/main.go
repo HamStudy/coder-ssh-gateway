@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/app"
+	"github.com/HamStudy/coder-ssh-gateway/internal/app"
 )
 
 func main() {

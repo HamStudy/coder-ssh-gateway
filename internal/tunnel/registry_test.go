@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/testleaks"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testleaks"
 )
 
 func TestRegistryAddRemoveList(t *testing.T) {

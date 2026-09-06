@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
 )
 
 // Rechecker verifies stored credentials after a tunnel child exits before

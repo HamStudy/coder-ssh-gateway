@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 // errRedirect signals a refused redirect (fail-closed per §11.2/§11.4).

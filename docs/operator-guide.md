@@ -46,7 +46,7 @@ This is the canonical secure native install.
 ### 1. Install the binary
 
 ```bash
-git clone https://github.com/taxilian/coder-ssh-gateway
+git clone https://github.com/HamStudy/coder-ssh-gateway
 cd coder-ssh-gateway
 make
 sudo install -m 0755 ./bin/coder-ssh-gateway /usr/local/bin/

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/app"
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/app"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
 )
 
 // TestServeEnvAddressOverrides asserts the assembled listeners bind the

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
-	"github.com/taxilian/coder-ssh-gateway/internal/testutil"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testutil"
 )
 
 func TestWorkspaceProbeInvokesConfiguredCoderBinary(t *testing.T) {

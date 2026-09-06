@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 func TestParseBareTarget(t *testing.T) {

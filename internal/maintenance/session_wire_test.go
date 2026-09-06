@@ -29,17 +29,17 @@ import (
 	"go.uber.org/goleak"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/audit"
-	"github.com/taxilian/coder-ssh-gateway/internal/coderapi"
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/limits"
-	"github.com/taxilian/coder-ssh-gateway/internal/maintenance"
-	"github.com/taxilian/coder-ssh-gateway/internal/route"
-	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
-	"github.com/taxilian/coder-ssh-gateway/internal/server"
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
-	"github.com/taxilian/coder-ssh-gateway/internal/store"
+	"github.com/HamStudy/coder-ssh-gateway/internal/audit"
+	"github.com/HamStudy/coder-ssh-gateway/internal/coderapi"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/limits"
+	"github.com/HamStudy/coder-ssh-gateway/internal/maintenance"
+	"github.com/HamStudy/coder-ssh-gateway/internal/route"
+	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
+	"github.com/HamStudy/coder-ssh-gateway/internal/server"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/store"
 )
 
 // leakCheck mirrors the server-package convention: coderapi's keep-alive

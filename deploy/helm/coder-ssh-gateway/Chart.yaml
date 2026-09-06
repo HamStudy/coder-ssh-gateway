@@ -7,5 +7,5 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.25.0"
-home: https://github.com/taxilian/coder-ssh-gateway
+home: https://github.com/HamStudy/coder-ssh-gateway
 license: Apache-2.0

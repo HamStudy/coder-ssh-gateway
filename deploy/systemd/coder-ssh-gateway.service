@@ -23,7 +23,7 @@
 # --state-dir is a GLOBAL flag and must come BEFORE the subcommand.
 [Unit]
 Description=Coder SSH Gateway
-Documentation=https://github.com/taxilian/coder-ssh-gateway
+Documentation=https://github.com/HamStudy/coder-ssh-gateway
 After=network-online.target
 Wants=network-online.target
 

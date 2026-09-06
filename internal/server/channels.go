@@ -10,12 +10,12 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/audit"
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/limits"
-	"github.com/taxilian/coder-ssh-gateway/internal/route"
-	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/audit"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/limits"
+	"github.com/HamStudy/coder-ssh-gateway/internal/route"
+	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
 )
 
 // EventTypeChannelOpen audits channel target acceptance/rejection (§34.3).

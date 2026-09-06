@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/testleaks"
-	"github.com/taxilian/coder-ssh-gateway/internal/testutil"
-	"github.com/taxilian/coder-ssh-gateway/internal/testutil/innerssh"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testleaks"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testutil"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testutil/innerssh"
 	"golang.org/x/crypto/ssh"
 )
 

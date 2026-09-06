@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
 )
 
 type tokenBucket struct {

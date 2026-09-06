@@ -20,7 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/version"
+	"github.com/HamStudy/coder-ssh-gateway/internal/version"
 )
 
 // Exit codes (§29 operator-facing commands; Unix conventions).

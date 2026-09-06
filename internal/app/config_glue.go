@@ -10,11 +10,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/coderapi"
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
-	"github.com/taxilian/coder-ssh-gateway/internal/store"
+	"github.com/HamStudy/coder-ssh-gateway/internal/coderapi"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
+	"github.com/HamStudy/coder-ssh-gateway/internal/store"
 )
 
 // errStateDirRequired reports that neither --state-dir nor state.dir was set.

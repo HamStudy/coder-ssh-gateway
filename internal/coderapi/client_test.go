@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/coderapi"
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/coderapi"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 func TestNewHTTPClientDefaults(t *testing.T) {

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/audit"
-	"github.com/taxilian/coder-ssh-gateway/internal/metrics"
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/audit"
+	"github.com/HamStudy/coder-ssh-gateway/internal/metrics"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
 )
 
 // enrollmentMetricValue reads the enrollments_total series for one result

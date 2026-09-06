@@ -12,9 +12,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/server"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/server"
 )
 
 // fakeTunnelCall is one recorded TunnelStarter invocation.

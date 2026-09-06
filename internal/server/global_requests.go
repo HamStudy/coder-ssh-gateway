@@ -6,7 +6,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
 )
 
 // handleGlobalRequests drains the connection's global-request channel (§8.4,

@@ -16,10 +16,10 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
-	"github.com/taxilian/coder-ssh-gateway/internal/store"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/store"
 )
 
 // exec command names, matched byte-exactly against the exec payload (§14.2 —

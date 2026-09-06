@@ -18,7 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/limits"
+	"github.com/HamStudy/coder-ssh-gateway/internal/limits"
 )
 
 // namespace is the §34.2 metric prefix; combined with each Name below it

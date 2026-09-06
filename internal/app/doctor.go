@@ -20,14 +20,14 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/coderapi"
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/route"
-	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
-	"github.com/taxilian/coder-ssh-gateway/internal/server"
-	"github.com/taxilian/coder-ssh-gateway/internal/store"
-	"github.com/taxilian/coder-ssh-gateway/internal/tunnel"
+	"github.com/HamStudy/coder-ssh-gateway/internal/coderapi"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/route"
+	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
+	"github.com/HamStudy/coder-ssh-gateway/internal/server"
+	"github.com/HamStudy/coder-ssh-gateway/internal/store"
+	"github.com/HamStudy/coder-ssh-gateway/internal/tunnel"
 )
 
 const (

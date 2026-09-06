@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 // LookupOrCreateAccountByCoderID resolves the account bound to

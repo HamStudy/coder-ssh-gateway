@@ -20,12 +20,12 @@ import (
 	"go.uber.org/goleak"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/audit"
-	"github.com/taxilian/coder-ssh-gateway/internal/coderapi"
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
-	"github.com/taxilian/coder-ssh-gateway/internal/store"
+	"github.com/HamStudy/coder-ssh-gateway/internal/audit"
+	"github.com/HamStudy/coder-ssh-gateway/internal/coderapi"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/store"
 )
 
 // leakCheck runs goleak after all explicit defers have torn down the

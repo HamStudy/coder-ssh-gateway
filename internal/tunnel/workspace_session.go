@@ -16,7 +16,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 // WorkspaceSessionStarter terminates the SSH protocol exposed by `coder ssh

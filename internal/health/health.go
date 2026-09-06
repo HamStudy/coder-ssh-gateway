@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/version"
+	"github.com/HamStudy/coder-ssh-gateway/internal/version"
 )
 
 // Checks supplies the readiness probes. Nil hard checks are treated as

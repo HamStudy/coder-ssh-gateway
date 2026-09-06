@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 // Stable §44 detail codes carried by Error. Aliased from core so the route

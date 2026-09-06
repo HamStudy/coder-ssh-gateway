@@ -54,7 +54,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/testutil/innerssh"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testutil/innerssh"
 )
 
 const (

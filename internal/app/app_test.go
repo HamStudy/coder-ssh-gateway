@@ -18,8 +18,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/app"
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/app"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
 )
 
 // runCLI executes the CLI with captured streams; stdin is fed from a string.

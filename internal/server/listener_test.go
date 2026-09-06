@@ -8,9 +8,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
-	"github.com/taxilian/coder-ssh-gateway/internal/server"
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/server"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
 )
 
 // A panicking per-connection code path (here the injected pre-auth gate)

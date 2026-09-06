@@ -13,7 +13,7 @@ import (
 	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/testutil/innerssh"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testutil/innerssh"
 )
 
 // TestE2EProxyJumpFake is the §38.3 headline case: the real OpenSSH client

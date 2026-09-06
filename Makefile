@@ -8,9 +8,9 @@ BINARY ?= coder-ssh-gateway
 VERSION ?= dev
 COMMIT ?= dev
 DATE ?= dev
-LDFLAGS ?= -X github.com/taxilian/coder-ssh-gateway/internal/version.Version=$(VERSION) \
-          -X github.com/taxilian/coder-ssh-gateway/internal/version.Commit=$(COMMIT) \
-          -X github.com/taxilian/coder-ssh-gateway/internal/version.Date=$(DATE)
+LDFLAGS ?= -X github.com/HamStudy/coder-ssh-gateway/internal/version.Version=$(VERSION) \
+          -X github.com/HamStudy/coder-ssh-gateway/internal/version.Commit=$(COMMIT) \
+          -X github.com/HamStudy/coder-ssh-gateway/internal/version.Date=$(DATE)
 
 .DEFAULT_GOAL := all
 

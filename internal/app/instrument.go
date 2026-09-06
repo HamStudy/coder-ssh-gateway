@@ -7,13 +7,13 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/audit"
-	"github.com/taxilian/coder-ssh-gateway/internal/coderapi"
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
-	"github.com/taxilian/coder-ssh-gateway/internal/limits"
-	"github.com/taxilian/coder-ssh-gateway/internal/metrics"
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
-	"github.com/taxilian/coder-ssh-gateway/internal/store"
+	"github.com/HamStudy/coder-ssh-gateway/internal/audit"
+	"github.com/HamStudy/coder-ssh-gateway/internal/coderapi"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/limits"
+	"github.com/HamStudy/coder-ssh-gateway/internal/metrics"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/store"
 )
 
 // instrumentedVerifier wraps the raw Coder verifier with the §20 global

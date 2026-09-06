@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
+	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
 )
 
 func writeKeyFile(t *testing.T, dir, name string, content []byte, perm os.FileMode) string {

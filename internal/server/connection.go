@@ -9,10 +9,10 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/audit"
-	"github.com/taxilian/coder-ssh-gateway/internal/limits"
-	"github.com/taxilian/coder-ssh-gateway/internal/metrics"
-	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/audit"
+	"github.com/HamStudy/coder-ssh-gateway/internal/limits"
+	"github.com/HamStudy/coder-ssh-gateway/internal/metrics"
+	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
 )
 
 // EventTypeHandshakeFailed is audited when ssh.NewServerConn fails — the

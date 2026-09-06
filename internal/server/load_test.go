@@ -10,9 +10,9 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/config"
-	"github.com/taxilian/coder-ssh-gateway/internal/metrics"
-	"github.com/taxilian/coder-ssh-gateway/internal/server"
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
+	"github.com/HamStudy/coder-ssh-gateway/internal/metrics"
+	"github.com/HamStudy/coder-ssh-gateway/internal/server"
 )
 
 // fdCount returns the process open-fd count via /proc (linux-only repo).

@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/version"
+	"github.com/HamStudy/coder-ssh-gateway/internal/version"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/testleaks"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testleaks"
 )
 
 // §19.7: the ring keeps the tail and never grows past the cap.

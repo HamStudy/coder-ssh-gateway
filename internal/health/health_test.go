@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/testleaks"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testleaks"
 )
 
 func get(t *testing.T, h http.Handler, path string) (int, response) {

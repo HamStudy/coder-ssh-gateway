@@ -3,7 +3,7 @@ package tunnel
 import (
 	"regexp"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 var targetGrammar = regexp.MustCompile(`^[a-z0-9.-]+$`)

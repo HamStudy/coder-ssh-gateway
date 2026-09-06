@@ -36,7 +36,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/testutil"
+	"github.com/HamStudy/coder-ssh-gateway/internal/testutil"
 )
 
 // testWorkspace is a strict bare Coder target used by the fake E2E path.

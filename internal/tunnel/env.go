@@ -3,7 +3,7 @@ package tunnel
 import (
 	"os"
 
-	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
 
 func BuildEnv(dep core.Deployment, token []byte) []string {

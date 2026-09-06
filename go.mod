@@ -1,4 +1,4 @@
-module github.com/taxilian/coder-ssh-gateway
+module github.com/HamStudy/coder-ssh-gateway
 
 go 1.26.1
 
