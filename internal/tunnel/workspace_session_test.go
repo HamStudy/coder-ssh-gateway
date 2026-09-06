@@ -41,20 +41,23 @@ func TestWorkspaceSessionStarterStopsStartupWatchdogAfterHandshake(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	// Start has synchronously stopped its watchdog before NewClientConn returns.
-	// A send would be received only if the timer were still armed.
-	select {
-	case timerC <- time.Now():
-		t.Fatal("startup watchdog remained armed after successful handshake")
-	default:
-	}
 
+	// The starter disarms the watchdog on the server goroutine right after
+	// the inner handshake and BEFORE it serves sessions, so a completed exec
+	// is the first client-observable proof that the disarm already happened.
+	// Asserting before the exec raced the two goroutines (CI flake): a send
+	// here can only be received while the timer is still armed.
 	out, err := session.Output("ping")
 	if err != nil {
 		t.Fatalf("exec after startup timeout elapsed: %v", err)
 	}
 	if string(out) != "ECHO:ping" {
 		t.Fatalf("output = %q, want %q", out, "ECHO:ping")
+	}
+	select {
+	case timerC <- time.Now():
+		t.Fatal("startup watchdog remained armed after successful handshake")
+	default:
 	}
 	_ = session.Close()
 	_ = client.Close()
