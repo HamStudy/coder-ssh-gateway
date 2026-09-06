@@ -343,13 +343,19 @@ func handleSessionRequest(session *ssh.Session, req *ssh.Request, started *bool)
 	case "pty-req":
 		var r ptyRequest
 		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Term, 256) || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
+			slog.Info("pty rejected at parse/validation", "payload_len", len(req.Payload))
 			return false, false, false
 		}
 		modes, err := parseTerminalModes([]byte(r.Modes))
 		if err != nil {
+			slog.Info("pty rejected at modes parse", "modes_err", err.Error())
 			return false, false, false
 		}
-		return session.RequestPty(r.Term, int(r.Rows), int(r.Columns), modes) == nil, false, false
+		if err := session.RequestPty(r.Term, int(r.Rows), int(r.Columns), modes); err != nil {
+			slog.Info("pty rejected by inner", "inner_err", err.Error())
+			return false, false, false
+		}
+		return true, false, false
 	case "window-change":
 		var r windowChangeRequest
 		if ssh.Unmarshal(req.Payload, &r) != nil || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
