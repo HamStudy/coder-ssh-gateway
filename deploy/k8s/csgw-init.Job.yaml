@@ -1,0 +1,38 @@
+# coder-ssh-gateway init Job.
+#
+# Runs `init` once against the PVC. Must mount the PVC and run with
+# UID/GID/fsGroup 10001 to match deploy/k8s/deployment.yaml; without the
+# securityContext override the artifacts land owned by the image's
+# default non-root user (uid 65532) and serve cannot read them later.
+#
+# Apply:
+#   kubectl -n coder-ssh-gateway apply -f deploy/k8s/csgw-init.Job.yaml
+#   kubectl -n coder-ssh-gateway wait --for=condition=complete \
+#     --timeout=120s job/csgw-init
+#   kubectl -n coder-ssh-gateway logs job/csgw-init
+#   kubectl -n coder-ssh-gateway delete job/csgw-init
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: csgw-init
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: init
+          image: registry.example.com/coder-ssh-gateway:0.1.0
+          command: ["/usr/local/bin/coder-ssh-gateway"]
+          args: ["--state-dir", "/var/lib/coder-ssh-gateway", "init", "coder.example.com"]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/coder-ssh-gateway
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: coder-ssh-gateway

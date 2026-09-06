@@ -1,0 +1,43 @@
+# coder-ssh-gateway doctor Job.
+#
+# Runs `doctor` against the existing PVC. Must mount the PVC and run
+# with UID/GID/fsGroup 10001 to match deploy/k8s/deployment.yaml;
+# doctor reads the same files serve reads, so it must have the same
+# access.
+#
+# Apply:
+#   kubectl -n coder-ssh-gateway apply -f deploy/k8s/csgw-doctor.Job.yaml
+#   kubectl -n coder-ssh-gateway wait --for=condition=complete \
+#     --timeout=120s job/csgw-doctor
+#   kubectl -n coder-ssh-gateway logs job/csgw-doctor
+#   kubectl -n coder-ssh-gateway delete job/csgw-doctor
+#
+# Re-running after deploy: scale the Deployment to 0, wait for the
+# serving pod to be deleted, apply this Job (serve holds the exclusive
+# state lock for its process lifetime, so doctor cannot run while
+# serve is up), then scale the Deployment back to 1.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: csgw-doctor
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: doctor
+          image: registry.example.com/coder-ssh-gateway:0.1.0
+          command: ["/usr/local/bin/coder-ssh-gateway"]
+          args: ["--state-dir", "/var/lib/coder-ssh-gateway", "doctor"]
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/coder-ssh-gateway
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: coder-ssh-gateway

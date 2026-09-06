@@ -1,5 +1,10 @@
 # Raw TCP passthrough; an ordinary HTTP Ingress does not work here
-# (design section 31.3). Use a TCP-capable L4 load balancer.
+# (SSH is not HTTP). Use a TCP-capable L4 load balancer.
+#
+# External port 22 maps to in-pod 2222 so end users connect with plain
+# `ssh host` and no port flag. Metrics (9090) and health (9091) stay
+# cluster-internal; expose them via a separate ClusterIP service only
+# if your monitoring runs outside the cluster.
 apiVersion: v1
 kind: Service
 metadata:
@@ -12,5 +17,3 @@ spec:
     - name: ssh
       port: 22
       targetPort: 2222
-  # Metrics and health stay cluster-internal; expose them via a separate
-  # ClusterIP service only if your monitoring runs outside the cluster.

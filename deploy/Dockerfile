@@ -1,4 +1,4 @@
-# coder-ssh-gateway container image (design section 31.2).
+# coder-ssh-gateway container image.
 #
 # Multi-stage: build the gateway from source, fetch a checksummed Coder CLI,
 # assemble a minimal non-root runtime image (distroless: no shell, no package
@@ -35,10 +35,8 @@ RUN mkdir -p /out/state
 FROM debian:bookworm-slim AS codercli
 
 ARG CODER_VERSION=v2.35.2
-# sha256 of coder_${CODER_VERSION#v}_linux_amd64.tar.gz, baked in and
-# verified against the v2.35.2 release. Overridable via --build-arg for
-# version bumps; the build still fails closed on empty or mismatch
-# (section 31.2: verify checksums).
+# sha256 of coder_${CODER_VERSION#v}_linux_amd64.tar.gz, baked in. The
+# build fails closed on empty or mismatched checksum.
 ARG CODER_SHA256=907017ffefae1af67bd6533b6c9ddd6b975e39ea9ef9340deba3dc72231b209c
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -77,9 +75,11 @@ VOLUME ["/var/lib/coder-ssh-gateway"]
 ENTRYPOINT ["/usr/local/bin/coder-ssh-gateway", "--state-dir", "/var/lib/coder-ssh-gateway"]
 CMD ["serve"]
 
-# First-run bootstrap (state dir contains no config.yaml yet):
+# First-run bootstrap (state dir contains no config.yaml yet).
+# `init` requires exactly one bare Coder DNS domain argument; it writes
+# `https://<domain>` into the starter `config.yaml`:
 #   docker run --rm -it -v csgw-state:/var/lib/coder-ssh-gateway \
-#     IMAGE init
+#     IMAGE init coder.example.com
 # then edit config.yaml inside the volume and start with the default CMD.
 #
 # Secrets: init writes host key + encryption key under

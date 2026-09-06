@@ -1,4 +1,4 @@
-# coder-ssh-gateway systemd unit (design section 31.1).
+# coder-ssh-gateway systemd unit.
 #
 # Install:
 #   install -m 0644 coder-ssh-gateway.service /etc/systemd/system/
@@ -6,14 +6,21 @@
 #   systemctl enable --now coder-ssh-gateway
 #
 # Prerequisites:
-#   - dedicated system user: useradd --system --home /var/lib/coder-ssh-gateway \
-#       --shell /usr/sbin/nologin coder-ssh-gateway
-#   - state dir initialized: coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway init
-#     (run as root once, then chown -R coder-ssh-gateway: /var/lib/coder-ssh-gateway)
+#   - dedicated system user and group:
+#       useradd --system --home /var/lib/coder-ssh-gateway \
+#         --shell /usr/sbin/nologin coder-ssh-gateway
+#   - state dir initialized as the service user (the secrets and
+#     lock must already be owned by coder-ssh-gateway on first start;
+#     running init as root and chown-ing afterward leaves intermediate
+#     records at the wrong ownership, which `doctor` will flag):
+#       sudo install -d -o coder-ssh-gateway -g coder-ssh-gateway -m 0700 \
+#         /var/lib/coder-ssh-gateway
+#       sudo -u coder-ssh-gateway -g coder-ssh-gateway \
+#         coder-ssh-gateway --state-dir /var/lib/coder-ssh-gateway init coder.example.com
 #   - Coder CLI installed at /usr/local/bin/coder (pin the version; see
 #     deployment.coder_binary in config.yaml)
 #
-# NOTE: --state-dir is a GLOBAL flag and must come BEFORE the subcommand.
+# --state-dir is a GLOBAL flag and must come BEFORE the subcommand.
 [Unit]
 Description=Coder SSH Gateway
 Documentation=https://github.com/taxilian/coder-ssh-gateway
@@ -28,10 +35,10 @@ ExecStart=/usr/local/bin/coder-ssh-gateway --state-dir /var/lib/coder-ssh-gatewa
 Restart=on-failure
 RestartSec=2
 
-# Hardening (design section 31.1). If the Coder CLI cannot reach workspaces
-# (DERP relays, direct UDP paths, proxies), suspect the sandbox first and
-# relax the minimum set of options below; verify connectivity per
-# design section 31.5 before production rollout.
+# Hardening: a deliberate sandbox for the gateway. If the Coder CLI
+# cannot reach workspaces (DERP relays, direct UDP paths, proxies),
+# suspect the sandbox first and relax the minimum set of options below;
+# verify connectivity before production rollout.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -51,7 +58,8 @@ ReadOnlyPaths=/run/secrets
 LimitNOFILE=65536
 TasksMax=1024
 
-# Disable core dumps (tokens live in process memory; section 22.5).
+# Disable core dumps: tokens live in process memory; a core dump is a
+# credential.
 LimitCORE=0
 
 [Install]

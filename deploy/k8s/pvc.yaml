@@ -1,6 +1,12 @@
-# ONE PVC holds the full state dir: store records, audit log, and (by
-# default) secrets/ under it. Access mode must be ReadWriteOnce: the store
-# flock makes any second writer fail fast.
+# Single PVC for the gateway state directory.
+#
+# Access mode MUST be ReadWriteOnce: the store takes an exclusive lock
+# on <state-dir>/lock for the process lifetime. A second writer mounting
+# the same PVC fails fast at startup.
+#
+# Adjust storageClassName to your cluster. The 1Gi default is enough for
+# hundreds of users with normal audit retention; raise it if you keep
+# long audit history or unusually many accounts.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

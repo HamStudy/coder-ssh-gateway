@@ -1,9 +1,18 @@
-# Adapted from design section 31.7 for the flat-file store (no SQLite).
-# See NOTES.md in this directory before applying.
+# coder-ssh-gateway Deployment.
 #
-# SINGLE REPLICA ONLY. The store takes an exclusive flock on
-# <state-dir>/lock; a second replica fails fast at startup. Recreate
-# strategy prevents two pods from overlapping during rollout.
+# Single replica only. The store takes an exclusive lock on
+# <state-dir>/lock for the process lifetime; a second replica fails
+# fast at startup. Recreate strategy prevents two pods from overlapping
+# during rollout.
+#
+# This manifest assumes the PVC at pvc.yaml is already applied and the
+# state dir has been initialized (see Operator Guide → Kubernetes for
+# the end-to-end sequence).
+#
+# Health probes need a non-loopback bind — config defaults are
+# 127.0.0.1 and would be unreachable from the kubelet. The CSGW_*
+# environment overrides below set them to wildcard at serve time and
+# leave config.yaml untouched.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,8 +31,8 @@ spec:
       labels:
         app: coder-ssh-gateway
     spec:
-      # 90s drain: SIGTERM -> stop accepting -> drain active tunnels
-      # (design section 32). Must exceed the configured drain period.
+      # 90s drain: SIGTERM → stop accepting → drain active tunnels.
+      # Must exceed the configured drain period.
       terminationGracePeriodSeconds: 90
       securityContext:
         runAsNonRoot: true
@@ -40,11 +49,9 @@ spec:
             - --state-dir
             - /var/lib/coder-ssh-gateway
             - serve
-          # Env overrides (CD-1) replace config.yaml edits for the bind
-          # addresses: CLI flag > env var > config file > default. The
-          # health/metrics Service ports and probes below REQUIRE a
-          # non-loopback bind — config defaults are 127.0.0.1 and would be
-          # unreachable from the kubelet.
+          # Env overrides avoid config.yaml edits for bind addresses.
+          # Precedence is CLI flag > env var > config file > default;
+          # this manifest intentionally keeps the env-based form.
           env:
             - name: CSGW_LISTEN_ADDRESS # overrides listen.address
               value: "0.0.0.0:2222"
@@ -64,9 +71,10 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          # /livez and /readyz are served on observability.health_address
-          # (health endpoints land with the health/metrics milestone; the
-          # paths and port are stable per design sections 33 and 34.2).
+          # Liveness means the process and store lock are healthy;
+          # readiness additionally means the deployment config is
+          # usable. During SIGTERM shutdown readiness flips false while
+          # active tunnels drain.
           readinessProbe:
             httpGet:
               path: /readyz
