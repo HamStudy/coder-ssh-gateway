@@ -52,6 +52,12 @@ users.
   recovers nothing. The key without state identifies nothing. Together
   they recover everything — so they must NEVER share a backup bucket.
   Procedure: [Operator Guide → Backup and restore](./docs/operator-guide.md#backup-and-restore).
+- Keep the encryption key off the volume that holds the encrypted data.
+  Encryption at rest is only meaningful when the key is not stored next
+  to the records it protects. In containers, prefer an `env:VARNAME`
+  key source injected from a runtime Secret (the Helm chart does this
+  by default); the Helm chart additionally keeps generated keys across
+  upgrades and uninstalls so a re-install never orphans stored tokens.
 - Treat the host key file and the credential encryption key as
   long-lived credentials. Rotate the host key on a schedule and on
   personnel change; rotate the encryption key when an operator with

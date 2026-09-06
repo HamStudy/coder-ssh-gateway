@@ -22,6 +22,12 @@
    ssh -p {{ .Values.service.port }} login@<hostname>
    (paste a Coder token from {{ printf "https://%s/cli-auth" .Values.coder.domain }})
 
-Rotation note: key files reach the pod through subPath mounts, which do not
-update in place. After `helm upgrade` changes either key, run
-`kubectl -n {{ .Release.Namespace }} rollout restart deploy/{{ include "csgw.fullname" . }}`.
+Keys: the credential-encryption key was auto-generated and is injected
+via the environment only — it is not on the state volume. Both it and
+the state volume (which holds the generated host key) are kept on
+uninstall and reused on upgrade; deleting them forces re-enrollment.
+
+Rotation note: after `helm upgrade` changes a key, restart the rollout
+so containers re-read it:
+
+   kubectl -n {{ .Release.Namespace }} rollout restart deploy/{{ include "csgw.fullname" . }}

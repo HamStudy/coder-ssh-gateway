@@ -29,11 +29,21 @@ configOverride: {}
 # (base64 of exactly 32 bytes: openssl rand -base64 32).
 secrets:
   create: true
-  # Set to an existing Secret name to manage keys yourself; the Secret must
-  # contain the items ssh_host_ed25519_key and credential-key-v1.
+  # Set to an existing Secret name to manage keys yourself; it must contain
+  # credential-key-v1 (base64 of 32 random bytes) and, if you want to pin
+  # the host identity, ssh_host_ed25519_key (base64 PEM).
   existingSecret: ""
-  hostKey: ""
+  # Optional. When empty the chart auto-generates the credential-encryption
+  # key on install and reuses the generated value on every upgrade (the
+  # existing Secret is looked up, and kept on uninstall). It is injected
+  # through the environment ONLY — it never lands on the state volume next
+  # to the data it protects. Provide your own with: openssl rand -base64 32
   encryptionKey: ""
+  # Optional. When empty, init generates an Ed25519 host key into the state
+  # volume on first boot; it persists there across upgrades. Provide one to
+  # pin the gateway identity out-of-band:
+  #   ssh-keygen -t ed25519 -f host -N '' && base64 -w0 host
+  hostKey: ""
 
 service:
   type: LoadBalancer

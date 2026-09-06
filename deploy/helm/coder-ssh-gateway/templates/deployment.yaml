@@ -35,14 +35,23 @@ spec:
       {{/*
         init is idempotent: it keeps existing keys/config/store and exits 0,
         so it runs on every boot and no-ops once the PVC is initialized.
-        Mounted Secret files (host key, encryption key) and the ConfigMap
-        config are "kept existing" and never rewritten.
+        The ConfigMap config is "kept existing" and never rewritten. When
+        no host key is supplied via values, init generates it into the
+        state volume on first boot. The encryption key never touches the
+        state volume: it is injected through the environment from the
+        Secret (CSGW_ENCRYPTION_KEY_V1).
       */}}
       initContainers:
         - name: init
           image: {{ include "csgw.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["--state-dir", "/var/lib/coder-ssh-gateway", "init", {{ .Values.coder.domain | quote }}]
+          env:
+            - name: CSGW_ENCRYPTION_KEY_V1
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "csgw.secretName" . }}
+                  key: credential-key-v1
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -55,14 +64,11 @@ spec:
               mountPath: /var/lib/coder-ssh-gateway/config.yaml
               subPath: config.yaml
               readOnly: true
-            - name: keys
-              mountPath: /var/lib/coder-ssh-gateway/secrets/ssh_host_ed25519_key
-              subPath: ssh_host_ed25519_key
+            {{- if eq (include "csgw.hostKeyProvided" .) "true" }}
+            - name: hostkey
+              mountPath: /run/secrets/csgw
               readOnly: true
-            - name: keys
-              mountPath: /var/lib/coder-ssh-gateway/secrets/credential-key-v1
-              subPath: credential-key-v1
-              readOnly: true
+            {{- end }}
       containers:
         - name: gateway
           image: {{ include "csgw.image" . }}
@@ -80,6 +86,12 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          env:
+            - name: CSGW_ENCRYPTION_KEY_V1
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "csgw.secretName" . }}
+                  key: credential-key-v1
           readinessProbe:
             httpGet:
               path: /readyz
@@ -99,14 +111,11 @@ spec:
               mountPath: /var/lib/coder-ssh-gateway/config.yaml
               subPath: config.yaml
               readOnly: true
-            - name: keys
-              mountPath: /var/lib/coder-ssh-gateway/secrets/ssh_host_ed25519_key
-              subPath: ssh_host_ed25519_key
+            {{- if eq (include "csgw.hostKeyProvided" .) "true" }}
+            - name: hostkey
+              mountPath: /run/secrets/csgw
               readOnly: true
-            - name: keys
-              mountPath: /var/lib/coder-ssh-gateway/secrets/credential-key-v1
-              subPath: credential-key-v1
-              readOnly: true
+            {{- end }}
       volumes:
         - name: state
           persistentVolumeClaim:
@@ -116,10 +125,17 @@ spec:
         - name: config
           configMap:
             name: {{ include "csgw.fullname" . }}
-        - name: keys
+        {{- if eq (include "csgw.hostKeyProvided" .) "true" }}
+        - name: hostkey
           secret:
             secretName: {{ include "csgw.secretName" . }}
             defaultMode: 0400
+            # Project ONLY the host key: the encryption key reaches the pod
+            # through the environment, never as a file.
+            items:
+              - key: ssh_host_ed25519_key
+                path: ssh_host_ed25519_key
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

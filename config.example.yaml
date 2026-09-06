@@ -121,7 +121,8 @@ state:
 # Credential encryption key map.
 encryption:
   provider: file                            # [DEFAULT] only "file" is
-                                            # implemented
+                                            # implemented (file paths and
+                                            # env: references below)
   active_key_id: v1                         # [DEPLOYMENT] key ID used for
                                             # new credential writes. Old
                                             # IDs listed under keys stay
@@ -131,7 +132,14 @@ encryption:
     # every stored token. Each file must exist, be a regular file,
     # and NOT be group- or world-writable (mode 0600 satisfies; 0400
     # also satisfies).
+    # For container/Kubernetes deployments a value may instead be an
+    # environment reference, env:VARNAME — the variable holds the key
+    # (32 raw bytes or base64 of 32 bytes) and is injected from a
+    # Secret. That keeps the key off the state volume entirely:
+    # encryption at rest is only meaningful when the key is not stored
+    # next to the encrypted data.
     v1: secrets/credential-key-v1
+    # v2: env:CSGW_ENCRYPTION_KEY_V2
 
 # Deployment wiring.
 deployment:

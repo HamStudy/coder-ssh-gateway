@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -297,6 +298,11 @@ func resolveRelativePaths(cfg *Config, base string) {
 		cfg.SSH.HostKeys[i] = resolve(k)
 	}
 	for id, k := range cfg.Encryption.Keys {
+		// env:VARNAME sources are not paths (secretbox provider contract);
+		// resolving them onto the state dir would corrupt the reference.
+		if strings.HasPrefix(k, "env:") {
+			continue
+		}
 		cfg.Encryption.Keys[id] = resolve(k)
 	}
 	cfg.State.Dir = resolve(cfg.State.Dir)

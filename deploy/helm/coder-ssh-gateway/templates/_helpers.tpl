@@ -34,3 +34,31 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end -}}
+
+{{/*
+Encryption key material (base64) for the chart-managed Secret. Priority:
+explicit values.secrets.encryptionKey, then the existing Secret's value
+(stable across helm upgrades), then fresh generation. Generation uses
+randBytes — 32 bytes of key material.
+*/}}
+{{- define "csgw.encryptionKeyB64" -}}
+{{- if .Values.secrets.encryptionKey -}}
+{{- .Values.secrets.encryptionKey -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace (include "csgw.fullname" .) -}}
+{{- if $existing -}}
+{{- index $existing.data "credential-key-v1" -}}
+{{- else -}}
+{{- randBytes 32 | b64enc -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* True when a host key comes from the Secret (values or existingSecret). */}}
+{{- define "csgw.hostKeyProvided" -}}
+{{- if or .Values.secrets.hostKey .Values.secrets.existingSecret -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}

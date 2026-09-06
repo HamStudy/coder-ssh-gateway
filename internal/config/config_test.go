@@ -427,6 +427,16 @@ func TestApplyStateDir(t *testing.T) {
 		t.Errorf("encryption key default = %q, want %q", cfg.Encryption.Keys["v1"], wantKey)
 	}
 
+	// env: sources are references, not paths — path resolution must leave
+	// them untouched or the provider sees a corrupted reference.
+	cfgEnv := Default()
+	cfgEnv.Deployment.CoderURL = "https://coder.example.com"
+	cfgEnv.Encryption.Keys = map[string]string{"v1": "env:CSGW_ENCRYPTION_KEY_V1"}
+	resolveRelativePaths(cfgEnv, env.stateDir)
+	if got := cfgEnv.Encryption.Keys["v1"]; got != "env:CSGW_ENCRYPTION_KEY_V1" {
+		t.Errorf("env source resolved = %q, want untouched", got)
+	}
+
 	// Explicit config values are preserved (only empty ones are defaulted).
 	cfg2, _ := validConfig(t)
 	ApplyStateDir(cfg2, env.stateDir)

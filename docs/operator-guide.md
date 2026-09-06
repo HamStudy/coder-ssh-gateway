@@ -306,23 +306,23 @@ Prerequisites:
 
 ### Option A: Helm (recommended)
 
-Generate the two keys, then install:
+The chart self-provisions: it generates the credential-encryption key on
+install and injects it through the environment only (never written to
+the state volume), and the init container generates the host key into
+the state volume on first boot. Both survive upgrades and reinstalls;
+supply your own via `secrets.hostKey` / `secrets.encryptionKey` when
+you want out-of-band control:
 
 ```bash
-ssh-keygen -t ed25519 -N '' -f ./csgw_host_key
 helm install coder-ssh-gateway deploy/helm/coder-ssh-gateway \
   --namespace coder-ssh-gateway --create-namespace \
-  --set coder.domain=coder.example.com \
-  --set secrets.hostKey="$(base64 -w0 ./csgw_host_key)" \
-  --set secrets.encryptionKey="$(openssl rand -base64 32)"
-rm ./csgw_host_key
+  --set coder.domain=coder.example.com
 kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
 ```
 
 `coder.domain` is the hostname of your Coder deployment; the default,
-`coder.com`, is Coder's public service. The chart keeps the host key and
-encryption key in a Secret, renders `config.yaml` from a ConfigMap, and
-prints the LoadBalancer address and the host-key fingerprint. Verify:
+`coder.com`, is Coder's public service. The chart renders `config.yaml`
+from a ConfigMap and prints the LoadBalancer address. Verify:
 
 ```bash
 kubectl -n coder-ssh-gateway get svc coder-ssh-gateway

@@ -6,6 +6,17 @@ metadata:
     {{- include "csgw.labels" . | nindent 4 }}
 data:
   config.yaml: |-
+    {{- /*
+      The encryption key travels ONLY via the environment (injected from
+      the Secret through CSGW_ENCRYPTION_KEY_V1) so it never lands on the
+      state volume next to the data it protects. The host key comes from
+      the Secret volume when supplied, else init generates it into the
+      state volume on first boot.
+    */ -}}
+    {{- $hostKeyPath := "/run/secrets/csgw/ssh_host_ed25519_key" -}}
+    {{- if eq (include "csgw.hostKeyProvided" .) "false" -}}
+    {{- $hostKeyPath = "secrets/ssh_host_ed25519_key" -}}
+    {{- end -}}
     {{- $base := dict
           "version" 1
           "listen" (dict "address" "0.0.0.0:2222")
@@ -15,12 +26,12 @@ data:
           "ssh" (dict
             "transport_user" .Values.gateway.transportUser
             "maintenance_user" .Values.gateway.maintenanceUser
-            "host_keys" (list "secrets/ssh_host_ed25519_key"))
+            "host_keys" (list $hostKeyPath))
           "state" (dict "audit_retention_days" .Values.gateway.auditRetentionDays)
           "encryption" (dict
             "provider" "file"
             "active_key_id" "v1"
-            "keys" (dict "v1" "secrets/credential-key-v1"))
+            "keys" (dict "v1" "env:CSGW_ENCRYPTION_KEY_V1"))
           "deployment" (dict
             "id" "primary"
             "coder_url" (printf "https://%s" .Values.coder.domain)

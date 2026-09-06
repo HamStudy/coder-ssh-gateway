@@ -89,15 +89,13 @@ Full walkthrough including config edits:
 
 ### Kubernetes (Helm)
 
-The chart ships a Secret-backed deployment that initializes itself on
-first boot — you supply the hostname and two keys:
+The chart self-provisions — it generates the encryption key (injected
+via the environment, never written to disk next to your data), and the
+host key is generated into the state volume on first boot:
 
 ```bash
-kubectl create namespace csgw
-helm install csgw deploy/helm/coder-ssh-gateway -n csgw \
-  --set coder.domain=coder.example.com \
-  --set secrets.hostKey="$(cat host_key | base64)" \
-  --set secrets.encryptionKey="$(head -c 32 /dev/urandom | base64)"
+helm install csgw deploy/helm/coder-ssh-gateway -n csgw --create-namespace \
+  --set coder.domain=coder.example.com
 ```
 
 Chart values, upgrades, and maintenance:

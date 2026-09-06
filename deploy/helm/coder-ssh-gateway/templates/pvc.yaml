@@ -4,6 +4,10 @@ metadata:
   name: {{ include "csgw.fullname" . }}
   labels:
     {{- include "csgw.labels" . | nindent 4 }}
+  annotations:
+    # The state volume holds the store and (when not supplied via values)
+    # the auto-generated host key. Deleting it orphans every enrollment.
+    helm.sh/resource-policy: keep
 spec:
   accessModes:
     - ReadWriteOnce
