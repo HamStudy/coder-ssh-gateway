@@ -63,6 +63,21 @@ func newCoderStub(t *testing.T, useTLS bool) *coderStub {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"version":"v2.35.2"}`)
 	})
+	mux.HandleFunc("/api/v2/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		tok := r.Header.Get("Coder-Session-Token")
+		ident, ok := cs.tokens[tok]
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"message":"invalid token"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"workspaces":[`+
+			`{"name":"general","owner_id":%q},`+
+			`{"name":"someone-elses","owner_id":"11111111-1111-1111-1111-111111111111"},`+
+			`{"name":"emailsupport","owner_id":%q}],`+
+			`"count":2}`, ident.ID.String(), ident.ID.String())
+	})
 	if useTLS {
 		cs.srv = httptest.NewTLSServer(mux)
 		cert := cs.srv.Certificate()

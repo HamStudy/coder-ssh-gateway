@@ -1,6 +1,7 @@
 package sshauth
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -118,6 +119,9 @@ type EnrollmentConfig struct {
 	User string
 	// Verifier validates candidate tokens against the Coder control plane.
 	Verifier EnrollmentVerifier
+	// Workspaces powers the post-enrollment hint listing the user's
+	// workspaces. Nil disables the hint; failures never fail enrollment.
+	Workspaces WorkspaceLister
 	// Store resolves/creates accounts, links keys, and replaces credentials.
 	Store EnrollmentStore
 	// Rate gates token attempts and receives the §13.6-style reconnect
@@ -394,12 +398,33 @@ func (ec *EnrollmentConfig) validateAndLink(state *ConnState, key ssh.PublicKey,
 		}
 	}
 
+	// linkEnrollment's store call wipes candidate (§21.5 plaintext
+	// ownership), so the post-link workspace hint snapshots the token
+	// into its own buffer before the store consumes the original.
+	var hintToken []byte
+	if ec.Workspaces != nil {
+		hintToken = bytes.Clone(candidate)
+		defer wipeBytes(hintToken)
+	}
+
 	account, keyRecord, generation, details, err := ec.linkEnrollment(scope, candidate, identity, key, digest, state)
 	if err != nil {
 		return nil, err
 	}
 
-	state.SendBanner(enrollmentSuccessText(identity.Username))
+	banner := enrollmentSuccessText(identity.Username)
+	if ec.Workspaces != nil {
+		listCtx, cancel := context.WithTimeout(scope.ctx, workspaceListTimeout)
+		names, owned, err := ec.Workspaces.ListOwnedWorkspaces(listCtx, hintToken, identity.ID, maxListedWorkspaces)
+		cancel()
+		switch {
+		case err != nil:
+			log.Debug("workspace hint skipped", slog.String("detail", err.Error()))
+		case len(names) > 0:
+			banner += "\n" + workspaceListText(names, owned)
+		}
+	}
+	state.SendBanner(banner)
 	if ec.Rate != nil {
 		ec.Rate.GrantReconnectAllowance(account.ID)
 	}
@@ -546,12 +571,42 @@ func (ec *EnrollmentConfig) linkEnrollment(
 	return account, keyRecord, generation, details, nil
 }
 
+// WorkspaceLister enumerates the workspaces a freshly verified token can
+// reach, for the post-enrollment hint. Best-effort by contract: implementors
+// return errors, callers skip the hint.
+type WorkspaceLister interface {
+	ListOwnedWorkspaces(ctx context.Context, token []byte, owner uuid.UUID, limit int) (names []string, owned int, err error)
+}
+
+const (
+	// maxListedWorkspaces caps the hint list; larger fleets get an
+	// "and N more" tail instead of a wall of names.
+	maxListedWorkspaces = 10
+	// workspaceListTimeout bounds the extra control-plane round trip so
+	// enrollment close latency stays predictable.
+	workspaceListTimeout = 5 * time.Second
+)
+
 // enrollmentSuccessText is the post-link confirmation (banner and KI
 // zero-prompt confirmation share it). The username comes from the Coder
 // control plane, not from client input.
 func enrollmentSuccessText(username string) string {
 	return fmt.Sprintf("Enrolled. Coder user %s — key linked, token saved.\n"+
 		"Reconnect using your workspace connection (<workspace>@<gateway>).", username)
+}
+
+// workspaceListText renders the hint under the enrollment confirmation.
+// owned may exceed len(names) when the list was capped.
+func workspaceListText(names []string, owned int) string {
+	var b strings.Builder
+	b.WriteString("Your workspaces:")
+	for _, name := range names {
+		b.WriteString("\n  " + name)
+	}
+	if remaining := owned - len(names); remaining > 0 {
+		fmt.Fprintf(&b, "\n  … and %d more", remaining)
+	}
+	return b.String()
 }
 
 // auditEnrollment records a CD-2 enrollment outcome. account/keyRecord are

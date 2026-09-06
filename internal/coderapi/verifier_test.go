@@ -525,3 +525,61 @@ func TestNewRejectsBadClientCert(t *testing.T) {
 		t.Fatal("expected error for unparseable client certificate")
 	}
 }
+
+func TestListOwnedWorkspaces(t *testing.T) {
+	owner := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	var seenAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Coder-Session-Token")
+		if r.URL.Query().Get("limit") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"workspaces":[`+
+			`{"name":"general","owner_id":%q},`+
+			`{"name":"other","owner_id":"33333333-3333-3333-3333-333333333333"},`+
+			`{"name":"second","owner_id":%q}],`+
+			`"count":2}`, owner.String(), owner.String())
+	}))
+	defer srv.Close()
+
+	v, err := coderapi.New(deploymentFor(t, srv.URL), coderapi.Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	names, owned, err := v.ListOwnedWorkspaces(context.Background(), []byte(testToken), owner, 10)
+	if err != nil {
+		t.Fatalf("ListOwnedWorkspaces: %v", err)
+	}
+	if seenAuth != testToken {
+		t.Errorf("token header = %q, want the session token", seenAuth)
+	}
+	if owned != 2 || len(names) != 2 || names[0] != "general" || names[1] != "second" {
+		t.Errorf("names = %v (owned %d), want [general second] (owned 2)", names, owned)
+	}
+
+	t.Run("caps at limit", func(t *testing.T) {
+		names, owned, err := v.ListOwnedWorkspaces(context.Background(), []byte(testToken), owner, 1)
+		if err != nil {
+			t.Fatalf("ListOwnedWorkspaces: %v", err)
+		}
+		if len(names) != 1 || owned != 2 {
+			t.Errorf("names = %v (owned %d), want 1 capped name (owned 2)", names, owned)
+		}
+	})
+
+	t.Run("server error is returned for caller to skip", func(t *testing.T) {
+		broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer broken.Close()
+		vb, err := coderapi.New(deploymentFor(t, broken.URL), coderapi.Options{})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, _, err := vb.ListOwnedWorkspaces(context.Background(), []byte(testToken), owner, 10); err == nil {
+			t.Fatal("expected error from 500 reply")
+		}
+	})
+}

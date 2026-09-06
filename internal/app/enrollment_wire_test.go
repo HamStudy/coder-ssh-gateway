@@ -180,6 +180,15 @@ func TestServeEnrollmentEnabledEndToEnd(t *testing.T) {
 	if got := banners.text(); !strings.Contains(got, "Enrolled. Coder user taxilian") {
 		t.Errorf("missing success banner: %q", got)
 	}
+	// The hint lists the user's own workspaces only, never other owners'.
+	if !strings.Contains(banners.text(), "Your workspaces:") ||
+		!strings.Contains(banners.text(), "\n  general") ||
+		!strings.Contains(banners.text(), "\n  emailsupport") {
+		t.Errorf("missing workspace hint: %q", banners.text())
+	}
+	if strings.Contains(banners.text(), "someone-elses") {
+		t.Errorf("hint leaked other owners' workspaces: %q", banners.text())
+	}
 	if strings.Contains(banners.text(), token) {
 		t.Error("banner leaks token material")
 	}

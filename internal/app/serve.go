@@ -131,7 +131,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 			Enabled:  true,
 			User:     cfg.Enrollment.User,
 			Verifier: instVerifier,
-			Store:    instStore,
+			// Raw verifier: the hint is best-effort and must not contend
+			// for the auth semaphore or pollute validation metrics.
+			Workspaces: verifier,
+			Store:      instStore,
 			Rate:     rateLimits,
 			// §20: bound pre-resolution token guessing per source IP with
 			// the unknown-key attempt bucket.
