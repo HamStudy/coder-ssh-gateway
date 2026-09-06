@@ -91,12 +91,16 @@ Full walkthrough including config edits:
 
 The chart self-provisions — it generates the encryption key (injected
 via the environment, never written to disk next to your data), and the
-host key is generated into the state volume on first boot:
+host key is generated into the state volume on first boot. No cloning
+required; install straight from the release asset:
 
 ```bash
-helm install csgw deploy/helm/coder-ssh-gateway -n csgw --create-namespace \
-  --set coder.domain=coder.example.com
+helm install csgw \
+  https://github.com/HamStudy/coder-ssh-gateway/releases/download/v0.1.0/coder-ssh-gateway-0.1.0.tgz \
+  -n csgw --create-namespace --set coder.domain=coder.example.com
 ```
+
+(Or from a checkout: `helm install csgw deploy/helm/coder-ssh-gateway -n csgw --create-namespace --set coder.domain=coder.example.com`.)
 
 Chart values, upgrades, and maintenance:
 [Operator Guide → Kubernetes](./docs/operator-guide.md#kubernetes).

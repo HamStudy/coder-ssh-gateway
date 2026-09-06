@@ -1,8 +1,10 @@
 name: Publish
 
 # Builds multi-arch container images and pushes them to ghcr.io.
-# Tag pushes (v*) produce a versioned image; workflow_dispatch produces a
-# dev build tagged 0.0.0-<sha8>. No :latest — pick versions explicitly.
+# Tag pushes (v*) produce a versioned image + :latest, a GitHub Release
+# with the packaged Helm chart, and chart version == image version enforced;
+# workflow_dispatch produces a dev build tagged 0.0.0-<sha8> only (it never
+# touches :latest or creates releases).
 #
 # The image name derives from github.repository (lowercased: ghcr requires
 # lowercase), so it follows the repo wherever it lives.
@@ -50,13 +52,20 @@ jobs:
               echo "Chart.yaml appVersion ($chart_app) != tag version ($version); bump appVersion in the release commit" >&2
               exit 1
             fi
+            is_release=true
           else
             version="0.0.0-${sha8}"
+            is_release=false
           fi
           {
             echo "image=$image"
             echo "version=$version"
-            echo "sha8=$sha8"
+            echo "tags<<TAGS_EOF"
+            echo "$image:$version"
+            echo "$image:sha-$sha8"
+            # latest moves only on release tags; dev builds never touch it.
+            if $is_release; then echo "$image:latest"; fi
+            echo "TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -77,12 +86,44 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.sha8 }}
+          tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ github.sha }}
             DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Helm chart release: package the chart at the tag's version and attach it
+  # to a GitHub Release, so `helm install <release-asset-url>` works without
+  # cloning the repo. Runs only for release tags, after the image exists —
+  # the chart's default image tag is guaranteed to be pullable.
+  chart:
+    name: chart-release
+    needs: image
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Package chart at the tag version
+        run: |
+          set -eu
+          version="${GITHUB_REF#refs/tags/v}"
+          mkdir -p dist
+          helm package deploy/helm/coder-ssh-gateway \
+            --version "$version" --app-version "$version" \
+            --destination dist/
+
+      - name: Create GitHub release with the chart
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/coder-ssh-gateway-*.tgz
+          generate_release_notes: true
+          make_latest: true

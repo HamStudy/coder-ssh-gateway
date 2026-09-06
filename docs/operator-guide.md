@@ -313,12 +313,27 @@ the state volume on first boot. Both survive upgrades and reinstalls;
 supply your own via `secrets.hostKey` / `secrets.encryptionKey` when
 you want out-of-band control:
 
+From a checkout:
+
 ```bash
 helm install coder-ssh-gateway deploy/helm/coder-ssh-gateway \
   --namespace coder-ssh-gateway --create-namespace \
   --set coder.domain=coder.example.com
 kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
 ```
+
+Or without cloning, from the published release asset:
+
+```bash
+helm install coder-ssh-gateway \
+  https://github.com/HamStudy/coder-ssh-gateway/releases/download/v0.1.0/coder-ssh-gateway-0.1.0.tgz \
+  --namespace coder-ssh-gateway --create-namespace \
+  --set coder.domain=coder.example.com
+```
+
+Each release tags the chart at its version; check the
+[releases page](https://github.com/HamStudy/coder-ssh-gateway/releases)
+for the current one.
 
 `coder.domain` is the hostname of your Coder deployment; the default,
 `coder.com`, is Coder's public service. The chart renders `config.yaml`
