@@ -41,9 +41,9 @@ The token links this key to your Coder account. After verification
 this connection will close; reconnect with your workspace connection.
 Coder token:
 Enrolled. Coder user alicia — key linked, token saved.
-Reconnect using your workspace connection (coder@…).
+Reconnect using your workspace connection (<workspace>@<gateway>).
 Enrollment complete. This connection will now close;
-reconnect with your workspace connection (coder@…).
+reconnect with your workspace connection (<workspace>@<gateway>).
 Connection to gateway.example.com closed.
 ```
 
@@ -142,10 +142,11 @@ One paragraph per moving part:
   exec, PTY, signals, and window changes all pass through (direct
   mode); ProxyJump is available when a client needs exotic inner-SSH
   features like SFTP or agent forwarding.
-- **The username routes the connection.** `general`,
-  `general.main` (workspace.agent), or `main.general.alicia`
-  (agent.workspace.owner) — the inner username is always the
-  workspace's own `coder` user. Details in
+- **The username routes the connection.** `general` is your workspace,
+  `general.main` names a specific agent. To reach a teammate's
+  workspace, prefix the owner: `alicia/general` or
+  `alicia/general/main` (owner/workspace/agent). The gateway never
+  decides access — Coder's own permissions do. Details in
   [client setup](./docs/client-setup.md#daily-use-config).
 
 ## Things worth knowing before you go live

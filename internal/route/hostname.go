@@ -2,14 +2,17 @@
 //
 // Route forms:
 //
-//	1 label:  workspace                  (current user's workspace)
-//	2 labels: workspace.agent            (current user's named agent)
-//	3 labels: agent.workspace.owner      (explicit owner/workspace/agent)
+//	1 label:    workspace                  (current user's workspace)
+//	2 labels:   workspace.agent            (current user's named agent)
+//	3 labels:   agent.workspace.owner      (explicit owner/workspace/agent)
+//	2 slashed:  owner/workspace            (cross-user, default agent)
+//	3 slashed:  owner/workspace/agent      (cross-user, named agent)
 //
 // There is deliberately no two-label workspace.owner form; Coder interprets
-// two dot-separated labels as workspace.agent. The gateway never re-parses
-// workspace semantics: the full normalized target is passed directly to
-// Coder, which performs final normalization.
+// two dot-separated labels as workspace.agent. Slashed targets may not mix
+// with dots; each slash part is a strict DNS label. The gateway never
+// re-parses workspace semantics: the full normalized target is passed
+// directly to Coder, which performs final normalization.
 package route
 
 import "strings"

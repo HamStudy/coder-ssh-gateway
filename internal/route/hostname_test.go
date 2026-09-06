@@ -18,6 +18,9 @@ func TestParseBareTarget(t *testing.T) {
 		{"agent workspace owner", "agent.workspace.owner", "agent.workspace.owner"},
 		{"normalizes uppercase", "AGENT.Workspace.Owner", "agent.workspace.owner"},
 		{"strips trailing root dot", "workspace.", "workspace"},
+		{"owner workspace", "alicia/general", "alicia/general"},
+		{"owner workspace agent", "alicia/general/main", "alicia/general/main"},
+		{"slash normalizes uppercase", "Alicia/General", "alicia/general"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,6 +54,13 @@ func TestParseBareTargetRejectsInvalidDestinations(t *testing.T) {
 		{"ipv4", "192.0.2.1", core.ROUTE_NAME_INVALID},
 		{"ipv6", "2001:db8::1", core.ROUTE_NAME_INVALID},
 		{"oversized label", strings.Repeat("a", 64), core.ROUTE_NAME_INVALID},
+		{"four slash parts", "a/b/c/d", core.ROUTE_NAME_INVALID},
+		{"lone slash part", "a//b", core.ROUTE_NAME_INVALID},
+		{"leading slash", "/workspace", core.ROUTE_NAME_INVALID},
+		{"trailing slash", "workspace/", core.ROUTE_NAME_INVALID},
+		{"dot inside slash part", "alicia/gen.eral", core.ROUTE_NAME_INVALID},
+		{"dot and slash mixed", "general.main/alicia", core.ROUTE_NAME_INVALID},
+		{"slash invalid label", "alicia/-general", core.ROUTE_NAME_INVALID},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

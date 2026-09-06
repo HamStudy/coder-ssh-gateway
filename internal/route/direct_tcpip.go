@@ -62,8 +62,8 @@ func NewCodec() *Codec { return &Codec{} }
 // are never accepted here and must never be used for authorization.
 //
 // WorkspaceHost is the normalized bare target passed verbatim to Coder.
-// DisplayTarget is a safe loggable form:
-// the strict grammar guarantees lowercase ASCII [a-z0-9.-] only.
+// DisplayTarget is a safe loggable form: the strict grammar guarantees
+// lowercase ASCII [a-z0-9./-] only.
 func (c *Codec) ParseDirectTCPIP(host string, port uint32) (core.Route, error) {
 	if port != 22 {
 		return core.Route{}, newError(codePortDenied, "target port must be 22")
@@ -77,7 +77,13 @@ func (c *Codec) ParseDirectTCPIP(host string, port uint32) (core.Route, error) {
 }
 
 // ParseBareTarget validates a bare Coder target shared by session-ready and
-// direct-tcpip routing. It permits one to three strict DNS labels only.
+// direct-tcpip routing. Two families are accepted, mirroring what the Coder
+// CLI resolves:
+//
+//   - dotted: 1-3 strict DNS labels (workspace, workspace.agent,
+//     agent.workspace.owner)
+//   - slashed: owner/workspace or owner/workspace/agent, each part a strict
+//     DNS label (the cross-user form; dots may not be mixed with slashes)
 func ParseBareTarget(target string) (core.Route, error) {
 	h, err := normalizeHostname(target)
 	if err != nil {
@@ -85,6 +91,22 @@ func ParseBareTarget(target string) (core.Route, error) {
 	}
 	if len(h) > maxHostnameBytes {
 		return core.Route{}, newError(codeNameInvalid, "target exceeds 253 bytes")
+	}
+	if strings.Contains(h, "/") {
+		parts := strings.Split(h, "/")
+		if len(parts) < 2 || len(parts) > 3 {
+			return core.Route{}, newError(codeNameInvalid, "owner/workspace target requires 2-3 slash-separated labels")
+		}
+		for _, part := range parts {
+			if !validLabel(part) {
+				return core.Route{}, newError(codeNameInvalid, "invalid label in target")
+			}
+		}
+		return core.Route{
+			RequestedHost: target,
+			WorkspaceHost: h,
+			DisplayTarget: h,
+		}, nil
 	}
 	labels := strings.Split(h, ".")
 	if len(labels) > maxRouteLabels {

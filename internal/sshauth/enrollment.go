@@ -67,7 +67,7 @@ const (
 		"Use a different key or contact the administrator."
 	// enrollmentConfirmBanner is the KI zero-prompt confirmation after a
 	// successful link (the pre-close banner already carried the username).
-	enrollmentConfirmBanner = "Enrollment complete. This connection will now close;\nreconnect with your workspace connection (coder@…)."
+	enrollmentConfirmBanner = "Enrollment complete. This connection will now close;\nreconnect with your workspace connection (<workspace>@<gateway>)."
 )
 
 // KeyDigestHex computes the canonical store key digest: lowercase hex
@@ -551,7 +551,7 @@ func (ec *EnrollmentConfig) linkEnrollment(
 // control plane, not from client input.
 func enrollmentSuccessText(username string) string {
 	return fmt.Sprintf("Enrolled. Coder user %s — key linked, token saved.\n"+
-		"Reconnect using your workspace connection (coder@…).", username)
+		"Reconnect using your workspace connection (<workspace>@<gateway>).", username)
 }
 
 // auditEnrollment records a CD-2 enrollment outcome. account/keyRecord are

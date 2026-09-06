@@ -482,9 +482,10 @@ the boot:
   CLI argv; the inner username is always the configured transport user.
 - Stop appending a gateway suffix to workspace targets. The Coder CLI's
   `--hostname-suffix` flag is no longer used; workspace hostnames are
-  exactly what users pass (`dev`, `dev.main`, or `main.dev.alice` —
-  one, two, or three labels in the form `workspace`, `workspace.agent`,
-  or `agent.workspace.owner`).
+  exactly what users pass: `dev`, `dev.main`, `main.dev.alice`
+  (dotted: `workspace`, `workspace.agent`, `agent.workspace.owner`),
+  or the cross-user forms `alice/dev` and `alice/dev/main`
+  (`owner/workspace[/agent]`).
 
 ## Self-enrollment (`login@`)
 
@@ -506,7 +507,8 @@ The gateway's behavior once the user connects to `login@`:
    account is created or reused for that Coder user UUID, and the
    presented key is added to it.
 4. Stores the token, prints "Enrolled.", and closes the connection by
-   design. Reconnect with the normal `coder@…` workspace entry.
+   design. Reconnect with the normal workspace entry
+   (`<workspace>@<gateway>`).
 
 Idempotency: re-enrolling the same key with a token for the same Coder
 user is a no-op success. A key already linked to a *different* account

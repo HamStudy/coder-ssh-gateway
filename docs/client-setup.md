@@ -107,6 +107,16 @@ Then connect directly:
 ssh dev@gateway.example.com
 ```
 
+Workspace target forms the username accepts:
+
+- `dev` — your workspace (default agent)
+- `dev.main` — your workspace, named agent
+- `alice/dev`, `alice/dev/main` — a teammate's workspace
+  (`owner/workspace[/agent]`)
+
+The gateway only forwards the target; Coder's own permissions decide
+whether your account may connect to it.
+
 ### What direct mode supports
 
 The direct flow forwards a constrained session channel to a fresh inner
