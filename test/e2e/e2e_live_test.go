@@ -121,7 +121,6 @@ listen:
 
 ssh:
   transport_user: coder
-  maintenance_user: auth
 
 state:
   dir: %s

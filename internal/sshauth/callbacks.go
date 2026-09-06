@@ -64,7 +64,7 @@ func (c AuthConfig) publicKeyCallback(state *ConnState, cfgErr error, meta ssh.C
 	}
 
 	user := meta.User()
-	if user != c.TransportUser && user != c.MaintenanceUser {
+	if user != c.TransportUser {
 		// CD-2: the enrollment user is the only other recognized username,
 		// and only while enrollment is armed; otherwise it rejects
 		// identically to any unknown username (§35).
@@ -137,10 +137,6 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 
 	state.SetVerifiedIdentity(account, keyRecord, sigAlg)
 	c.recordVerifiedKey(ctx, state, account, keyRecord, sigAlg)
-
-	if meta.User() == c.MaintenanceUser {
-		return FinalMaintenancePermissions(account.ID, keyRecord.ID), nil
-	}
 
 	snap, err := c.Store.LoadCredential(ctx, account.ID)
 	if err != nil {
@@ -272,7 +268,7 @@ func (c AuthConfig) renewalInstructions() string {
 	return "Your registered SSH key is valid, but the saved Coder credential is missing or expired.\n" +
 		"Generate a new token at " + cliAuth + ".\n" +
 		"At the following password/token prompt, paste that token.\n" +
-		"This connection will close after successful validation; reconnect to continue."
+		"This connection continues straight into your workspace after validation."
 }
 
 // nonRenewableBanner maps §11.4 non-renewable kinds to safe §35-matrix user

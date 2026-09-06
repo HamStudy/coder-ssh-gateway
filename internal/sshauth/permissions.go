@@ -26,9 +26,8 @@ const (
 )
 
 const (
-	ModeCandidate   = "candidate"
-	ModeTransport   = "transport"
-	ModeMaintenance = "maintenance"
+	ModeCandidate = "candidate"
+	ModeTransport = "transport"
 	// ModeWorkspace is an authenticated direct workspace session. Its target
 	// comes from the outer SSH username and is parsed only after key proof.
 	ModeWorkspace = "workspace"
@@ -105,16 +104,6 @@ func finalWorkspacePermissions(mode string, accountID, deploymentID, keyID uuid.
 	}
 }
 
-func FinalMaintenancePermissions(accountID, keyID uuid.UUID) *ssh.Permissions {
-	return &ssh.Permissions{
-		Extensions: map[string]string{
-			PermissionMode:      ModeMaintenance,
-			PermissionAccountID: accountID.String(),
-			PermissionSSHKeyID:  keyID.String(),
-		},
-	}
-}
-
 var (
 	ErrInvalidMode          = errors.New("invalid gateway mode")
 	ErrMissingAccountID     = errors.New("missing account_id")
@@ -144,7 +133,7 @@ func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
 	ext := perms.Extensions
 
 	mode := ext[PermissionMode]
-	if mode != ModeTransport && mode != ModeMaintenance && mode != ModeWorkspace {
+	if mode != ModeTransport && mode != ModeWorkspace {
 		return FinalPerms{}, fmt.Errorf("%w: %q", ErrInvalidMode, mode)
 	}
 

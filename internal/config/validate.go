@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 )
 
 var validWaitModes = map[string]bool{"yes": true, "no": true, "auto": true}
@@ -21,7 +22,6 @@ func (c *Config) Validate() error {
 	c.validateEncryption(&errs)
 	c.validateDeployment(&errs)
 	c.validateLimits(&errs)
-	c.validateMaintenance(&errs)
 	c.validateEnrollment(&errs)
 
 	return errors.Join(errs...)
@@ -97,6 +97,12 @@ func (c *Config) validateEncryption(errs *[]error) {
 		*errs = append(*errs, fmt.Errorf("encryption.active_key_id: %q not found in encryption.keys", c.Encryption.ActiveKeyID))
 	}
 	for id, path := range c.Encryption.Keys {
+		// env:VARNAME sources are provider references, not files: they are
+		// checked at load time (missing variable fails closed with
+		// CRYPTO_KEY_UNAVAILABLE), so file rules do not apply here.
+		if strings.HasPrefix(path, "env:") {
+			continue
+		}
 		checkSecretFile(errs, "encryption.keys."+id, path)
 	}
 }
@@ -180,22 +186,13 @@ func (c *Config) validateLimits(errs *[]error) {
 	}
 }
 
-func (c *Config) validateMaintenance(errs *[]error) {
-	if c.Maintenance.SessionTimeout <= 0 {
-		*errs = append(*errs, fmt.Errorf("maintenance.session_timeout: must be positive, got %v", c.Maintenance.SessionTimeout.Std()))
-	}
-	if c.Maintenance.InputTimeout <= 0 {
-		*errs = append(*errs, fmt.Errorf("maintenance.input_timeout: must be positive, got %v", c.Maintenance.InputTimeout.Std()))
-	}
-}
-
 func (c *Config) validateEnrollment(errs *[]error) {
 	if !c.Enrollment.Enabled {
 		return
 	}
 	if c.Enrollment.User == "" {
 		*errs = append(*errs, errors.New("enrollment.user: required when enrollment is enabled"))
-	} else if c.Enrollment.User == c.SSH.TransportUser || c.Enrollment.User == c.SSH.MaintenanceUser {
+	} else if c.Enrollment.User == c.SSH.TransportUser {
 		*errs = append(*errs, fmt.Errorf("enrollment.user: %q collides with the transport or maintenance username", c.Enrollment.User))
 	}
 	if c.Enrollment.MaxAttempts <= 0 {

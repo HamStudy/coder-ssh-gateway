@@ -69,11 +69,12 @@ const (
 	challengeName = "Coder SSH Gateway"
 	// tokenPrompt is the single echo=false prompt of the renewal challenge.
 	tokenPrompt = "Coder token: "
-	// renewalSuccessBanner is sent after the replacement is stored (§13.3).
-	renewalSuccessBanner = "Coder token verified. Reconnect to continue."
+	// renewalSuccessBanner is sent after the replacement is stored (§13.3):
+	// the connection continues straight into the workspace session.
+	renewalSuccessBanner = "Coder token verified — continuing to your workspace."
 	// renewalAlreadyUpdatedBanner is the §23.2 losing-race message.
 	renewalAlreadyUpdatedBanner = "Your Coder credential was already updated from another connection.\n" +
-		"Reconnect to continue."
+		"Continuing to your workspace."
 )
 
 // RenewalVerifier is the narrow verifier subset the renewal continuation
@@ -240,7 +241,7 @@ type renewalSession struct {
 func (s *renewalSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ssh.KeyboardInteractiveChallenge) (*ssh.Permissions, error) {
 	instruction := "Your saved Coder credential is missing or expired.\n" +
 		"Open " + s.rc.cliAuthURL() + ", sign in, and paste the token below.\n" +
-		"After the token is verified this connection will close; reconnect to continue."
+		"After the token is verified this connection continues straight into your workspace."
 	for {
 		if s.state.RenewalAttempts() >= s.rc.maxAttempts() {
 			s.log.Debug("renewal attempts exhausted",
@@ -322,27 +323,18 @@ func (rc *RenewalConfig) validateAndStoreReplacement(
 
 	if alreadyUpdated {
 		// §23.2: a concurrent renewal already stored a valid token. This is
-		// a success outcome — force a reconnect so the next connection
-		// regenerates permissions from the NEW generation.
+		// a success outcome — continue the session on the fresh credential.
 		state.SendBanner(renewalAlreadyUpdatedBanner)
-		if rc.Rate != nil {
-			rc.Rate.GrantReconnectAllowance(account.ID)
-		}
-		state.SetMustReconnect(true)
-		return FinalTransportPermissions(account.ID, rc.DeploymentID, keyRecord.ID, snap.Generation, true), nil
+		return FinalWorkspacePermissions(account.ID, rc.DeploymentID, keyRecord.ID, snap.Generation), nil
 	}
 
-	// Success (§13.6): confirmation banner, one reconnect allowance, and
-	// final transport permissions that force an immediate reconnect.
+	// Success (§13.6): confirmation banner, then the session continues on
+	// the fresh credential — no reconnect required.
 	state.SendBanner(renewalSuccessBanner)
-	if rc.Rate != nil {
-		rc.Rate.GrantReconnectAllowance(account.ID)
-	}
-	rc.logger().Debug("credential renewed; forcing reconnect",
+	rc.logger().Debug("credential renewed; continuing session",
 		slog.String("connection_id", state.ID()),
 		slog.Int64("generation", snap.Generation))
-	state.SetMustReconnect(true)
-	return FinalTransportPermissions(account.ID, rc.DeploymentID, keyRecord.ID, snap.Generation, true), nil
+	return FinalWorkspacePermissions(account.ID, rc.DeploymentID, keyRecord.ID, snap.Generation), nil
 }
 
 // replaceCredential is the side-effect-light core of the §25.4 shared

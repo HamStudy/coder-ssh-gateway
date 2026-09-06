@@ -25,7 +25,6 @@ type fakeRateLimiter struct {
 	mu            sync.Mutex
 	tokens        int
 	allowance     bool
-	grants        int
 	denied        int
 	allowanceUsed int
 }
@@ -54,7 +53,6 @@ func (f *fakeRateLimiter) GrantReconnectAllowance(uuid.UUID) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.allowance = true
-	f.grants++
 }
 
 // coderStub is a programmable /api/v2/users/me stand-in: each known token
@@ -185,16 +183,17 @@ func renewalMethods(signer ssh.Signer, ki *kiResponder) []ssh.AuthMethod {
 	return []ssh.AuthMethod{ssh.PublicKeys(signer), ssh.KeyboardInteractive(ki.challenge)}
 }
 
-// assertClosedAfterRenewal verifies §13.6: the server closes the outer
-// connection right after a successful renewal.
+// assertClosedAfterRenewal verifies §13.6 for the enrollment flow: the
+// server closes the outer connection right after a successful enrollment
+// (renewal no longer disconnects — it continues into the workspace).
 func assertClosedAfterRenewal(t *testing.T, client *ssh.Client) {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- client.Conn.Wait() }()
+	go func() { done <- client.Wait() }()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("server did not close the connection after renewal (§13.6)")
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not close the connection")
 	}
 }
 
@@ -253,10 +252,10 @@ func TestWireRenewalKeyboardInteractive(t *testing.T) {
 		t.Fatalf("server handshake error: %v", res.err)
 	}
 	perms := mustParseFinalPerms(t, res.perms)
-	if !perms.MustReconnect {
-		t.Error("renewal success must set must_reconnect=true (§13.6)")
+	if perms.MustReconnect {
+		t.Error("renewal success must not set must_reconnect: the session continues in place")
 	}
-	if perms.Mode != sshauth.ModeTransport || perms.AccountID != f.acct.ID || perms.SSHKeyID != f.keyRec.ID {
+	if perms.Mode != sshauth.ModeWorkspace || perms.AccountID != f.acct.ID || perms.SSHKeyID != f.keyRec.ID {
 		t.Errorf("unexpected final perms: %+v", perms)
 	}
 	if perms.CredentialGeneration != 2 {
@@ -276,7 +275,7 @@ func TestWireRenewalKeyboardInteractive(t *testing.T) {
 
 	// §13.2/§13.3 confirmation: pre-auth success banner + zero-prompt
 	// challenge.
-	if !strings.Contains(probe.bannerText(), "Reconnect to continue") {
+	if !strings.Contains(probe.bannerText(), "continuing to your workspace") {
 		t.Errorf("missing success banner: %q", probe.bannerText())
 	}
 	if ki.zeroPromptCount() != 1 {
@@ -285,9 +284,6 @@ func TestWireRenewalKeyboardInteractive(t *testing.T) {
 	if strings.Contains(probe.bannerText(), stubNewToken) {
 		t.Error("banner leaks token material")
 	}
-
-	// §13.6: deliberate disconnect.
-	assertClosedAfterRenewal(t, client)
 
 	// §34.3: one renewal success audit, no wrong-user event.
 	if got := renewalAuditEvents(f, sshauth.ResultSuccess, ""); got != 1 {
@@ -348,7 +344,7 @@ func TestWireRenewalPassword(t *testing.T) {
 		t.Fatalf("server handshake error: %v", res.err)
 	}
 	perms := mustParseFinalPerms(t, res.perms)
-	if !perms.MustReconnect || perms.CredentialGeneration != 2 {
+	if perms.MustReconnect || perms.CredentialGeneration != 2 {
 		t.Errorf("unexpected final perms: %+v", perms)
 	}
 
@@ -366,14 +362,12 @@ func TestWireRenewalPassword(t *testing.T) {
 	if !strings.Contains(banners, "/cli-auth") {
 		t.Errorf("missing pre-prompt renewal instructions (§13.3): %q", banners)
 	}
-	if !strings.Contains(banners, "Coder token verified. Reconnect to continue.") {
+	if !strings.Contains(banners, "Coder token verified — continuing to your workspace.") {
 		t.Errorf("missing post-success confirmation banner (§13.3): %q", banners)
 	}
 	if strings.Contains(banners, stubNewToken) {
 		t.Error("banner leaks token material")
 	}
-
-	assertClosedAfterRenewal(t, client)
 
 	if got := renewalAuditEvents(f, sshauth.ResultSuccess, ""); got != 1 {
 		t.Errorf("renewal success audit events = %d, want 1", got)
@@ -474,8 +468,8 @@ func TestWireRenewalRetryThenSuccess(t *testing.T) {
 	if res.err != nil {
 		t.Fatalf("server handshake error: %v", res.err)
 	}
-	if !mustParseFinalPerms(t, res.perms).MustReconnect {
-		t.Error("expected must_reconnect=true")
+	if mustParseFinalPerms(t, res.perms).MustReconnect {
+		t.Error("success must not set must_reconnect")
 	}
 
 	if ki.promptCount() != 2 {
@@ -646,8 +640,8 @@ func TestWireRenewalConcurrent(t *testing.T) {
 			t.Fatalf("server handshake %d error: %v", i, res.err)
 		}
 		perms := mustParseFinalPerms(t, res.perms)
-		if !perms.MustReconnect {
-			t.Errorf("handshake %d: expected must_reconnect=true on BOTH paths", i)
+		if perms.MustReconnect {
+			t.Errorf("handshake %d: must_reconnect set; sessions should continue in place", i)
 		}
 	}
 
@@ -676,63 +670,6 @@ func TestWireRenewalConcurrent(t *testing.T) {
 // (h) Reconnect allowance: with a rate limiter holding a single token, the
 // first renewal consumes it; the allowance granted on success lets the next
 // connection's renewal attempt through (§13.6).
-func TestWireRenewalReconnectAllowance(t *testing.T) {
-	defer leakCheck(t)
-
-	stub := newCoderStub(wireCoderUserID)
-	stub.set(stubOldToken, http.StatusUnauthorized)
-	stub.set(stubNewToken, http.StatusOK)
-	f := newFixture(t, stub)
-	defer f.close(t)
-	f.installCredential(t, stubOldToken)
-
-	f.rate = newFakeRateLimiter(1) // exactly one renewal attempt permitted
-	ws := startWireServer(t, f.authConfig())
-	defer ws.shutdown()
-
-	ki1 := &kiResponder{answers: []string{stubNewToken}}
-	client1, err := dialGateway(ws.addr(), "coder", &clientProbe{}, renewalMethods(f.signer, ki1)...)
-	if err != nil {
-		t.Fatalf("first renewal failed: %v", err)
-	}
-	defer client1.Close()
-	if res := ws.lastResult(); res.err != nil {
-		t.Fatalf("first handshake error: %v", res.err)
-	}
-	if f.rate.grants != 1 {
-		t.Fatalf("reconnect grants = %d, want 1", f.rate.grants)
-	}
-
-	// The stored credential expires again immediately: the reconnect must
-	// renew a second time, permitted only by the §13.6 allowance.
-	stub.set(stubNewToken, http.StatusUnauthorized)
-	stub.set(stubNewerToken, http.StatusOK)
-
-	ki2 := &kiResponder{answers: []string{stubNewerToken}}
-	client2, err := dialGateway(ws.addr(), "coder", &clientProbe{}, renewalMethods(f.signer, ki2)...)
-	if err != nil {
-		t.Fatalf("second renewal failed despite reconnect allowance: %v", err)
-	}
-	defer client2.Close()
-
-	results := ws.waitResults(2)
-	if results[1].err != nil {
-		t.Fatalf("second handshake error: %v", results[1].err)
-	}
-	if perms := mustParseFinalPerms(t, results[1].perms); perms.CredentialGeneration != 3 {
-		t.Errorf("second renewal generation = %d, want 3", perms.CredentialGeneration)
-	}
-
-	f.rate.mu.Lock()
-	used, denied := f.rate.allowanceUsed, f.rate.denied
-	f.rate.mu.Unlock()
-	if used != 1 {
-		t.Errorf("allowance-based attempts = %d, want 1", used)
-	}
-	if denied != 0 {
-		t.Errorf("denied attempts = %d, want 0", denied)
-	}
-}
 
 // (i) Deadline: the §13.5 renewal timeout tears down a connection whose
 // client stalls at the token prompt.

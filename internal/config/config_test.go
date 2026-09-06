@@ -116,9 +116,6 @@ func TestLoadValidAppliesDefaults(t *testing.T) {
 	if cfg.State.AuditRetentionDays != 90 {
 		t.Errorf("audit_retention_days = %d, want 90", cfg.State.AuditRetentionDays)
 	}
-	if cfg.Maintenance.SessionTimeout.Std() != 5*time.Minute {
-		t.Errorf("maintenance session_timeout = %v, want 5m", cfg.Maintenance.SessionTimeout)
-	}
 	if cfg.Observability.LogLevel != "info" {
 		t.Errorf("log_level = %q, want info", cfg.Observability.LogLevel)
 	}
@@ -343,7 +340,6 @@ func TestDefaultValues(t *testing.T) {
 		{"listen.address", c.Listen.Address, ":22"},
 		{"listen.proxy_protocol", c.Listen.ProxyProtocol, false},
 		{"ssh.transport_user", c.SSH.TransportUser, "coder"},
-		{"ssh.maintenance_user", c.SSH.MaintenanceUser, "auth"},
 		{"ssh.allow_ssh_certificates", c.SSH.AllowSSHCertificates, false},
 		{"state.audit_retention_days", c.State.AuditRetentionDays, 90},
 		{"encryption.provider", c.Encryption.Provider, "file"},
@@ -359,8 +355,6 @@ func TestDefaultValues(t *testing.T) {
 		{"limits.coder_api_requests", c.Limits.CoderAPIRequests, 32},
 		{"limits.renewal_attempts_per_connection", c.Limits.RenewalAttemptsPerConnection, 3},
 		{"limits.renewal_attempts_per_account_per_minute", c.Limits.RenewalAttemptsPerAccountPerMinute, 5},
-		{"maintenance.enabled", c.Maintenance.Enabled, true},
-		{"maintenance.bind_on_first_token_requires_admin_flag", c.Maintenance.BindOnFirstTokenRequiresAdminFlag, true},
 		{"enrollment.enabled", c.Enrollment.Enabled, true},
 		{"enrollment.user", c.Enrollment.User, "login"},
 		{"enrollment.max_attempts", c.Enrollment.MaxAttempts, 3},
@@ -384,7 +378,6 @@ func TestDefaultValues(t *testing.T) {
 		{"deployment.workspace_connect_timeout", c.Deployment.WorkspaceConnectTimeout.Std(), 5 * time.Minute},
 		{"deployment.token_validation_timeout", c.Deployment.TokenValidationTimeout.Std(), 10 * time.Second},
 		{"deployment.token_validation_cache", c.Deployment.TokenValidationCache.Std(), 15 * time.Second},
-		{"maintenance.input_timeout", c.Maintenance.InputTimeout.Std(), 2 * time.Minute},
 		{"enrollment.timeout", c.Enrollment.Timeout.Std(), 5 * time.Minute},
 	}
 	for _, d := range durs {
@@ -543,12 +536,6 @@ func TestValidate(t *testing.T) {
 		{"zero process shutdown grace", func(t *testing.T, c *Config, e validEnv) {
 			c.Limits.ProcessShutdownGrace = Duration(0)
 		}, "limits.process_shutdown_grace"},
-		{"zero maintenance session timeout", func(t *testing.T, c *Config, e validEnv) {
-			c.Maintenance.SessionTimeout = Duration(0)
-		}, "maintenance.session_timeout"},
-		{"zero maintenance input timeout", func(t *testing.T, c *Config, e validEnv) {
-			c.Maintenance.InputTimeout = Duration(0)
-		}, "maintenance.input_timeout"},
 
 		{"state.dir empty", func(t *testing.T, c *Config, e validEnv) {
 			c.State.Dir = ""
@@ -575,9 +562,6 @@ func TestValidate(t *testing.T) {
 
 		{"enrollment user collides with transport", func(t *testing.T, c *Config, e validEnv) {
 			c.Enrollment.User = c.SSH.TransportUser
-		}, "enrollment.user"},
-		{"enrollment user collides with maintenance", func(t *testing.T, c *Config, e validEnv) {
-			c.Enrollment.User = c.SSH.MaintenanceUser
 		}, "enrollment.user"},
 		{"enrollment user empty when enabled", func(t *testing.T, c *Config, e validEnv) {
 			c.Enrollment.User = ""

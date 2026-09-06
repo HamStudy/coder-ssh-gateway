@@ -92,10 +92,6 @@ type ServerConfig struct {
 	// trusted before channel-open revalidation (§11.5, §19.9). Zero selects
 	// 15s.
 	CacheTTL time.Duration
-	// MaintenanceHandler runs the §14 maintenance session on the single
-	// admitted session channel of maintenance-mode connections (T21). Nil
-	// keeps the reject-all behavior for maintenance mode (T15/T16 default).
-	MaintenanceHandler MaintenanceHandler
 	// Metrics receives connection/auth/channel/limit events (§34.2). Nil
 	// selects a no-op recorder.
 	Metrics metrics.Recorder

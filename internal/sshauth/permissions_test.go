@@ -3,8 +3,8 @@ package sshauth_test
 import (
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -52,24 +52,6 @@ func TestFinalTransportPermissions(t *testing.T) {
 	}
 	if ext["gateway.must_reconnect"] != "false" {
 		t.Errorf("must_reconnect = %q, want %q", ext["gateway.must_reconnect"], "false")
-	}
-}
-
-func TestFinalMaintenancePermissions(t *testing.T) {
-	accountID := uuid.New()
-	keyID := uuid.New()
-
-	perms := sshauth.FinalMaintenancePermissions(accountID, keyID)
-
-	ext := perms.Extensions
-	if ext["gateway.mode"] != string(sshauth.ModeMaintenance) {
-		t.Errorf("mode = %q, want %q", ext["gateway.mode"], string(sshauth.ModeMaintenance))
-	}
-	if ext["gateway.account_id"] != accountID.String() {
-		t.Errorf("account_id = %q, want %q", ext["gateway.account_id"], accountID.String())
-	}
-	if ext["gateway.ssh_key_id"] != keyID.String() {
-		t.Errorf("ssh_key_id = %q, want %q", ext["gateway.ssh_key_id"], keyID.String())
 	}
 }
 
@@ -300,29 +282,6 @@ func TestModeConstants(t *testing.T) {
 	}
 	if sshauth.ModeTransport != "transport" {
 		t.Errorf("ModeTransport = %q, want %q", sshauth.ModeTransport, "transport")
-	}
-	if sshauth.ModeMaintenance != "maintenance" {
-		t.Errorf("ModeMaintenance = %q, want %q", sshauth.ModeMaintenance, "maintenance")
-	}
-}
-
-func TestParseFinalPermissions_MaintenanceWithoutDeploymentID(t *testing.T) {
-	perms := &ssh.Permissions{
-		Extensions: map[string]string{
-			"gateway.mode":       "maintenance",
-			"gateway.account_id": uuid.New().String(),
-			"gateway.ssh_key_id": uuid.New().String(),
-		},
-	}
-	parsed, err := sshauth.ParseFinalPermissions(perms)
-	if err != nil {
-		t.Fatalf("ParseFinalPermissions() error = %v (maintenance mode should allow missing deployment_id)", err)
-	}
-	if parsed.Mode != sshauth.ModeMaintenance {
-		t.Errorf("Mode = %v, want %v", parsed.Mode, sshauth.ModeMaintenance)
-	}
-	if parsed.DeploymentID != (uuid.UUID{}) {
-		t.Errorf("DeploymentID = %v, want zero UUID for maintenance without deployment_id", parsed.DeploymentID)
 	}
 }
 

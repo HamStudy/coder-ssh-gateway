@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -134,7 +135,18 @@ func (c *cli) openStore(cfg *config.Config, logger *slog.Logger) (*store.Store, 
 	if err != nil {
 		return nil, err
 	}
-	st.SetKeyProvider(KeyProviderFromConfig(cfg, logger))
+	provider := KeyProviderFromConfig(cfg, logger)
+	st.SetKeyProvider(provider)
+
+	// Fail fast on a misconfigured key source (e.g. a missing env: variable)
+	// instead of failing on the first credential access at 3am.
+	if cfg.Encryption.ActiveKeyID != "" {
+		if _, _, err := provider.ActiveKey(context.Background()); err != nil {
+			st.Close()
+			return nil, err
+		}
+	}
+
 	dep, err := DeploymentFromConfig(cfg)
 	if err != nil {
 		st.Close()

@@ -38,7 +38,6 @@ type Config struct {
 	Encryption    Encryption    `yaml:"encryption"`
 	Deployment    Deployment    `yaml:"deployment"`
 	Limits        Limits        `yaml:"limits"`
-	Maintenance   Maintenance   `yaml:"maintenance"`
 	Enrollment    Enrollment    `yaml:"enrollment"`
 	Observability Observability `yaml:"observability"`
 }
@@ -113,13 +112,6 @@ type Limits struct {
 	StderrBufferBytes                  int      `yaml:"stderr_buffer_bytes"`
 }
 
-type Maintenance struct {
-	Enabled                           bool     `yaml:"enabled"`
-	SessionTimeout                    Duration `yaml:"session_timeout"`
-	InputTimeout                      Duration `yaml:"input_timeout"`
-	BindOnFirstTokenRequiresAdminFlag bool     `yaml:"bind_on_first_token_requires_admin_flag"`
-}
-
 // Enrollment configures the CD-2 login@ token-anchored self-enrollment flow.
 // Enabled by default: self-configuration is the primary onboarding path.
 type Enrollment struct {
@@ -159,7 +151,6 @@ func Default() *Config {
 		},
 		SSH: SSH{
 			TransportUser:        "coder",
-			MaintenanceUser:      "auth",
 			ServerVersion:        "SSH-2.0-CoderSSHGW_0.1",
 			AllowSSHCertificates: false,
 		},
@@ -198,12 +189,7 @@ func Default() *Config {
 			ProcessShutdownGrace:               Duration(5 * time.Second),
 			StderrBufferBytes:                  65536,
 		},
-		Maintenance: Maintenance{
-			Enabled:                           true,
-			SessionTimeout:                    Duration(5 * time.Minute),
-			InputTimeout:                      Duration(2 * time.Minute),
-			BindOnFirstTokenRequiresAdminFlag: true,
-		},
+
 		Enrollment: Enrollment{
 			Enabled:     true,
 			User:        "login",

@@ -11,7 +11,6 @@ import (
 
 	"github.com/HamStudy/coder-ssh-gateway/internal/config"
 	"github.com/HamStudy/coder-ssh-gateway/internal/server"
-	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
 )
 
 // Full pubkey auth succeeds through the real listener, and the post-auth
@@ -154,29 +153,6 @@ func TestConcurrentHandshakesBaseConfigImmutable(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Errorf("concurrent handshake: %v", err)
-	}
-}
-
-// Maintenance user authenticates with no credential at all (§14.1) and gets
-// maintenance permissions; channels are still placeholder-rejected in T15.
-func TestMaintenanceModeAuth(t *testing.T) {
-	defer leakCheck(t)
-
-	f := newFixture(t, coderOKHandler(testCoderUserID))
-	defer f.close(t)
-
-	ts := startTestServer(t, f, nil)
-	defer ts.shutdown(t)
-
-	client, err := dialGateway(ts.addr(), "auth", ssh.PublicKeys(f.signer))
-	if err != nil {
-		t.Fatalf("maintenance auth failed: %v", err)
-	}
-	defer client.Close()
-
-	verified := f.auditEvents(sshauth.EventTypeKeyVerified)
-	if len(verified) != 1 {
-		t.Errorf("verified events = %d, want 1", len(verified))
 	}
 }
 

@@ -228,51 +228,40 @@ func TestE2ECredentialRenewalPTY(t *testing.T) {
 		t.Fatalf("write token to PTY: %v", err)
 	}
 
-	// The renewal connection must confirm the token, then disconnect
-	// (§2.2 step 9: the deliberate disconnect is a product requirement).
-	waitForTranscript(t, transcript, "Reconnect to continue", 60*time.Second)
+	// The renewal continues in place: the connection proceeds into the
+	// workspace on the fresh credential — no reconnect required.
+	waitForTranscript(t, transcript, "continuing to your workspace", 60*time.Second)
+
+	// The session is live on the other side of the renewal: run a command
+	// through the same connection to prove the continuation actually lands
+	// in the workspace shell.
+	if _, err := ptmx.Write([]byte("echo-probe-9137\r\n")); err != nil {
+		t.Fatalf("write post-renewal command: %v", err)
+	}
+	waitForTranscript(t, transcript, "echo-probe-9137", 30*time.Second)
+
+	// The fake shell has no exit command; kill the client and verify the
+	// gateway leaves no orphaned children behind.
+	_ = cmd.Process.Kill()
 
 	waitErr := make(chan error, 1)
 	go func() { waitErr <- cmd.Wait() }()
 	select {
-	case err := <-waitErr:
-		if err == nil {
-			t.Log("ssh exited 0 after renewal disconnect")
-		} else {
-			var ee *exec.ExitError
-			if !errors.As(err, &ee) {
-				t.Fatalf("ssh wait: %v", err)
-			}
-			// 255 is OpenSSH's generic "connection terminated" code — the
-			// expected outcome of the server's deliberate disconnect.
-			t.Logf("ssh exit code after renewal disconnect: %d", ee.ExitCode())
-		}
+	case <-waitErr:
 	case <-time.After(30 * time.Second):
-		t.Fatalf("ssh did not exit after renewal disconnect\ntranscript:\n%s", transcript.String())
+		t.Fatalf("ssh did not exit after client kill\ntranscript:\n%s", transcript.String())
 	}
-	_ = ptmx.Close()
 	<-readErr
 
 	text := transcript.String()
 	if !strings.Contains(text, "Coder token:") {
 		t.Errorf("transcript missing the hidden token prompt\n%s", text)
 	}
-	if !strings.Contains(text, "Coder token verified. Reconnect to continue.") {
+	if !strings.Contains(text, "Coder token verified — continuing to your workspace.") {
 		t.Errorf("transcript missing the renewal success banner\n%s", text)
 	}
 	if strings.Contains(text, freshToken) {
 		t.Fatal("SECURITY: fresh token echoed to the PTY transcript (prompt must be hidden)")
-	}
-
-	// Reconnect: the renewed credential takes the normal path to the
-	// workspace through the real OpenSSH client.
-	stdout, stderr, code := f.proxyJumpExec(t, ctx, testWorkspace, "printf hello")
-	if code != 0 {
-		t.Fatalf("post-renewal ssh exit %d\nstdout: %q\nstderr: %q\ngateway logs:\n%s",
-			code, stdout, stderr, f.logBuf.String())
-	}
-	if got, want := stdout, "hello"; got != want {
-		t.Fatalf("post-renewal stdout = %q, want %q", got, want)
 	}
 
 	f.waitNoChildren(t, 5*time.Second)

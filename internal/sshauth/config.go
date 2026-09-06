@@ -33,9 +33,6 @@ type AuthConfig struct {
 	// TransportUser is the outer username for workspace transport (§8.1,
 	// default "coder").
 	TransportUser string
-	// MaintenanceUser is the outer username for credential maintenance
-	// (§8.1, default "auth").
-	MaintenanceUser string
 	// DeploymentID scopes key lookup and credential verification to one
 	// Coder deployment.
 	DeploymentID uuid.UUID
@@ -73,11 +70,8 @@ type AuthConfig struct {
 // validate enforces fail-closed construction: any missing dependency makes
 // every callback reject.
 func (c AuthConfig) validate() error {
-	if c.TransportUser == "" || c.MaintenanceUser == "" {
-		return errors.New("sshauth: transport and maintenance usernames are required")
-	}
-	if c.TransportUser == c.MaintenanceUser {
-		return errors.New("sshauth: transport and maintenance usernames must differ")
+	if c.TransportUser == "" {
+		return errors.New("sshauth: transport username is required")
 	}
 	if c.DeploymentID == uuid.Nil {
 		return errors.New("sshauth: deployment ID is required")
@@ -90,8 +84,8 @@ func (c AuthConfig) validate() error {
 		if user == "" {
 			return errors.New("sshauth: enabled enrollment requires an enrollment username")
 		}
-		if user == c.TransportUser || user == c.MaintenanceUser {
-			return errors.New("sshauth: enrollment username must differ from transport and maintenance usernames")
+		if user == c.TransportUser {
+			return errors.New("sshauth: enrollment username must differ from the transport username")
 		}
 		if c.Enrollment.Verifier == nil || c.Enrollment.Store == nil {
 			return errors.New("sshauth: enabled enrollment requires verifier and store")

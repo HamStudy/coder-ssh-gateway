@@ -218,17 +218,11 @@ func (s *Server) handleConn(raw net.Conn) {
 	}()
 
 	// §8.3 dispatch: transport mode admits only direct-tcpip (T16);
-	// maintenance mode admits one session channel via the §14 handler (T21),
-	// or rejects everything when no handler is wired.
+	// workspace mode admits session channels for the username's target plus
+	// direct-tcpip raw transport.
 	switch perms.Mode {
 	case sshauth.ModeTransport:
 		s.dispatchTransportChannels(connCtx, state, perms, channels)
-	case sshauth.ModeMaintenance:
-		if s.cfg.MaintenanceHandler == nil {
-			rejectChannelAll(channels)
-			return
-		}
-		s.dispatchMaintenanceChannels(connCtx, state, perms, channels)
 	case sshauth.ModeWorkspace:
 		s.dispatchWorkspaceChannels(connCtx, state, perms, serverConn.User(), channels)
 	default:

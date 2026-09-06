@@ -229,15 +229,14 @@ func (f *fixture) installCredential(t *testing.T, token string) core.CredentialS
 
 func (f *fixture) authConfig() sshauth.AuthConfig {
 	return sshauth.AuthConfig{
-		TransportUser:   "coder",
-		MaintenanceUser: "auth",
-		DeploymentID:    f.dep.ID,
-		CoderURL:        f.dep.CoderURL,
-		Store:           f.store,
-		Verifier:        f.verifier,
-		Audit:           f.audit,
-		Logger:          slog.New(f.logs),
-		Renewal:         f.renewalConfig(),
+		TransportUser: "coder",
+		DeploymentID:  f.dep.ID,
+		CoderURL:      f.dep.CoderURL,
+		Store:         f.store,
+		Verifier:      f.verifier,
+		Audit:         f.audit,
+		Logger:        slog.New(f.logs),
+		Renewal:       f.renewalConfig(),
 	}
 }
 
@@ -531,52 +530,6 @@ func TestWireTransportAuthSuccess(t *testing.T) {
 	}
 	if strings.Contains(probe.bannerText(), "cli-auth") {
 		t.Error("no renewal banner expected on success path")
-	}
-}
-
-// (2) Maintenance user with NO stored credential succeeds without any Coder
-// call (§14.1).
-func TestWireMaintenanceNoCredential(t *testing.T) {
-	defer leakCheck(t)
-
-	coderCalled := make(chan struct{}, 1)
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case coderCalled <- struct{}{}:
-		default:
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-	f := newFixture(t, handler)
-	defer f.close(t)
-	// No credential installed; handler would 500 if called.
-
-	ws := startWireServer(t, f.authConfig())
-	defer ws.shutdown()
-	client, err := dialGateway(ws.addr(), "auth", &clientProbe{}, ssh.PublicKeys(f.signer))
-	if err != nil {
-		t.Fatalf("maintenance auth failed: %v", err)
-	}
-	defer client.Close()
-
-	res := ws.lastResult()
-	if res.err != nil {
-		t.Fatalf("server handshake error: %v", res.err)
-	}
-	perms, err := sshauth.ParseFinalPermissions(res.perms)
-	if err != nil {
-		t.Fatalf("ParseFinalPermissions: %v", err)
-	}
-	if perms.Mode != sshauth.ModeMaintenance {
-		t.Errorf("mode = %q, want maintenance", perms.Mode)
-	}
-	if perms.AccountID != f.acct.ID || perms.SSHKeyID != f.keyRec.ID {
-		t.Errorf("identity mismatch: %+v", perms)
-	}
-	select {
-	case <-coderCalled:
-		t.Error("maintenance auth must not call Coder (§14.1)")
-	case <-time.After(100 * time.Millisecond):
 	}
 }
 

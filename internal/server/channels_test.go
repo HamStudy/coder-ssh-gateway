@@ -481,28 +481,3 @@ func TestRevalidationCoderUnavailableKeepsTransport(t *testing.T) {
 	}
 	ch.Close()
 }
-
-// Maintenance mode keeps rejecting every channel type until T21 lands.
-func TestMaintenanceChannelsStillRejected(t *testing.T) {
-	defer leakCheck(t)
-
-	f := newFixture(t, coderOKHandler(testCoderUserID))
-	defer f.close(t)
-
-	ts := startTestServer(t, f, nil)
-	defer ts.shutdown(t)
-
-	client, err := dialGateway(ts.addr(), "auth", ssh.PublicKeys(f.signer))
-	if err != nil {
-		t.Fatalf("maintenance auth: %v", err)
-	}
-	defer client.Close()
-
-	for _, chType := range []string{"session", "direct-tcpip"} {
-		_, _, err := client.OpenChannel(chType, nil)
-		reason, ok := openChannelReason(err)
-		if !ok || reason != ssh.Prohibited {
-			t.Errorf("%s: err = %v, want OpenChannelError Prohibited", chType, err)
-		}
-	}
-}

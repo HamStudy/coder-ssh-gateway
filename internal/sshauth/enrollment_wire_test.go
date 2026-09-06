@@ -717,9 +717,6 @@ func TestWireEnrollmentRejectsCertificate(t *testing.T) {
 			initial.LastValidatedAt,
 		)
 	}
-	if f.rate.grants != 0 {
-		t.Errorf("reconnect allowance grants = %d, want 0", f.rate.grants)
-	}
 	if got := enrollmentAuditEvents(f, sshauth.EventTypeEnrollmentSuccess, sshauth.ResultSuccess, ""); got != 0 {
 		t.Errorf("enrollment success events = %d, want 0", got)
 	}

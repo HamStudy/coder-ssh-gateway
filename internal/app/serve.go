@@ -20,7 +20,6 @@ import (
 	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 	"github.com/HamStudy/coder-ssh-gateway/internal/health"
 	"github.com/HamStudy/coder-ssh-gateway/internal/limits"
-	"github.com/HamStudy/coder-ssh-gateway/internal/maintenance"
 	"github.com/HamStudy/coder-ssh-gateway/internal/metrics"
 	"github.com/HamStudy/coder-ssh-gateway/internal/route"
 	"github.com/HamStudy/coder-ssh-gateway/internal/server"
@@ -135,7 +134,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 			// for the auth semaphore or pollute validation metrics.
 			Workspaces: verifier,
 			Store:      instStore,
-			Rate:     rateLimits,
+			Rate:       rateLimits,
 			// §20: bound pre-resolution token guessing per source IP with
 			// the unknown-key attempt bucket.
 			PreTokenGate:   rateLimits.AllowUnknownKeyAttempt,
@@ -149,7 +148,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 	}
 	authCfg := sshauth.AuthConfig{
 		TransportUser:      cfg.SSH.TransportUser,
-		MaintenanceUser:    cfg.SSH.MaintenanceUser,
 		DeploymentID:       dep.ID,
 		CoderURL:           dep.CoderURL,
 		RenewalAuthTimeout: cfg.Listen.RenewalAuthTimeout.Std(),
@@ -186,24 +184,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		Registry:        registry,
 	}
 
-	var maintHandler server.MaintenanceHandler
-	if cfg.Maintenance.Enabled {
-		// The maintenance status probe uses the RAW verifier: it is an
-		// operator-triggered reachability check, not a credential
-		// validation, and must not skew the validation metrics.
-		maintHandler = &maintenance.Handler{
-			Store:    instStore,
-			Renewal:  renewal,
-			Verifier: verifier,
-			CoderURL: dep.CoderURL.String(),
-			Config: maintenance.Config{
-				SessionTimeout: cfg.Maintenance.SessionTimeout.Std(),
-				InputTimeout:   cfg.Maintenance.InputTimeout.Std(),
-				MaxAttempts:    cfg.Limits.RenewalAttemptsPerConnection,
-			},
-		}
-	}
-
 	srv, err := server.New(server.ServerConfig{
 		HostSigners:             signers,
 		Auth:                    authCfg,
@@ -217,7 +197,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		TunnelStarter:           starter,
 		WorkspaceSessionStarter: workspaceStarter,
 		CacheTTL:                cfg.Deployment.TokenValidationCache.Std(),
-		MaintenanceHandler:      maintHandler,
 		Metrics:                 m,
 		// §32 step 4: the drain period reuses limits.process_shutdown_grace
 		// (documented choice): the same budget governs graceful channel

@@ -12,7 +12,6 @@ listen:
 
 ssh:
   transport_user: coder
-  maintenance_user: auth
   server_version: "SSH-2.0-CoderSSHGW_0.1"
   host_keys:
     - /run/secrets/ssh_host_ed25519_key
@@ -67,12 +66,6 @@ limits:
   renewal_attempts_per_account_per_minute: 5
   process_shutdown_grace: 5s
   stderr_buffer_bytes: 65536
-
-maintenance:
-  enabled: true
-  session_timeout: 5m
-  input_timeout: 2m
-  bind_on_first_token_requires_admin_flag: true
 
 enrollment:
   enabled: true
