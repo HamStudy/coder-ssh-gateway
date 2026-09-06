@@ -122,7 +122,8 @@ under `encryption.keys`, stored tokens encrypted with the old key
 continue to decrypt** — rotation by itself does not break existing
 records. Credentials only become unreadable if the old key ID is
 removed from `encryption.keys` while records still reference it, or if
-the key file is lost. Procedure:
+the key file is lost. Verify with `doctor`: the encryption-key check
+must PASS. Procedure:
 [Operator Guide → Encryption-key rotation](./docs/operator-guide.md#encryption-key-rotation).
 
 ### 3. Rotate the host key
@@ -130,14 +131,17 @@ the key file is lost. Procedure:
 Generate a new Ed25519 host key (`ssh-keygen -t ed25519 -f
 ssh_host_ed25519_key.new -N ''`) and add the new path to
 `ssh.host_keys`. Publish the new fingerprint out-of-band; users update
-their `known_hosts` records and pin the new fingerprint.
+their `known_hosts` records and pin the new fingerprint. Verify with
+`doctor`: it fingerprints every configured key.
 
 ### 4. Revoke tokens
 
 For each affected Coder user, revoke the existing session token in
 Coder (the gateway holds encrypted copies; revoking at Coder is the
 authoritative action). Have users reconnect through the maintenance
-user and paste fresh tokens. Procedure:
+user and paste fresh tokens. Verify: the revoked token is rejected at the
+next workspace connect (`AUTH_CREDENTIAL_UNAUTHORIZED` in the audit log).
+Procedure:
 [Client Setup → Credential maintenance](./docs/client-setup.md#credential-maintenance).
 
 ### 5. Investigate

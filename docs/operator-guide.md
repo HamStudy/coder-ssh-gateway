@@ -31,7 +31,7 @@ Replace each with your real values before use.
 | --- | --- | --- | --- | --- |
 | Native systemd host | `2222` (configurable) | `2222` | Single binary, host-managed | You maintain the host |
 | Standalone Docker | `2222` (host publish) | `2222` | Reproducible image, no host deps | You maintain the host |
-| Kubernetes | `22` on a LoadBalancer Service | `2222` in-pod | Public port 22, no host maintenance | Cluster-specific manifests |
+| Kubernetes | `22` on a LoadBalancer Service | `2222` in-pod | Public port 22, Helm chart, Secret-backed keys | Requires a cluster |
 
 The port you publish externally is independent of the in-process listener
 port. All three shapes listen on `2222` by default; the difference is how
@@ -70,6 +70,7 @@ sudo useradd --system --home /var/lib/coder-ssh-gateway \
   --shell /usr/sbin/nologin coder-ssh-gateway
 sudo install -d -o coder-ssh-gateway -g coder-ssh-gateway -m 0700 \
   /var/lib/coder-ssh-gateway
+stat -c "%U:%G %a" /var/lib/coder-ssh-gateway   # coder-ssh-gateway:coder-ssh-gateway 700
 ```
 
 ### 3. Initialize the state directory
@@ -127,6 +128,7 @@ sudo install -m 0644 \
   /etc/systemd/system/coder-ssh-gateway.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now coder-ssh-gateway
+systemctl is-active coder-ssh-gateway   # expect: active
 ```
 
 If the Coder CLI cannot reach workspaces after starting the unit (DERP
@@ -223,6 +225,13 @@ docker run -d --name coder-ssh-gateway \
   coder-ssh-gateway:dev serve
 ```
 
+Verify it came up:
+
+```bash
+docker logs coder-ssh-gateway 2>&1 | grep -m1 SHA256   # host-key fingerprint
+curl -sf http://127.0.0.1:9091/livez                   # expect: ok
+```
+
 The `CSGW_*` overrides only apply to those three configured bind
 addresses and only at `serve` time; they leave `config.yaml` untouched.
 Precedence for those three values is **CLI flag > env var > config file >
@@ -282,81 +291,94 @@ docker volume rm csgw-state
 
 ## Kubernetes
 
-End-to-end sequence from an empty namespace to a running gateway. Image,
-storage class, and addresses must be adapted to your environment.
+The Deployment self-initializes: an init container runs `init` on every
+boot. On an empty PVC it creates the state layout; afterwards it no-ops
+(`init` keeps existing files and exits 0). Two paths: Helm (recommended)
+or the raw manifests.
 
-### What you need in the cluster
+Prerequisites:
 
-- A namespace (e.g. `coder-ssh-gateway`).
-- A StorageClass that supports `ReadWriteOnce` (the store flock makes any
-  second writer fail fast).
-- An ingress path that exposes port 22 (TCP, not HTTP). An ordinary HTTP
-  Ingress does not work for SSH. Use a TCP-capable L4 load balancer.
+- A namespace.
+- A StorageClass with `ReadWriteOnce`. The state lock makes any second
+  writer fail fast; never run more than one replica.
+- TCP port 22 exposed via L4 load balancing. HTTP Ingress does not work
+  for SSH.
 
-### 1. Create the namespace and PVC
+### Option A: Helm (recommended)
+
+Generate the two keys, then install:
 
 ```bash
-kubectl create namespace coder-ssh-gateway
+ssh-keygen -t ed25519 -N '' -f ./csgw_host_key
+helm install coder-ssh-gateway deploy/helm/coder-ssh-gateway \
+  --namespace coder-ssh-gateway --create-namespace \
+  --set coder.domain=coder.example.com \
+  --set secrets.hostKey="$(base64 -w0 ./csgw_host_key)" \
+  --set secrets.encryptionKey="$(openssl rand -base64 32)"
+rm ./csgw_host_key
+kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
+```
+
+`coder.domain` is the hostname of your Coder deployment; the default,
+`coder.com`, is Coder's public service. The chart keeps the host key and
+encryption key in a Secret, renders `config.yaml` from a ConfigMap, and
+prints the LoadBalancer address and the host-key fingerprint. Verify:
+
+```bash
+kubectl -n coder-ssh-gateway get svc coder-ssh-gateway
+kubectl -n coder-ssh-gateway logs deploy/coder-ssh-gateway \
+  | grep -o 'SHA256:[A-Za-z0-9/+=-]*' | sort -u
+```
+
+Configuration changes are values changes. Any config key can be set or
+overridden through `configOverride`, which is deep-merged over the
+generated config (see `values.yaml`; the full key reference is
+[config.example.yaml](../config.example.yaml)):
+
+```bash
+helm upgrade coder-ssh-gateway deploy/helm/coder-ssh-gateway \
+  --namespace coder-ssh-gateway --reuse-values \
+  --set configOverride.deployment.autostart=false
+```
+
+Key rotation: `helm upgrade` with the new key values, then
+`kubectl -n coder-ssh-gateway rollout restart deploy/coder-ssh-gateway` —
+key files reach the pod through subPath mounts, which do not update in
+place.
+
+### Option B: raw manifests
+
+Edit two things in `deploy/k8s/deployment.yaml` before applying: the
+`init` container's Coder domain argument and (if you build your own
+image) the `image:` references. Then:
+
+```bash
 kubectl -n coder-ssh-gateway apply -f deploy/k8s/pvc.yaml
+kubectl -n coder-ssh-gateway apply -f deploy/k8s/deployment.yaml
+kubectl -n coder-ssh-gateway apply -f deploy/k8s/service.yaml
+kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
+kubectl -n coder-ssh-gateway logs deploy/coder-ssh-gateway \
+  | grep -o 'SHA256:[A-Za-z0-9/+=-]*' | sort -u
 ```
 
-`pvc.yaml` requests a 1 GiB `ReadWriteOnce` volume mounted at
-`/var/lib/coder-ssh-gateway`. Adjust `storageClassName` to your cluster.
+Keys generated this way live on the PVC — back the volume up per
+[Backup and restore](#backup-and-restore). The starter config holds
+placeholder values beyond the domain argument; change them as described
+below before users enroll.
 
-### 2. Push or load the image
+### Maintenance: config edits and `doctor`
 
-Build and load the image so the kubelet can pull it. For a registry:
+`serve` holds the exclusive state lock for its lifetime, so off-line
+maintenance means scaling to zero, doing the work, scaling back:
 
 ```bash
-docker build -f deploy/Dockerfile -t registry.example.com/coder-ssh-gateway:0.1.0 .
-docker push registry.example.com/coder-ssh-gateway:0.1.0
+kubectl -n coder-ssh-gateway scale deploy/coder-ssh-gateway --replicas=0
+kubectl -n coder-ssh-gateway wait --for=delete pod \
+  -l app=coder-ssh-gateway --timeout=120s
 ```
 
-Edit the `image:` field in EACH of these three manifests so it
-matches your registry path — the init Job, the doctor Job, and the
-Deployment all run the same gateway image:
-
-- `deploy/k8s/csgw-init.Job.yaml`
-- `deploy/k8s/csgw-doctor.Job.yaml`
-- `deploy/k8s/deployment.yaml`
-
-The init and doctor Jobs are one-shots that mount the PVC and run as
-UID/GID/fsGroup 10001; using a different image tag than the
-Deployment risks version drift between bootstrap-time and serve-time
-checks.
-
-### 3. Run `init` once against the PVC
-
-The gateway image is distroless but it can run `init` directly. Use a
-**Job** rather than a bare Pod — Jobs give you reliable completion
-semantics (`kubectl wait --for=condition=complete`) and logs you can
-inspect after the fact.
-
-The Job must mount the PVC and run as UID/GID/fsGroup 10001 to match
-`deployment.yaml`, otherwise the artifacts land with the image's
-default non-root user (uid 65532) and `serve` cannot read them later.
-The complete Job is checked in at
-`deploy/k8s/csgw-init.Job.yaml`:
-
-```bash
-kubectl -n coder-ssh-gateway apply -f deploy/k8s/csgw-init.Job.yaml
-kubectl -n coder-ssh-gateway wait --for=condition=complete \
-  --timeout=120s job/csgw-init
-kubectl -n coder-ssh-gateway logs job/csgw-init
-kubectl -n coder-ssh-gateway delete job/csgw-init
-```
-
-`init` writes `config.yaml`, an Ed25519 host key, and a 32-byte
-encryption key to the PVC. There is no running `serve` yet, so the
-exclusive state lock is uncontended.
-
-### 4. Edit the generated `config.yaml`
-
-The gateway image has no shell and no `tar`, so the file is pulled
-out and pushed back via a Pod running an image that has both
-(`alpine:3.20` shown; `busybox` or `debian:bookworm-slim` work too).
-This Pod does not run `init`; it just exposes the PVC mount so
-`kubectl cp` can read and write `/state/config.yaml`:
+Edit `config.yaml` through a helper pod (the gateway image is distroless,
+so `kubectl cp` has nothing to exec against):
 
 ```bash
 kubectl -n coder-ssh-gateway apply -f - <<'EOF'
@@ -383,127 +405,33 @@ spec:
         claimName: coder-ssh-gateway
 EOF
 kubectl -n coder-ssh-gateway wait --for=condition=Ready pod/csgw-edit --timeout=60s
-
-# Pull the file out for editing on your workstation
 kubectl -n coder-ssh-gateway cp csgw-edit:/state/config.yaml ./config.yaml
-$EDITOR ./config.yaml       # set at minimum:
-                            #   deployment.coder_url: https://coder.example.com
-
-# Push the edited file back. `kubectl cp` runs in the edit pod's
-# securityContext (uid 10001), so the file comes back owned 10001:10001.
+$EDITOR ./config.yaml
 kubectl -n coder-ssh-gateway cp ./config.yaml csgw-edit:/state/config.yaml
-
-# tar inside `kubectl cp` may rewrite the mode to 0644; force 0600
-# (matches the rest of the secrets under <state-dir>) and verify.
+# tar inside `kubectl cp` may rewrite the mode; restore 0600 and verify.
 kubectl -n coder-ssh-gateway exec pod/csgw-edit -- chmod 0600 /state/config.yaml
 kubectl -n coder-ssh-gateway exec pod/csgw-edit -- \
-  stat -c "expected 600 10001:10001; got %a %U:%G" /state/config.yaml
-
+  stat -c "expected 600; got %a" /state/config.yaml
 kubectl -n coder-ssh-gateway delete pod csgw-edit
 ```
 
-### 5. Run `doctor` once before starting `serve`
-
-`doctor` is a non-serving command: it does NOT bind listeners and
-exits as soon as it finishes. Run it as a **Job** so you can wait for
-completion deterministically. The Job must mount the PVC and run as
-UID/GID/fsGroup 10001 — `doctor` reads the same files `serve` reads,
-so it must have the same access. The complete Job is checked in at
-`deploy/k8s/csgw-doctor.Job.yaml`:
+Run `doctor` with the checked-in Job (it mounts the PVC and matches the
+deployment's UID):
 
 ```bash
 kubectl -n coder-ssh-gateway apply -f deploy/k8s/csgw-doctor.Job.yaml
 kubectl -n coder-ssh-gateway wait --for=condition=complete \
   --timeout=120s job/csgw-doctor
 kubectl -n coder-ssh-gateway logs job/csgw-doctor
-kubectl -n coder-ssh-gateway delete job/csgw-doctor
-```
-
-If doctor WARNs on an unreachable Coder deployment, fix the egress
-policy before exposing the gateway. If doctor FAILs, fix the listed
-check before continuing.
-
-### 6. Apply the Deployment and Service
-
-```bash
-kubectl -n coder-ssh-gateway apply -f deploy/k8s/deployment.yaml
-kubectl -n coder-ssh-gateway apply -f deploy/k8s/service.yaml
-```
-
-`deployment.yaml` runs one replica with `Recreate` strategy (required —
-two pods cannot share the PVC), a 90-second termination grace period,
-non-root execution at UID 10001 with the matching fsGroup, a read-only
-root filesystem, all capabilities dropped, an emptyDir `/tmp` for
-scratch, and `CSGW_*` env vars so the kubelet can reach `/livez` and
-`/readyz` on the in-pod bind.
-
-`service.yaml` is a `LoadBalancer` Service mapping external port 22 to
-in-pod 2222. Metrics and health stay cluster-internal; expose them via a
-separate `ClusterIP` service only if your monitoring runs outside the
-cluster.
-
-### 7. Verify
-
-```bash
-kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
-kubectl -n coder-ssh-gateway get svc coder-ssh-gateway
-# Confirm the LB IP or hostname is reachable on port 22.
-```
-
-### Re-running `doctor` after deploy
-
-`serve` holds the exclusive state lock for its process lifetime, so
-you cannot run `doctor` while the Deployment is up. Scale to zero,
-wait for the serving pod to disappear, run the same `csgw-doctor` Job
-manifest from step 5, then restore the replica count and wait for
-rollout:
-
-```bash
-kubectl -n coder-ssh-gateway scale deploy/coder-ssh-gateway --replicas=0
-kubectl -n coder-ssh-gateway wait --for=delete pod \
-  -l app=coder-ssh-gateway --timeout=120s
-# Apply the same csgw-doctor Job from step 5 — the checked-in
-# manifest at deploy/k8s/csgw-doctor.Job.yaml. The Job mounts the
-# PVC and runs as UID/GID/fsGroup 10001, matching the deployment's
-# UID so it can read the state directory.
-kubectl -n coder-ssh-gateway apply -f deploy/k8s/csgw-doctor.Job.yaml
-kubectl -n coder-ssh-gateway wait --for=condition=complete \
-  --timeout=120s job/csgw-doctor
-kubectl -n coder-ssh-gateway logs job/csgw-doctor
-kubectl -n coder-ssh-gateway delete job/csgw-doctor
+kubectl -n coder-ssh-gateway delete job csgw-doctor
 kubectl -n coder-ssh-gateway scale deploy/coder-ssh-gateway --replicas=1
 kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
 ```
 
-The `csgw-doctor` Job is checked in at
-`deploy/k8s/csgw-doctor.Job.yaml` and is the exact same manifest
-applied in step 5 — re-apply it with `kubectl apply` rather than
-retyping the YAML.
-
-A scale-to-zero preserves the Deployment definition (replica count,
-selector, env vars, probes) — restoring `--replicas=1` brings the
-gateway back without re-applying Deployment YAML.
-
-### Why one replica, why `Recreate`
-
-The store takes an exclusive lock on `<state-dir>/lock` for the process
-lifetime. A second pod mounting the same PVC fails fast at startup.
-Scaling this Deployment is unsafe; there is no midstream failover. Active
-tunnels die with the pod and clients reconnect.
-
-### Config and bootstrap alternatives
-
-- Maintain `config.yaml` as a ConfigMap mounted read-only over
-  `/var/lib/coder-ssh-gateway/config.yaml`, and pass `--config
-  /path/to/config.yaml` before `serve` in the container args. Edit the
-  ConfigMap directly to change settings; restart the Deployment to
-  re-read.
-- If your policy requires Kubernetes Secrets for the host key or
-  encryption key, create two Secrets, mount them read-only (e.g.
-  `/run/secrets/host-key`, `/run/secrets/encryption-key`, `defaultMode
-  0400`), and point `ssh.host_keys` / `encryption.keys` in `config.yaml`
-  at those paths. The PVC then holds only non-secret records and audit
-  logs.
+A WARN on the Coder deployment means fix egress before exposing the
+gateway; a FAIL means fix the listed check and re-run. Scaling to zero
+preserves the Deployment definition, so restoring `--replicas=1` is all
+the rollout needs.
 
 ### Egress network policy
 
@@ -532,7 +460,8 @@ off, PROXY bytes are ignored and the socket peer is used.
 `init` is idempotent. `--force` asks for an explicit `overwrite`
 confirmation per artifact (host key, encryption key, starter config).
 Back up `secrets/` immediately — losing the active key orphans every
-stored token.
+stored token. On Kubernetes the init container runs this for you on the
+first boot; native and Docker operators run it themselves.
 
 `doctor` checks: config parse, state dir (VERSION + flock), encryption
 key (seal/open self-test), host key (fingerprints), Coder TLS dial, Coder
@@ -1003,7 +932,8 @@ is what breaks old records, not adding a new one.
 2. Add `v2: <state-dir>/secrets/credential-key-v2` under
    `encryption.keys` alongside `v1`, and set `active_key_id: v2`.
 3. Restart the gateway. New credential writes (renewals, `admin
-   credential set`) now use v2 automatically.
+   credential set`) now use v2 automatically. Verify with `doctor`: the
+   encryption-key seal/open self-test must PASS.
 4. Old records stay readable as long as `v1` stays under
    `encryption.keys`. The shipping CLI does not currently provide a
    built-in command to re-encrypt existing records in place; old
@@ -1028,7 +958,8 @@ is what breaks old records, not adding a new one.
    `ssh-keygen -t ed25519 -f ssh_host_ed25519_key.new -N ''`.
 2. Publish the new fingerprint through your trusted channel.
 3. Add the new path to `ssh.host_keys` alongside the old one (the gateway
-   loads and offers all listed keys) and restart.
+   loads and offers all listed keys) and restart. Verify with `doctor`:
+   it fingerprints every configured key, so both must appear.
 4. Update clients and known_hosts records.
 5. Remove the old key after a defined overlap period.
 

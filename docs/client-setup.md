@@ -252,7 +252,9 @@ Jump host:        none
 ## Credential maintenance
 
 When the stored token expires, renew it through the maintenance user
-without exposing the token on the command line. The host block below
+without exposing the token on the command line. A successful renewal
+prints a confirmation and disconnects you by design; the next workspace
+connection then works without prompting. The host block below
 lets the renewal prompt render:
 
 ```sshconfig

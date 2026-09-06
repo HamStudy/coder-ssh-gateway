@@ -108,9 +108,11 @@ The unit applies a hardened sandbox and uses the same `--state-dir`.
   create a named volume, run `init` and `doctor` against it, edit
   `config.yaml` via `docker cp`, then start the hardened serve container.
   Full command sequence: [Operator Guide → Container](./docs/operator-guide.md#container-standalone-docker). The container story is one `docker run` per lifecycle stage.
-- **Kubernetes:** one namespace, one PVC, one Deployment (`replicas: 1`,
-  `Recreate`), one LoadBalancer Service mapping 22 → 2222. End-to-end
-  sequence from an empty cluster: [Operator Guide → Kubernetes](./docs/operator-guide.md#kubernetes).
+- **Kubernetes:** a Helm chart at `deploy/helm/coder-ssh-gateway` —
+  Secret-backed keys, a self-initializing Deployment, and one
+  `coder.domain` value. Raw manifests (no Helm) live under
+  `deploy/k8s/`. End-to-end sequences from an empty cluster:
+  [Operator Guide → Kubernetes](./docs/operator-guide.md#kubernetes).
 
 ## Quick start (users, first connect)
 
