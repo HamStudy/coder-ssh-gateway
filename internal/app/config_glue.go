@@ -82,10 +82,10 @@ func DeploymentFromConfig(cfg *config.Config) (core.Deployment, error) {
 	return dep, nil
 }
 
-// KeyProviderFromConfig builds the file-based envelope key provider (§22.2)
+// KeyProviderFromConfig builds the configured envelope key provider (§22.2),
 // from the encryption config.
-func KeyProviderFromConfig(cfg *config.Config, logger *slog.Logger) *secretbox.FileKeyProvider {
-	return &secretbox.FileKeyProvider{
+func KeyProviderFromConfig(cfg *config.Config, logger *slog.Logger) *secretbox.SourceKeyProvider {
+	return &secretbox.SourceKeyProvider{
 		Keys:     cfg.Encryption.Keys,
 		ActiveID: cfg.Encryption.ActiveKeyID,
 		Logger:   logger,

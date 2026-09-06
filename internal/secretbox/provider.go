@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/HamStudy/coder-ssh-gateway/internal/core"
@@ -26,11 +27,18 @@ type KeyProvider interface {
 	Key(ctx context.Context, keyID string) ([]byte, error)
 }
 
-// FileKeyProvider loads keys from files listed in Keys (keyID to path) and
-// caches them lazily. Each file holds 32 raw bytes or a base64 encoding
-// (standard or URL, padded or unpadded) of 32 bytes. Key material is never
-// logged. Returned keys are fresh copies.
-type FileKeyProvider struct {
+// envSourcePrefix marks a Keys value as an environment variable reference
+// (env:VARNAME) instead of a file path. The variable holds the key material:
+// 32 raw bytes or a base64 encoding (standard or URL, padded or unpadded)
+// of 32 bytes. Base64 is the deployable form — Kubernetes injects Secret
+// data base64-encoded, and raw bytes do not survive env transport safely.
+const envSourcePrefix = "env:"
+
+// SourceKeyProvider loads keys from the sources listed in Keys (keyID to
+// source) and caches them lazily. A source is a file path or an env:VARNAME
+// reference; see envSourcePrefix. Key material is never logged. Returned
+// keys are fresh copies.
+type SourceKeyProvider struct {
 	Keys     map[string]string
 	ActiveID string
 	Logger   *slog.Logger
@@ -39,7 +47,7 @@ type FileKeyProvider struct {
 	cache map[string][]byte
 }
 
-func (p *FileKeyProvider) ActiveKey(ctx context.Context) (string, []byte, error) {
+func (p *SourceKeyProvider) ActiveKey(ctx context.Context) (string, []byte, error) {
 	if p.ActiveID == "" {
 		return "", nil, fmt.Errorf("active key: %w (%s)", ErrKeyNotFound, core.CRYPTO_KEY_UNAVAILABLE)
 	}
@@ -50,11 +58,11 @@ func (p *FileKeyProvider) ActiveKey(ctx context.Context) (string, []byte, error)
 	return p.ActiveID, key, nil
 }
 
-func (p *FileKeyProvider) Key(ctx context.Context, keyID string) ([]byte, error) {
+func (p *SourceKeyProvider) Key(ctx context.Context, keyID string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	path, ok := p.Keys[keyID]
+	source, ok := p.Keys[keyID]
 	if !ok {
 		return nil, fmt.Errorf("key %q: %w (%s)", keyID, ErrKeyNotFound, core.CRYPTO_KEY_UNAVAILABLE)
 	}
@@ -65,6 +73,43 @@ func (p *FileKeyProvider) Key(ctx context.Context, keyID string) ([]byte, error)
 		return slices.Clone(key), nil
 	}
 
+	var key []byte
+	var err error
+	if varName, ok := strings.CutPrefix(source, envSourcePrefix); ok {
+		key, err = p.envKey(keyID, varName)
+	} else {
+		key, err = p.fileKey(keyID, source)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if p.cache == nil {
+		p.cache = make(map[string][]byte)
+	}
+	p.cache[keyID] = key
+	return slices.Clone(key), nil
+}
+
+// envKey resolves an env:VARNAME source. A missing variable fails closed
+// with the stable CRYPTO_KEY_UNAVAILABLE code — the gateway never starts
+// with a half-configured envelope.
+func (p *SourceKeyProvider) envKey(keyID, varName string) ([]byte, error) {
+	if varName == "" {
+		return nil, fmt.Errorf("key %q: %w: empty env reference", keyID, ErrKeyFormat)
+	}
+	value := os.Getenv(varName)
+	if value == "" {
+		return nil, fmt.Errorf("key %q: environment variable %s is not set (%s)",
+			keyID, varName, core.CRYPTO_KEY_UNAVAILABLE)
+	}
+	key, err := parseKeyMaterial([]byte(value))
+	if err != nil {
+		return nil, fmt.Errorf("key %q from %s: %w", keyID, varName, err)
+	}
+	return key, nil
+}
+
+func (p *SourceKeyProvider) fileKey(keyID, path string) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("key %q: %w (%s)", keyID, err, core.CRYPTO_KEY_UNAVAILABLE)
@@ -82,14 +127,10 @@ func (p *FileKeyProvider) Key(ctx context.Context, keyID string) ([]byte, error)
 	if err != nil {
 		return nil, fmt.Errorf("key %q: %w", keyID, err)
 	}
-	if p.cache == nil {
-		p.cache = make(map[string][]byte)
-	}
-	p.cache[keyID] = key
-	return slices.Clone(key), nil
+	return key, nil
 }
 
-func (p *FileKeyProvider) logger() *slog.Logger {
+func (p *SourceKeyProvider) logger() *slog.Logger {
 	if p.Logger != nil {
 		return p.Logger
 	}

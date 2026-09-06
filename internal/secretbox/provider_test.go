@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
+	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
 )
 
@@ -34,10 +36,10 @@ func rawKey(b byte) []byte {
 	return k
 }
 
-func TestFileKeyProviderRawKey(t *testing.T) {
+func TestSourceKeyProviderRawKey(t *testing.T) {
 	dir := t.TempDir()
 	raw := rawKey(0x11)
-	p := &secretbox.FileKeyProvider{
+	p := &secretbox.SourceKeyProvider{
 		Keys:     map[string]string{"v1": writeKeyFile(t, dir, "v1", raw, 0o400)},
 		ActiveID: "v1",
 	}
@@ -58,14 +60,14 @@ func TestFileKeyProviderRawKey(t *testing.T) {
 // must round-trip byte-exact: whitespace trimming is only for text-encoded
 // key files. Regression: init writes raw keys; TrimSpace corrupted any key
 // whose first/last byte was unicode-space, breaking credential storage.
-func TestFileKeyProviderRawKeyWhitespaceEdges(t *testing.T) {
+func TestSourceKeyProviderRawKeyWhitespaceEdges(t *testing.T) {
 	dir := t.TempDir()
 	for _, edge := range []byte{' ', '\n', '\t', '\r'} {
 		raw := rawKey(0x42)
 		raw[0] = edge
 		raw[len(raw)-1] = edge
 		name := fmt.Sprintf("v1-edge-%02x", edge)
-		p := &secretbox.FileKeyProvider{
+		p := &secretbox.SourceKeyProvider{
 			Keys:     map[string]string{"v1": writeKeyFile(t, dir, name, raw, 0o400)},
 			ActiveID: "v1",
 		}
@@ -79,19 +81,19 @@ func TestFileKeyProviderRawKeyWhitespaceEdges(t *testing.T) {
 	}
 }
 
-func TestFileKeyProviderBase64Variants(t *testing.T) {
+func TestSourceKeyProviderBase64Variants(t *testing.T) {
 	raw := rawKey(0x42)
 	variants := map[string][]byte{
-		"std-padded":     []byte(base64.StdEncoding.EncodeToString(raw)),
-		"std-unpadded":   []byte(base64.RawStdEncoding.EncodeToString(raw)),
-		"url-padded":     []byte(base64.URLEncoding.EncodeToString(raw)),
-		"url-unpadded":   []byte(base64.RawURLEncoding.EncodeToString(raw)),
+		"std-padded":       []byte(base64.StdEncoding.EncodeToString(raw)),
+		"std-unpadded":     []byte(base64.RawStdEncoding.EncodeToString(raw)),
+		"url-padded":       []byte(base64.URLEncoding.EncodeToString(raw)),
+		"url-unpadded":     []byte(base64.RawURLEncoding.EncodeToString(raw)),
 		"std-with-newline": []byte(base64.StdEncoding.EncodeToString(raw) + "\n"),
 	}
 	for name, content := range variants {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			p := &secretbox.FileKeyProvider{
+			p := &secretbox.SourceKeyProvider{
 				Keys:     map[string]string{"v1": writeKeyFile(t, dir, "v1", content, 0o400)},
 				ActiveID: "v1",
 			}
@@ -106,24 +108,24 @@ func TestFileKeyProviderBase64Variants(t *testing.T) {
 	}
 }
 
-func TestFileKeyProviderWrongLength(t *testing.T) {
+func TestSourceKeyProviderWrongLength(t *testing.T) {
 	dir := t.TempDir()
 
 	short := writeKeyFile(t, dir, "short", bytes.Repeat([]byte("a"), 31), 0o400)
-	p := &secretbox.FileKeyProvider{Keys: map[string]string{"v1": short}, ActiveID: "v1"}
+	p := &secretbox.SourceKeyProvider{Keys: map[string]string{"v1": short}, ActiveID: "v1"}
 	if _, err := p.Key(context.Background(), "v1"); !errors.Is(err, secretbox.ErrKeySize) {
 		t.Fatalf("31 bytes: err = %v, want ErrKeySize", err)
 	}
 
 	long := writeKeyFile(t, dir, "long", bytes.Repeat([]byte("a"), 33), 0o400)
-	p = &secretbox.FileKeyProvider{Keys: map[string]string{"v1": long}, ActiveID: "v1"}
+	p = &secretbox.SourceKeyProvider{Keys: map[string]string{"v1": long}, ActiveID: "v1"}
 	if _, err := p.Key(context.Background(), "v1"); !errors.Is(err, secretbox.ErrKeyFormat) {
 		t.Fatalf("33 bytes: err = %v, want ErrKeyFormat", err)
 	}
 }
 
-func TestFileKeyProviderUnknownKeyID(t *testing.T) {
-	p := &secretbox.FileKeyProvider{Keys: map[string]string{}, ActiveID: "v1"}
+func TestSourceKeyProviderUnknownKeyID(t *testing.T) {
+	p := &secretbox.SourceKeyProvider{Keys: map[string]string{}, ActiveID: "v1"}
 	if _, err := p.Key(context.Background(), "nope"); !errors.Is(err, secretbox.ErrKeyNotFound) {
 		t.Fatalf("err = %v, want ErrKeyNotFound", err)
 	}
@@ -132,8 +134,8 @@ func TestFileKeyProviderUnknownKeyID(t *testing.T) {
 	}
 }
 
-func TestFileKeyProviderMissingFile(t *testing.T) {
-	p := &secretbox.FileKeyProvider{
+func TestSourceKeyProviderMissingFile(t *testing.T) {
+	p := &secretbox.SourceKeyProvider{
 		Keys:     map[string]string{"v1": filepath.Join(t.TempDir(), "absent")},
 		ActiveID: "v1",
 	}
@@ -142,11 +144,11 @@ func TestFileKeyProviderMissingFile(t *testing.T) {
 	}
 }
 
-func TestFileKeyProviderCachesAndCopies(t *testing.T) {
+func TestSourceKeyProviderCachesAndCopies(t *testing.T) {
 	dir := t.TempDir()
 	raw := rawKey(0x77)
 	path := writeKeyFile(t, dir, "v1", raw, 0o400)
-	p := &secretbox.FileKeyProvider{Keys: map[string]string{"v1": path}, ActiveID: "v1"}
+	p := &secretbox.SourceKeyProvider{Keys: map[string]string{"v1": path}, ActiveID: "v1"}
 
 	first, err := p.Key(context.Background(), "v1")
 	if err != nil {
@@ -165,10 +167,10 @@ func TestFileKeyProviderCachesAndCopies(t *testing.T) {
 	}
 }
 
-func TestFileKeyProviderLoosePermsSucceed(t *testing.T) {
+func TestSourceKeyProviderLoosePermsSucceed(t *testing.T) {
 	dir := t.TempDir()
 	raw := rawKey(0x33)
-	p := &secretbox.FileKeyProvider{
+	p := &secretbox.SourceKeyProvider{
 		Keys:     map[string]string{"v1": writeKeyFile(t, dir, "v1", raw, 0o440)},
 		ActiveID: "v1",
 	}
@@ -177,10 +179,10 @@ func TestFileKeyProviderLoosePermsSucceed(t *testing.T) {
 	}
 }
 
-func TestFileKeyProviderConcurrent(t *testing.T) {
+func TestSourceKeyProviderConcurrent(t *testing.T) {
 	dir := t.TempDir()
 	raw := rawKey(0x55)
-	p := &secretbox.FileKeyProvider{
+	p := &secretbox.SourceKeyProvider{
 		Keys:     map[string]string{"v1": writeKeyFile(t, dir, "v1", raw, 0o400)},
 		ActiveID: "v1",
 	}
@@ -210,7 +212,7 @@ func TestKeyRotation(t *testing.T) {
 	dir := t.TempDir()
 	rawV1 := rawKey(0x01)
 	rawV2 := rawKey(0x02)
-	p := &secretbox.FileKeyProvider{
+	p := &secretbox.SourceKeyProvider{
 		Keys: map[string]string{
 			"v1": writeKeyFile(t, dir, "v1", rawV1, 0o400),
 			"v2": writeKeyFile(t, dir, "v2", rawV2, 0o400),
@@ -260,4 +262,77 @@ func TestKeyRotation(t *testing.T) {
 	if _, err := secretbox.Open(activeID, activeKey, newNonce, newCT, aad); err != nil {
 		t.Fatalf("Open v2: %v", err)
 	}
+}
+
+func TestSourceKeyProviderEnvSources(t *testing.T) {
+	key := rawKey(0x07)
+	b64 := base64.StdEncoding.EncodeToString(key)
+
+	t.Run("loads base64 value", func(t *testing.T) {
+		t.Setenv("CSGW_TEST_KEY_V1", b64)
+		p := &secretbox.SourceKeyProvider{Keys: map[string]string{"v1": "env:CSGW_TEST_KEY_V1"}, ActiveID: "v1"}
+		got, err := p.Key(context.Background(), "v1")
+		if err != nil {
+			t.Fatalf("Key: %v", err)
+		}
+		if !bytes.Equal(got, key) {
+			t.Errorf("key mismatch")
+		}
+	})
+
+	t.Run("unset variable fails closed with stable code", func(t *testing.T) {
+		p := &secretbox.SourceKeyProvider{Keys: map[string]string{"v1": "env:CSGW_TEST_KEY_UNSET"}, ActiveID: "v1"}
+		_, err := p.Key(context.Background(), "v1")
+		if err == nil || !strings.Contains(err.Error(), core.CRYPTO_KEY_UNAVAILABLE) {
+			t.Fatalf("err = %v, want %s", err, core.CRYPTO_KEY_UNAVAILABLE)
+		}
+	})
+
+	t.Run("empty reference is a format error", func(t *testing.T) {
+		p := &secretbox.SourceKeyProvider{Keys: map[string]string{"v1": "env:"}, ActiveID: "v1"}
+		_, err := p.Key(context.Background(), "v1")
+		if err == nil || !strings.Contains(err.Error(), "format") {
+			t.Fatalf("err = %v, want format error", err)
+		}
+	})
+
+	t.Run("wrong decoded size rejected", func(t *testing.T) {
+		t.Setenv("CSGW_TEST_KEY_SHORT", base64.StdEncoding.EncodeToString([]byte("too-short")))
+		p := &secretbox.SourceKeyProvider{Keys: map[string]string{"v1": "env:CSGW_TEST_KEY_SHORT"}, ActiveID: "v1"}
+		_, err := p.Key(context.Background(), "v1")
+		if err == nil || !strings.Contains(err.Error(), "32 bytes") {
+			t.Fatalf("err = %v, want size error", err)
+		}
+	})
+
+	t.Run("mixed file and env sources with rotation", func(t *testing.T) {
+		dir := t.TempDir()
+		old := rawKey(0x08)
+		t.Setenv("CSGW_TEST_KEY_V2", b64)
+		p := &secretbox.SourceKeyProvider{
+			Keys: map[string]string{
+				"v1": writeKeyFile(t, dir, "v1", old, 0o400),
+				"v2": "env:CSGW_TEST_KEY_V2",
+			},
+			ActiveID: "v2",
+		}
+		ctx := context.Background()
+		id1, k1, err := p.ActiveKey(ctx)
+		if err != nil || id1 != "v2" || !bytes.Equal(k1, key) {
+			t.Fatalf("active = %s, %v", id1, err)
+		}
+		kOld, err := p.Key(ctx, "v1")
+		if err != nil || !bytes.Equal(kOld, old) {
+			t.Fatalf("old key: %v", err)
+		}
+	})
+
+	t.Run("trailing newline tolerated", func(t *testing.T) {
+		t.Setenv("CSGW_TEST_KEY_NL", b64+"\n")
+		p := &secretbox.SourceKeyProvider{Keys: map[string]string{"v1": "env:CSGW_TEST_KEY_NL"}, ActiveID: "v1"}
+		got, err := p.Key(context.Background(), "v1")
+		if err != nil || !bytes.Equal(got, key) {
+			t.Fatalf("Key: %v", err)
+		}
+	})
 }

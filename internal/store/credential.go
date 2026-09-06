@@ -60,7 +60,7 @@ func cryptoKeyUnavailable(msg string, cause error) error {
 // SetKeyProvider installs the envelope key provider used by the credential
 // methods (§22.2). It must be called after Open, before any Load/Replace/
 // ReencryptAll on records holding ciphertext; tests use in-memory providers,
-// production wires a secretbox.FileKeyProvider from the deployment secrets.
+// production wires a secretbox.SourceKeyProvider from the deployment secrets.
 func (s *Store) SetKeyProvider(kp secretbox.KeyProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
