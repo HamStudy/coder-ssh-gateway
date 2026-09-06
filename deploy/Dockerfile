@@ -7,24 +7,39 @@
 # Build:
 #   docker build -f deploy/Dockerfile -t coder-ssh-gateway:dev .
 #
-# CODER_SHA256 below pins coder_${CODER_VERSION#v}_linux_amd64.tar.gz and is
-# baked in; override both args together when bumping the Coder CLI:
-#   curl -sSL https://github.com/coder/coder/releases/download/v2.35.2/coder_2.35.2_linux_amd64.tar.gz | sha256sum
+# CODER_SHA256_AMD64 / CODER_SHA256_ARM64 below pin
+# coder_${CODER_VERSION#v}_linux_{amd64,arm64}.tar.gz and are baked in;
+# override all three args together when bumping the Coder CLI:
+#   curl -sSL https://github.com/coder/coder/releases/download/v2.35.2/coder_2.35.2_checksums.txt
 # (release asset names: https://github.com/coder/coder/releases)
 #
 # The pinned Go toolchain mirrors go.mod's toolchain directive. Bump
 # GO_VERSION when go.mod moves.
+#
+# Version metadata: build with --build-arg VERSION=x.y.z COMMIT=<sha>
+# DATE=<rfc3339>; the published images do. Unset, `version` reports dev.
 
 ARG GO_VERSION=1.26.6
 
 # ---------- builder ----------
 FROM golang:${GO_VERSION}-bookworm AS builder
 
+# TARGETARCH is provided by Docker/buildx; cross-compile for it natively
+# (Go needs no emulation) so multi-arch builds stay fast.
+ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=dev
+ARG DATE=dev
+
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
+RUN CGO_ENABLED=0 GOARCH=${TARGETARCH} go build -trimpath \
+    -ldflags="-s -w \
+      -X github.com/HamStudy/coder-ssh-gateway/internal/version.Version=${VERSION} \
+      -X github.com/HamStudy/coder-ssh-gateway/internal/version.Commit=${COMMIT} \
+      -X github.com/HamStudy/coder-ssh-gateway/internal/version.Date=${DATE}" \
     -o /out/coder-ssh-gateway ./cmd/coder-ssh-gateway
 
 # Empty state dir staged here because the runtime image is distroless (no
@@ -35,19 +50,27 @@ RUN mkdir -p /out/state
 FROM debian:bookworm-slim AS codercli
 
 ARG CODER_VERSION=v2.35.2
-# sha256 of coder_${CODER_VERSION#v}_linux_amd64.tar.gz, baked in. The
-# build fails closed on empty or mismatched checksum.
-ARG CODER_SHA256=907017ffefae1af67bd6533b6c9ddd6b975e39ea9ef9340deba3dc72231b209c
+# sha256 of coder_${CODER_VERSION#v}_linux_${TARGETARCH}.tar.gz, baked in.
+# The build fails closed on empty or mismatched checksum, or an
+# unsupported TARGETARCH.
+ARG CODER_SHA256_AMD64=907017ffefae1af67bd6533b6c9ddd6b975e39ea9ef9340deba3dc72231b209c
+ARG CODER_SHA256_ARM64=12e4fbd607321cb2464a0625c021e8cfdcb109fe73d3c42c70cd86d7702796b5
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
 
 RUN set -eu; \
-    [ -n "$CODER_SHA256" ] || { echo "CODER_SHA256 build arg is required" >&2; exit 1; }; \
+    arch="${TARGETARCH:-$(uname -m)}"; \
+    case "${arch}" in \
+      amd64|x86_64) arch=amd64; want="${CODER_SHA256_AMD64}" ;; \
+      arm64|aarch64) arch=arm64; want="${CODER_SHA256_ARM64}" ;; \
+      *) echo "unsupported architecture: ${arch}" >&2; exit 1 ;; \
+    esac; \
+    [ -n "${want}" ] || { echo "checksum build arg is required for ${TARGETARCH}" >&2; exit 1; }; \
     ver="${CODER_VERSION#v}"; \
     curl -fsSL -o /tmp/coder.tar.gz \
-      "https://github.com/coder/coder/releases/download/${CODER_VERSION}/coder_${ver}_linux_amd64.tar.gz"; \
-    echo "${CODER_SHA256}  /tmp/coder.tar.gz" | sha256sum -c -; \
+      "https://github.com/coder/coder/releases/download/${CODER_VERSION}/coder_${ver}_linux_${arch}.tar.gz"; \
+    echo "${want}  /tmp/coder.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/coder.tar.gz -C /usr/local/bin ./coder; \
     chmod 0755 /usr/local/bin/coder
 
