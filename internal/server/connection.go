@@ -229,6 +229,8 @@ func (s *Server) handleConn(raw net.Conn) {
 			return
 		}
 		s.dispatchMaintenanceChannels(connCtx, state, perms, channels)
+	case sshauth.ModeWorkspace:
+		s.dispatchWorkspaceChannels(connCtx, state, perms, serverConn.User(), channels)
 	default:
 		log.Warn("unknown permission mode; closing", slog.String("mode", perms.Mode))
 		rejectChannelAll(channels)

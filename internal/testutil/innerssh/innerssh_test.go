@@ -82,6 +82,24 @@ func TestServeExecRoundTrip(t *testing.T) {
 	// session.Output returning nil error already proves exit-status 0.
 }
 
+func TestServeExecPrintfHelloExact(t *testing.T) {
+	defer testleaks.Verify(t)
+	client, shutdown := serveOverPipes(t)
+	defer shutdown()
+
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	out, err := session.Output("printf hello")
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if string(out) != "hello" {
+		t.Fatalf("exec output = %q, want %q", out, "hello")
+	}
+}
+
 func TestServeExecExitStatusFailureVisible(t *testing.T) {
 	defer testleaks.Verify(t)
 	client, shutdown := serveOverPipes(t)

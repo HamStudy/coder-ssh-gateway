@@ -1,14 +1,15 @@
 //go:build live
 
-// Live example.test integration suite (§38.4 subset). These tests NEVER
-// run in CI: they require the CODER_LIVE_TOKEN environment variable holding
-// a real Coder session token. The token is read from the environment at
-// runtime and passed to the gateway exclusively via stdin pipes — it is
-// never written to a file, never placed in argv, and never logged.
+// Live integration suite (§38.4 subset). These tests NEVER run in CI: they
+// require CODER_LIVE_URL, CODER_LIVE_TOKEN, CODER_LIVE_CODER_BINARY,
+// CODER_LIVE_STARTED_WORKSPACE, and CODER_LIVE_STOPPED_WORKSPACE environment
+// variables. The
+// token is read at runtime and passed to the gateway exclusively via stdin
+// pipes; it is never written to a file, never placed in argv, and never logged.
 //
 // Run with:
 //
-//	CODER_LIVE_TOKEN=<token> go test -tags live -v ./test/e2e/ -run TestLive -count=1
+//	CODER_LIVE_URL=https://coder.example.com CODER_LIVE_TOKEN=<token> CODER_LIVE_CODER_BINARY=coder CODER_LIVE_STARTED_WORKSPACE=<started> CODER_LIVE_STOPPED_WORKSPACE=<stopped> go test -tags live -v ./test/e2e/ -run TestLive -count=1
 package e2e
 
 import (
@@ -24,11 +25,6 @@ import (
 	"time"
 )
 
-const (
-	liveCoderURL    = "https://example.test"
-	liveCoderBinary = "/usr/local/bin/coder"
-)
-
 // liveToken reads the session token from the environment or skips. The
 // value is NEVER persisted: enrollment pipes it to `admin credential set
 // --stdin`, and API probes send it in an in-memory request header only.
@@ -36,19 +32,52 @@ func liveToken(t *testing.T) string {
 	t.Helper()
 	token := os.Getenv("CODER_LIVE_TOKEN")
 	if token == "" {
-		t.Skip("CODER_LIVE_TOKEN not set; skipping live example.test test")
+		t.Skip("CODER_LIVE_TOKEN not set; skipping live test")
 	}
 	return token
 }
 
-// liveFixture boots the real gateway against the real deployment: real
-// coder_url, real coder binary, real target suffix. Enrollment happens
-// through the real CLI with the env token piped to stdin.
-func liveFixture(t *testing.T, token string) *gatewayFixture {
+func liveRequiredEnv(t *testing.T, name string) string {
 	t.Helper()
-	if _, err := os.Stat(liveCoderBinary); err != nil {
-		t.Skipf("coder binary not at %s: %v", liveCoderBinary, err)
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		t.Skipf("%s not set; skipping live test", name)
 	}
+	return value
+}
+
+func liveCoderBinary(t *testing.T) string {
+	t.Helper()
+	configured := liveRequiredEnv(t, "CODER_LIVE_CODER_BINARY")
+	path, err := exec.LookPath(configured)
+	if err != nil {
+		t.Fatalf("CODER_LIVE_CODER_BINARY %q is not executable: %v", configured, err)
+	}
+	return path
+}
+
+func liveCoderURL(t *testing.T) string {
+	t.Helper()
+	liveURL := strings.TrimSuffix(os.Getenv("CODER_LIVE_URL"), "/")
+	if liveURL == "" {
+		t.Skip("CODER_LIVE_URL not set; skipping live test")
+	}
+	if !strings.HasPrefix(liveURL, "https://") || strings.ContainsAny(strings.TrimPrefix(liveURL, "https://"), "/?#@") {
+		t.Fatalf("CODER_LIVE_URL must be a bare HTTPS URL, got %q", liveURL)
+	}
+	return liveURL
+}
+
+func liveCoderDomain(t *testing.T) string {
+	t.Helper()
+	return strings.TrimPrefix(liveCoderURL(t), "https://")
+}
+
+// liveFixture boots the real gateway against the real deployment: real
+// coder_url and real coder binary. Enrollment happens
+// through the real CLI with the env token piped to stdin.
+func liveFixture(t *testing.T, token, coderBinary string) *gatewayFixture {
+	t.Helper()
 
 	f := &gatewayFixture{
 		t:        t,
@@ -57,8 +86,8 @@ func liveFixture(t *testing.T, token string) *gatewayFixture {
 		logBuf:   &lockedBuffer{},
 	}
 
-	f.runCLI(t, nil, "", "init")
-	writeLiveConfig(t, f)
+	f.runCLI(t, nil, "", "init", liveCoderDomain(t))
+	writeLiveConfig(t, f, coderBinary)
 
 	out := f.runCLI(t, nil, "", "admin", "account", "add", "--label", "live e2e", "--bind-on-first-token")
 	f.accountID = parseAccountID(t, out)
@@ -76,8 +105,8 @@ func liveFixture(t *testing.T, token string) *gatewayFixture {
 }
 
 // writeLiveConfig writes the live-deployment config over init's starter:
-// production coder_url/binary/suffix, dynamic loopback listen address.
-func writeLiveConfig(t *testing.T, f *gatewayFixture) {
+// production coder_url/binary and dynamic loopback listen address.
+func writeLiveConfig(t *testing.T, f *gatewayFixture, coderBinary string) {
 	t.Helper()
 	lnAddr := reserveAddr(t)
 	f.host, f.port = splitAddr(t, lnAddr)
@@ -100,7 +129,6 @@ state:
 deployment:
   id: primary
   coder_url: %s
-  target_suffix: coder-gateway.example.com
   coder_binary: %s
   coder_global_config: %s
   working_directory: %s
@@ -115,7 +143,7 @@ observability:
   log_level: info
   metrics_address: "127.0.0.1:0"
   health_address: "127.0.0.1:0"
-`, f.addr, f.stateDir, liveCoderURL, liveCoderBinary,
+	`, f.addr, f.stateDir, liveCoderURL(t), coderBinary,
 		filepath.Join(f.stateDir, "coder-config"), filepath.Join(f.stateDir, "run"))
 	if err := os.WriteFile(filepath.Join(f.stateDir, "config.yaml"), []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write live config: %v", err)
@@ -132,12 +160,13 @@ observability:
 func TestLiveProxyJumpStarted(t *testing.T) {
 	requireOpenSSH(t)
 	token := liveToken(t)
-	f := liveFixture(t, token)
+	workspace := liveRequiredEnv(t, "CODER_LIVE_STARTED_WORKSPACE")
+	f := liveFixture(t, token, liveCoderBinary(t))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
-	stdout, stderr, code := f.proxyJumpExec(t, ctx, "examtools-docs.coder-gateway.example.com", "printf hello")
+	stdout, stderr, code := f.proxyJumpExec(t, ctx, workspace, "printf hello")
 	if code != 0 {
 		t.Fatalf("live ProxyJump exit %d\nstdout: %q\nstderr: %q\ngateway logs:\n%s",
 			code, stdout, stderr, f.logBuf.String())
@@ -160,26 +189,28 @@ func TestLiveProxyJumpStarted(t *testing.T) {
 func TestLiveAutostartStopped(t *testing.T) {
 	requireOpenSSH(t)
 	token := liveToken(t)
+	workspace := liveRequiredEnv(t, "CODER_LIVE_STOPPED_WORKSPACE")
+	coderBinary := liveCoderBinary(t)
 
 	// 1. Capture initial state FIRST.
-	status, healthy := liveWorkspaceState(t, token, "general")
+	status, healthy := liveWorkspaceState(t, token, workspace)
 	startedByUs := status != "running" // conservative: anything not clearly running gets stopped again
 
 	// 2. Register cleanup BEFORE the fixture and any connect attempt; it
 	// must fire even when the test fails midway.
 	t.Cleanup(func() {
 		if startedByUs {
-			liveStopWorkspace(t, token, "general")
+			liveStopWorkspace(t, token, coderBinary, workspace)
 		}
 	})
 
-	f := liveFixture(t, token)
+	f := liveFixture(t, token, coderBinary)
 
 	// 3. A workspace that is running but whose agent is still bootstrapping
 	// (left over from a previous interrupted run, for example) is not
 	// connectable yet: wait for agent health before touching ssh.
 	if status == "running" && !healthy {
-		liveWaitHealthy(t, token, "general", 3*time.Minute)
+		liveWaitHealthy(t, token, workspace, 3*time.Minute)
 	}
 
 	// 4. Autostart may take minutes. The ssh_config ConnectTimeout (10s)
@@ -190,7 +221,7 @@ func TestLiveAutostartStopped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
-	stdout, stderr, code := f.proxyJumpExecOpts(t, ctx, "general.coder-gateway.example.com", "printf hello",
+	stdout, stderr, code := f.proxyJumpExecOpts(t, ctx, workspace, "printf hello",
 		"ConnectTimeout=300")
 	if code != 0 {
 		t.Fatalf("live autostart ProxyJump exit %d\nstdout: %q\nstderr: %q\ngateway logs:\n%s",
@@ -309,12 +340,12 @@ func liveGetWorkspace(t *testing.T, token, workspace string) (map[string]any, er
 	return liveAPIGet(t, token, "/api/v2/users/"+username+"/workspace/"+workspace)
 }
 
-// liveAPIGet performs one authenticated GET against example.test and
+// liveAPIGet performs one authenticated GET against the configured deployment and
 // returns the decoded JSON object.
 func liveAPIGet(t *testing.T, token, path string) (map[string]any, error) {
 	t.Helper()
 	client := &http.Client{Timeout: 20 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, strings.TrimSuffix(liveCoderURL, "/")+path, nil)
+	req, err := http.NewRequest(http.MethodGet, liveCoderURL(t)+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -341,16 +372,16 @@ func liveAPIGet(t *testing.T, token, path string) (map[string]any, error) {
 // build, so the stop is retried until the latest build reports stopped
 // (bounded). The token is passed through the process environment of the
 // child only — never argv (§18.3 parity).
-func liveStopWorkspace(t *testing.T, token, workspace string) {
+func liveStopWorkspace(t *testing.T, token, coderBinary, workspace string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
 	stopped := false
 	for attempt := 1; ; attempt++ {
-		cmd := exec.Command(liveCoderBinary, "stop", "--yes", workspace)
+		cmd := exec.Command(coderBinary, "stop", "--yes", workspace)
 		cmd.Env = []string{
 			"PATH=/usr/local/bin:/usr/bin:/bin",
 			"HOME=" + t.TempDir(),
-			"CODER_URL=" + liveCoderURL,
+			"CODER_URL=" + liveCoderURL(t),
 			"CODER_SESSION_TOKEN=" + token,
 			"CODER_NO_VERSION_WARNING=true",
 			"CODER_NO_FEATURE_WARNING=true",

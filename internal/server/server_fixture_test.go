@@ -155,11 +155,10 @@ func newFixture(t *testing.T, handler http.Handler) *gwFixture {
 	f.store = s
 
 	f.dep = core.Deployment{
-		ID:           uuid.New(),
-		CoderURL:     coderURL,
-		TargetSuffix: "coder-gateway.example.com",
-		CoderBinary:  "/usr/local/bin/coder",
-		WaitMode:     "auto",
+		ID:          uuid.New(),
+		CoderURL:    coderURL,
+		CoderBinary: "/usr/local/bin/coder",
+		WaitMode:    "auto",
 	}
 	if err := s.EnsureDeployment(f.dep); err != nil {
 		t.Fatalf("EnsureDeployment: %v", err)
@@ -200,10 +199,7 @@ func newFixture(t *testing.T, handler http.Handler) *gwFixture {
 	}
 	f.verifier = coderapi.NewCachedVerifier(f.dep.ID, v, time.Minute)
 
-	f.codec, err = route.NewCodec(f.dep.TargetSuffix)
-	if err != nil {
-		t.Fatalf("route.NewCodec: %v", err)
-	}
+	f.codec = route.NewCodec()
 	f.starter = newFakeTunnelStarter("TUNNEL-OK")
 
 	return f

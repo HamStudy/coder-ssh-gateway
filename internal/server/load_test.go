@@ -100,7 +100,7 @@ func TestLoadDoSResistance(t *testing.T) {
 	}
 	var held []ssh.Channel
 	for i := 0; i < 4; i++ {
-		ch, _, err := openDirectTCPIP(stormClient, "dev.coder-gateway.example.com", 22)
+		ch, _, err := openDirectTCPIP(stormClient, "dev", 22)
 		if err != nil {
 			t.Fatalf("hold channel %d: %v", i, err)
 		}
@@ -139,7 +139,7 @@ func TestLoadDoSResistance(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ch, _, err := openDirectTCPIP(stormClient, "dev.coder-gateway.example.com", 22)
+			ch, _, err := openDirectTCPIP(stormClient, "dev", 22)
 			if err == nil {
 				ch.Close()
 				channelErrs <- errors.New("channel open unexpectedly succeeded past the limit")

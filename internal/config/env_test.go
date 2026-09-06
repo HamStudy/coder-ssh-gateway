@@ -142,3 +142,37 @@ func TestValidateAcceptsWildcardAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRejectsInvalidBindAddresses(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		set   func(*Config)
+	}{
+		{"listen", "listen.address", func(cfg *Config) { cfg.Listen.Address = ":bad" }},
+		{"metrics", "observability.metrics_address", func(cfg *Config) { cfg.Observability.MetricsAddress = "missing-port" }},
+		{"health", "observability.health_address", func(cfg *Config) { cfg.Observability.HealthAddress = "127.0.0.1:65536" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, _ := validConfig(t)
+			tt.set(cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate succeeded, want error")
+			}
+			if !strings.Contains(err.Error(), tt.field) {
+				t.Errorf("Validate error %q does not identify %s", err, tt.field)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsDisabledOptionalBindAddresses(t *testing.T) {
+	cfg, _ := validConfig(t)
+	cfg.Observability.MetricsAddress = ""
+	cfg.Observability.HealthAddress = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate with disabled optional listeners: %v", err)
+	}
+}

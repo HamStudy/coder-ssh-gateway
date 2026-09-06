@@ -133,7 +133,7 @@ func TestDirectTCPIPFullPath(t *testing.T) {
 	}
 	defer client.Close()
 
-	ch, _, err := openDirectTCPIP(client, "dev.coder-gateway.example.com", 22)
+	ch, _, err := openDirectTCPIP(client, "dev", 22)
 	if err != nil {
 		t.Fatalf("direct-tcpip open: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestDirectTCPIPFullPath(t *testing.T) {
 		t.Fatalf("starter calls = %d, want 1", len(calls))
 	}
 	call := calls[0]
-	if call.Route.WorkspaceHost != "dev.coder-gateway.example.com" {
+	if call.Route.WorkspaceHost != "dev" {
 		t.Errorf("WorkspaceHost = %q", call.Route.WorkspaceHost)
 	}
 	if call.Route.RequestedPort != 22 {
@@ -177,7 +177,7 @@ func TestDirectTCPIPFullPath(t *testing.T) {
 	// Accepted channel audited with the log-safe display target (§34.3).
 	waitFor(t, 3*time.Second, func() bool {
 		for _, ev := range f.auditEvents(server.EventTypeChannelOpen) {
-			if ev.Result == "success" && ev.Target == "dev.coder-gateway.example.com" {
+			if ev.Result == "success" && ev.Target == "dev" {
 				return true
 			}
 		}
@@ -225,7 +225,7 @@ func TestTransportChannelRejectionMatrix(t *testing.T) {
 	defer client.Close()
 
 	t.Run("port not 22", func(t *testing.T) {
-		_, _, err := openDirectTCPIP(client, "dev.coder-gateway.example.com", 2222)
+		_, _, err := openDirectTCPIP(client, "dev", 2222)
 		reason, ok := openChannelReason(err)
 		if !ok || reason != ssh.Prohibited {
 			t.Errorf("err = %v, want OpenChannelError Prohibited", err)
@@ -235,19 +235,19 @@ func TestTransportChannelRejectionMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("suffix denied", func(t *testing.T) {
-		_, _, err := openDirectTCPIP(client, "dev.evil.com", 22)
+	t.Run("IP literal denied", func(t *testing.T) {
+		_, _, err := openDirectTCPIP(client, "192.0.2.1", 22)
 		reason, ok := openChannelReason(err)
 		if !ok || reason != ssh.Prohibited {
 			t.Errorf("err = %v, want OpenChannelError Prohibited", err)
 		}
-		if !channelAuditHasDetail(f, core.ROUTE_SUFFIX_DENIED) {
-			t.Error("missing audit with ROUTE_SUFFIX_DENIED")
+		if !channelAuditHasDetail(f, core.ROUTE_NAME_INVALID) {
+			t.Error("missing audit with ROUTE_NAME_INVALID")
 		}
 	})
 
 	t.Run("too many labels", func(t *testing.T) {
-		_, _, err := openDirectTCPIP(client, "a.b.c.d.coder-gateway.example.com", 22)
+		_, _, err := openDirectTCPIP(client, "a.b.c.d", 22)
 		reason, ok := openChannelReason(err)
 		if !ok || reason != ssh.Prohibited {
 			t.Errorf("err = %v, want OpenChannelError Prohibited", err)
@@ -323,7 +323,7 @@ func TestChannelLimitResourceShortage(t *testing.T) {
 	}
 	defer client.Close()
 
-	ch1, _, err := openDirectTCPIP(client, "dev.coder-gateway.example.com", 22)
+	ch1, _, err := openDirectTCPIP(client, "dev", 22)
 	if err != nil {
 		t.Fatalf("first direct-tcpip open: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestChannelLimitResourceShortage(t *testing.T) {
 	// First channel holds the only slot while its starter is blocked.
 	waitFor(t, 3*time.Second, func() bool { return len(blocking.recorded()) == 1 })
 
-	_, _, err = openDirectTCPIP(client, "dev.coder-gateway.example.com", 22)
+	_, _, err = openDirectTCPIP(client, "dev", 22)
 	reason, ok := openChannelReason(err)
 	if !ok || reason != ssh.ResourceShortage {
 		t.Errorf("err = %v, want OpenChannelError ResourceShortage", err)
@@ -364,7 +364,7 @@ func TestStaleCredentialInvalidClosesTransport(t *testing.T) {
 		t.Fatalf("MarkCredentialInvalid: %v", err)
 	}
 
-	_, _, err = openDirectTCPIP(client, "dev.coder-gateway.example.com", 22)
+	_, _, err = openDirectTCPIP(client, "dev", 22)
 	reason, ok := openChannelReason(err)
 	if !ok || reason != ssh.Prohibited {
 		t.Errorf("err = %v, want OpenChannelError Prohibited", err)
@@ -413,7 +413,7 @@ func TestStaleCredentialNewerValidGenerationProceeds(t *testing.T) {
 		t.Fatalf("ReplaceCredential: %v", err)
 	}
 
-	ch, _, err := openDirectTCPIP(client, "dev.coder-gateway.example.com", 22)
+	ch, _, err := openDirectTCPIP(client, "dev", 22)
 	if err != nil {
 		t.Fatalf("direct-tcpip with newer generation: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestRevalidationCoderUnavailableKeepsTransport(t *testing.T) {
 
 	status.Store(503)
 
-	_, _, err = openDirectTCPIP(client, "dev.coder-gateway.example.com", 22)
+	_, _, err = openDirectTCPIP(client, "dev", 22)
 	reason, ok := openChannelReason(err)
 	if !ok || reason != ssh.ConnectionFailed {
 		t.Errorf("err = %v, want OpenChannelError ConnectionFailed", err)
@@ -475,7 +475,7 @@ func TestRevalidationCoderUnavailableKeepsTransport(t *testing.T) {
 	// Recovery: ControlPlaneUnavailable is never cached (§11.5), so the
 	// retry re-validates over HTTP and proceeds.
 	status.Store(200)
-	ch, _, err := openDirectTCPIP(client, "dev.coder-gateway.example.com", 22)
+	ch, _, err := openDirectTCPIP(client, "dev", 22)
 	if err != nil {
 		t.Fatalf("retry after recovery: %v", err)
 	}

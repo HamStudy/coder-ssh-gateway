@@ -58,7 +58,6 @@ const (
 	// user. It is deliberately distinctive so any echo into channel output
 	// is caught by substring assertion.
 	wireToken       = "T21-WIRE-MARKER-TOKEN-9f8e7d6c5b4a3c2d"
-	wireSuffix      = "coder-gateway.example.com"
 	dialTimeout     = 10 * time.Second
 	conditionWindow = 10 * time.Second
 )
@@ -182,11 +181,10 @@ func newWireFixture(t *testing.T) *wireFixture {
 	f.store = s
 
 	f.dep = core.Deployment{
-		ID:           uuid.New(),
-		CoderURL:     coderURL,
-		TargetSuffix: wireSuffix,
-		CoderBinary:  "/usr/local/bin/coder",
-		WaitMode:     "auto",
+		ID:          uuid.New(),
+		CoderURL:    coderURL,
+		CoderBinary: "/usr/local/bin/coder",
+		WaitMode:    "auto",
 	}
 	if err := s.EnsureDeployment(f.dep); err != nil {
 		t.Fatalf("EnsureDeployment: %v", err)
@@ -297,10 +295,7 @@ type wireServer struct {
 
 func (f *wireFixture) startWireServer(t *testing.T) *wireServer {
 	t.Helper()
-	codec, err := route.NewCodec(f.dep.TargetSuffix)
-	if err != nil {
-		t.Fatalf("route.NewCodec: %v", err)
-	}
+	codec := route.NewCodec()
 
 	_, hostPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -780,7 +775,7 @@ func TestWireSecondChannelAndDirectTCPIPRejected(t *testing.T) {
 	if _, _, err := client.OpenChannel("session", nil); err == nil {
 		t.Error("second session channel accepted; §8.3 requires rejection")
 	}
-	if _, err := client.Dial("tcp", "ws1."+wireSuffix+":22"); err == nil {
+	if _, err := client.Dial("tcp", "ws1:22"); err == nil {
 		t.Error("direct-tcpip accepted in maintenance mode; §8.3 requires rejection")
 	}
 

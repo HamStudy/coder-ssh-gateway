@@ -18,9 +18,8 @@ import (
 
 // TestE2EProxyJumpFake is the §38.3 headline case: the real OpenSSH client
 // uses ProxyJump through the real gateway binary into the fake coder
-// backend. The fake inner SSH server ECHOes the exec payload, so a correct
-// end-to-end path returns "ECHO:printf hello" (the live suite asserts the
-// literal "hello" against a real workspace).
+// backend. The fake inner SSH server deterministically implements the exact
+// acceptance command, so a correct end-to-end path returns literal "hello".
 func TestE2EProxyJumpFake(t *testing.T) {
 	requireOpenSSH(t)
 	f := newGatewayFixture(t, "e2e-valid-token")
@@ -33,7 +32,7 @@ func TestE2EProxyJumpFake(t *testing.T) {
 		t.Fatalf("ssh ProxyJump exit %d\nstdout: %q\nstderr: %q\ngateway logs:\n%s",
 			code, stdout, stderr, f.logBuf.String())
 	}
-	if got, want := stdout, innerssh.ExecPrefix+"printf hello"; got != want {
+	if got, want := stdout, "hello"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 
@@ -41,6 +40,66 @@ func TestE2EProxyJumpFake(t *testing.T) {
 	f.waitNoChildren(t, 5*time.Second)
 	t.Logf("ProxyJump stdout: %q", stdout)
 	t.Logf("fake coder API calls: %v", f.coder.callLog())
+}
+
+// TestE2EDirectWorkspaceUserFake exercises the primary direct-workspace
+// syntax with the real OpenSSH client: the outer username is the bare Coder
+// target and the enrolled public key still determines the gateway account.
+func TestE2EDirectWorkspaceUserFake(t *testing.T) {
+	requireOpenSSH(t)
+	f := newGatewayFixture(t, "e2e-valid-token")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	args := append(f.sshCommonArgs(t), "-p", f.port, "emailsupport@"+f.host, "printf hello")
+	stdout, stderr, code := runSSH(ctx, args...)
+	if code != 0 {
+		t.Fatalf("ssh emailsupport@gateway exit %d\nstdout: %q\nstderr: %q\ngateway logs:\n%s", code, stdout, stderr, f.logBuf.String())
+	}
+	if stdout != "hello" {
+		t.Fatalf("stdout = %q, want hello", stdout)
+	}
+	f.waitNoChildren(t, 5*time.Second)
+}
+
+// TestE2EDirectWorkspaceInvalidTargetAfterAuth proves malformed targets do
+// not become a key-authentication oracle: OpenSSH authenticates, then gets a
+// bounded session failure with its conventional exit 255.
+func TestE2EDirectWorkspaceInvalidTargetAfterAuth(t *testing.T) {
+	requireOpenSSH(t)
+	f := newGatewayFixture(t, "e2e-valid-token")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	args := append(f.sshCommonArgs(t), "-p", f.port, "invalid..target@"+f.host, "true")
+	stdout, stderr, code := runSSH(ctx, args...)
+	if code != 255 {
+		t.Fatalf("invalid target exit = %d, want 255\nstdout: %q\nstderr: %q\ngateway logs:\n%s", code, stdout, stderr, f.logBuf.String())
+	}
+	if strings.Contains(stderr, "Permission denied (publickey)") {
+		t.Fatalf("invalid target denied before authentication: %q", stderr)
+	}
+	if !strings.Contains(stderr, "workspace target is invalid or unavailable") {
+		t.Fatalf("stderr = %q, want bounded post-auth failure", stderr)
+	}
+	f.waitNoChildren(t, 5*time.Second)
+}
+
+func TestE2EDirectWorkspaceRelaysInnerExitStatus(t *testing.T) {
+	requireOpenSSH(t)
+	f := newGatewayFixture(t, "e2e-valid-token")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	args := append(f.sshCommonArgs(t), "-p", f.port, "emailsupport@"+f.host, "exit 7")
+	stdout, stderr, code := runSSH(ctx, args...)
+	if code != 7 {
+		t.Fatalf("inner exit status = %d, want 7\nstdout: %q\nstderr: %q\ngateway logs:\n%s", code, stdout, stderr, f.logBuf.String())
+	}
+	if strings.Contains(stderr, "workspace session failed") {
+		t.Fatalf("nonzero remote exit emitted a generic infrastructure failure: %q", stderr)
+	}
+	f.waitNoChildren(t, 5*time.Second)
 }
 
 // TestE2EStdioForwardFake exercises the lower-level ProxyJump equivalent
@@ -97,7 +156,7 @@ func TestE2EStdioForwardFake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inner exec: %v", err)
 	}
-	if got, want := string(out), innerssh.ExecPrefix+"printf hello"; got != want {
+	if got, want := string(out), "hello"; got != want {
 		t.Fatalf("inner exec output = %q, want %q", got, want)
 	}
 
@@ -212,7 +271,7 @@ func TestE2ECredentialRenewalPTY(t *testing.T) {
 		t.Fatalf("post-renewal ssh exit %d\nstdout: %q\nstderr: %q\ngateway logs:\n%s",
 			code, stdout, stderr, f.logBuf.String())
 	}
-	if got, want := stdout, innerssh.ExecPrefix+"printf hello"; got != want {
+	if got, want := stdout, "hello"; got != want {
 		t.Fatalf("post-renewal stdout = %q, want %q", got, want)
 	}
 

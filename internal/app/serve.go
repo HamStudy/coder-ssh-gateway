@@ -145,26 +145,21 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		}
 	}
 	authCfg := sshauth.AuthConfig{
-		TransportUser:        cfg.SSH.TransportUser,
-		MaintenanceUser:      cfg.SSH.MaintenanceUser,
-		AllowSSHCertificates: cfg.SSH.AllowSSHCertificates,
-		DeploymentID:         dep.ID,
-		CoderURL:             dep.CoderURL,
-		RenewalAuthTimeout:   cfg.Listen.RenewalAuthTimeout.Std(),
-		Store:                instStore,
-		Verifier:             cached,
-		Audit:                auditOut,
-		Logger:               logger,
-		Renewal:              renewal,
-		EnrollmentUser:       cfg.Enrollment.User,
-		Enrollment:           enrollment,
+		TransportUser:      cfg.SSH.TransportUser,
+		MaintenanceUser:    cfg.SSH.MaintenanceUser,
+		DeploymentID:       dep.ID,
+		CoderURL:           dep.CoderURL,
+		RenewalAuthTimeout: cfg.Listen.RenewalAuthTimeout.Std(),
+		Store:              instStore,
+		Verifier:           cached,
+		Audit:              auditOut,
+		Logger:             logger,
+		Renewal:            renewal,
+		EnrollmentUser:     cfg.Enrollment.User,
+		Enrollment:         enrollment,
 	}
 
-	codec, err := route.NewCodec(cfg.Deployment.TargetSuffix)
-	if err != nil {
-		st.Close()
-		return nil, fmt.Errorf("target suffix: %w", err)
-	}
+	codec := route.NewCodec()
 
 	registry := tunnel.NewRegistry()
 	starter := &tunnel.TunnelStarter{
@@ -175,6 +170,15 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		Audit:           auditOut,
 		Log:             logger,
 		Observer:        m,
+		Rechecker:       &tunnel.Rechecker{Verifier: instVerifier, Store: instStore, Log: logger},
+		Registry:        registry,
+	}
+	workspaceStarter := &tunnel.WorkspaceSessionStarter{
+		Launcher:        &tunnel.Launcher{Dep: dep, Log: logger},
+		StartupTimeout:  cfg.Deployment.WorkspaceConnectTimeout.Std(),
+		ShutdownGrace:   cfg.Limits.ProcessShutdownGrace.Std(),
+		StderrRingBytes: int64(cfg.Limits.StderrBufferBytes),
+		Log:             logger,
 		Rechecker:       &tunnel.Rechecker{Verifier: instVerifier, Store: instStore, Log: logger},
 		Registry:        registry,
 	}
@@ -198,19 +202,20 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 	}
 
 	srv, err := server.New(server.ServerConfig{
-		HostSigners:        signers,
-		Auth:               authCfg,
-		Counters:           counters,
-		PreAuthGate:        rateLimits.AllowPreAuthIP,
-		HandshakeTimeout:   cfg.Listen.HandshakeTimeout.Std(),
-		TCPKeepalive:       cfg.Listen.TCPKeepalive.Std(),
-		ServerVersion:      cfg.SSH.ServerVersion,
-		ProxyProtocol:      cfg.Listen.ProxyProtocol,
-		RouteCodec:         codec,
-		TunnelStarter:      starter,
-		CacheTTL:           cfg.Deployment.TokenValidationCache.Std(),
-		MaintenanceHandler: maintHandler,
-		Metrics:            m,
+		HostSigners:             signers,
+		Auth:                    authCfg,
+		Counters:                counters,
+		PreAuthGate:             rateLimits.AllowPreAuthIP,
+		HandshakeTimeout:        cfg.Listen.HandshakeTimeout.Std(),
+		TCPKeepalive:            cfg.Listen.TCPKeepalive.Std(),
+		ServerVersion:           cfg.SSH.ServerVersion,
+		ProxyProtocol:           cfg.Listen.ProxyProtocol,
+		RouteCodec:              codec,
+		TunnelStarter:           starter,
+		WorkspaceSessionStarter: workspaceStarter,
+		CacheTTL:                cfg.Deployment.TokenValidationCache.Std(),
+		MaintenanceHandler:      maintHandler,
+		Metrics:                 m,
 		// §32 step 4: the drain period reuses limits.process_shutdown_grace
 		// (documented choice): the same budget governs graceful channel
 		// finish and child-process TERM/KILL escalation.
@@ -427,6 +432,42 @@ func limitsMaxima(cfg *config.Config) map[string]int {
 	}
 }
 
+type bindAddressOverride struct {
+	field string
+	value string
+}
+
+func (c *cli) applyBindAddressOverrides(cfg *config.Config) []bindAddressOverride {
+	overrides := []struct {
+		flag  explicitString
+		field string
+		dest  *string
+	}{
+		{c.listenAddress, "listen.address", &cfg.Listen.Address},
+		{c.metricsAddress, "observability.metrics_address", &cfg.Observability.MetricsAddress},
+		{c.healthAddress, "observability.health_address", &cfg.Observability.HealthAddress},
+	}
+	applied := make([]bindAddressOverride, 0, len(overrides))
+	for _, override := range overrides {
+		if !override.flag.set {
+			continue
+		}
+		*override.dest = override.flag.value
+		applied = append(applied, bindAddressOverride{field: override.field, value: override.flag.value})
+	}
+	return applied
+}
+
+func logBindAddressOverrides(logger *slog.Logger, overrides []bindAddressOverride) {
+	for _, override := range overrides {
+		logger.Info("config CLI override applied",
+			"field", override.field,
+			"source", "flag",
+			"value", override.value,
+		)
+	}
+}
+
 // cmdServe loads + validates config, assembles the system, and serves until
 // the process context (SIGINT/SIGTERM via signal.NotifyContext in main)
 // cancels it; the §32 drain runs inside ServeOn.
@@ -459,6 +500,7 @@ func (c *cli) cmdServe(args []string) int {
 		fmt.Fprintf(c.stderr, "error: %v\n", err)
 		return exitError
 	}
+	flagApplied := c.applyBindAddressOverrides(cfg)
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(c.stderr, "error: invalid config: %v\n", err)
 		return exitError
@@ -473,6 +515,7 @@ func (c *cli) cmdServe(args []string) int {
 	if len(envApplied) > 0 {
 		built.Logger.Info("config environment overrides applied", "vars", envApplied)
 	}
+	logBindAddressOverrides(built.Logger, flagApplied)
 
 	ln, err := net.Listen("tcp", cfg.Listen.Address)
 	if err != nil {

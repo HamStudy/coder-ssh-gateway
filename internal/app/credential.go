@@ -7,6 +7,7 @@ import (
 
 	"github.com/taxilian/coder-ssh-gateway/internal/coderapi"
 	"github.com/taxilian/coder-ssh-gateway/internal/core"
+	"github.com/taxilian/coder-ssh-gateway/internal/secretbox"
 	"github.com/taxilian/coder-ssh-gateway/internal/sshauth"
 	"github.com/taxilian/coder-ssh-gateway/internal/store"
 )
@@ -106,11 +107,13 @@ func (c *cli) credentialSet(args []string) int {
 		fmt.Fprintf(c.stderr, "error: reading token: %v\n", err)
 		return exitError
 	}
+	defer secretbox.BestEffortWipe(rawToken)
 	token, err := sshauth.SanitizeToken(rawToken)
 	if err != nil {
 		fmt.Fprintf(c.stderr, "error: %v\n", err)
 		return exitError
 	}
+	defer secretbox.BestEffortWipe(token)
 
 	dep, err := DeploymentFromConfig(cfg)
 	if err != nil {

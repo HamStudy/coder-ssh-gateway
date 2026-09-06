@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,9 +21,16 @@ func TestLiveVerify(t *testing.T) {
 	if token == "" {
 		t.Skip("CODER_LIVE_TOKEN unset")
 	}
-	u, err := url.Parse("https://example.test")
+	liveURL := os.Getenv("CODER_LIVE_URL")
+	if liveURL == "" {
+		t.Skip("CODER_LIVE_URL unset")
+	}
+	u, err := url.Parse(liveURL)
 	if err != nil {
 		t.Fatalf("parse URL: %v", err)
+	}
+	if u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.TrimSuffix(u.String(), "/") != liveURL {
+		t.Fatalf("CODER_LIVE_URL must be a bare HTTPS URL, got %q", liveURL)
 	}
 	dep := core.Deployment{ID: uuid.New(), CoderURL: u}
 
@@ -38,8 +46,8 @@ func TestLiveVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if id.Username != "taxilian" {
-		t.Fatalf("username = %q, want taxilian", id.Username)
+	if expectedUsername := os.Getenv("CODER_LIVE_EXPECTED_USERNAME"); expectedUsername != "" && id.Username != expectedUsername {
+		t.Fatalf("username = %q, want %q from CODER_LIVE_EXPECTED_USERNAME", id.Username, expectedUsername)
 	}
 	if id.ID == uuid.Nil {
 		t.Fatal("id is zero")

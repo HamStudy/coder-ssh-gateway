@@ -10,24 +10,24 @@ import (
 type Reason string
 
 const (
-	ReasonGlobalConn       Reason = "global_conn"
-	ReasonHandshake        Reason = "handshake"
-	ReasonIPConn           Reason = "ip_conn"
-	ReasonKeyConn          Reason = "key_conn"
-	ReasonAccountConn      Reason = "account_conn"
-	ReasonChannelConn      Reason = "channel_conn"
-	ReasonChannelAccount   Reason = "channel_account"
-	ReasonCoderProcess     Reason = "coder_process"
-	ReasonCoderAPI         Reason = "coder_api"
-	ReasonPreAuthIP        Reason = "pre_auth_ip"
+	ReasonGlobalConn        Reason = "global_conn"
+	ReasonHandshake         Reason = "handshake"
+	ReasonIPConn            Reason = "ip_conn"
+	ReasonKeyConn           Reason = "key_conn"
+	ReasonAccountConn       Reason = "account_conn"
+	ReasonChannelConn       Reason = "channel_conn"
+	ReasonChannelAccount    Reason = "channel_account"
+	ReasonCoderProcess      Reason = "coder_process"
+	ReasonCoderAPI          Reason = "coder_api"
+	ReasonPreAuthIP         Reason = "pre_auth_ip"
 	ReasonUnknownKeyAttempt Reason = "unknown_key_attempt"
-	ReasonRenewalRate      Reason = "renewal_rate"
+	ReasonRenewalRate       Reason = "renewal_rate"
 )
 
 type semaphore struct {
-	mu     sync.Mutex
-	count  int
-	max    int
+	mu    sync.Mutex
+	count int
+	max   int
 }
 
 func (s *semaphore) Acquire() (release func(), ok bool) {
@@ -49,8 +49,52 @@ func (s *semaphore) Acquire() (release func(), ok bool) {
 	}, true
 }
 
+func acquireMapped[K comparable](
+	mu *sync.RWMutex,
+	entries map[K]*semaphore,
+	key K,
+	max int,
+) (release func(), ok bool) {
+	mu.Lock()
+	s, exists := entries[key]
+	if !exists {
+		if max <= 0 {
+			mu.Unlock()
+			return nil, false
+		}
+		s = &semaphore{max: max}
+		entries[key] = s
+	}
+
+	s.mu.Lock()
+	if s.count >= s.max {
+		s.mu.Unlock()
+		mu.Unlock()
+		return nil, false
+	}
+	s.count++
+	s.mu.Unlock()
+	mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			// Keep lookup, count changes, and deletion under the map-first lock
+			// order so no acquisition can attach to an entry being removed.
+			mu.Lock()
+			s.mu.Lock()
+			s.count--
+			if s.count == 0 && entries[key] == s {
+				delete(entries, key)
+			}
+			s.mu.Unlock()
+			mu.Unlock()
+		})
+	}, true
+}
+
 type Counters struct {
-	globalConn       semaphore
+	globalConn      semaphore
 	handshake       semaphore
 	ipConns         map[string]*semaphore
 	ipConnsMu       sync.RWMutex
@@ -73,7 +117,7 @@ type Counters struct {
 
 func New(cfg *config.Config) *Counters {
 	return &Counters{
-		globalConn:       semaphore{max: cfg.Limits.UnauthenticatedConnections},
+		globalConn:      semaphore{max: cfg.Limits.UnauthenticatedConnections},
 		handshake:       semaphore{max: cfg.Limits.Handshakes},
 		ipConns:         make(map[string]*semaphore),
 		maxIPConns:      cfg.Limits.ConnectionsPerIP,
@@ -86,7 +130,7 @@ func New(cfg *config.Config) *Counters {
 		channelAccounts: make(map[uuid.UUID]*semaphore),
 		maxChannelAccts: cfg.Limits.ChannelsPerAccount,
 		coderProcess:    semaphore{max: cfg.Limits.CoderProcesses},
-		coderAPI:       semaphore{max: cfg.Limits.CoderAPIRequests},
+		coderAPI:        semaphore{max: cfg.Limits.CoderAPIRequests},
 	}
 }
 
@@ -99,58 +143,28 @@ func (c *Counters) AcquireHandshake() (func(), bool) {
 }
 
 func (c *Counters) AcquireIP(ip string) (func(), bool) {
-	c.ipConnsMu.Lock()
-	s, exists := c.ipConns[ip]
-	if !exists {
-		s = &semaphore{max: c.maxIPConns}
-		c.ipConns[ip] = s
-	}
-	c.ipConnsMu.Unlock()
-	return s.Acquire()
+	return acquireMapped(&c.ipConnsMu, c.ipConns, ip, c.maxIPConns)
 }
 
 func (c *Counters) AcquireKey(keyID uuid.UUID) (func(), bool) {
-	c.keyConnsMu.Lock()
-	s, exists := c.keyConns[keyID]
-	if !exists {
-		s = &semaphore{max: c.maxKeyConns}
-		c.keyConns[keyID] = s
-	}
-	c.keyConnsMu.Unlock()
-	return s.Acquire()
+	return acquireMapped(&c.keyConnsMu, c.keyConns, keyID, c.maxKeyConns)
 }
 
 func (c *Counters) AcquireAccount(accountID uuid.UUID) (func(), bool) {
-	c.accountConnsMu.Lock()
-	s, exists := c.accountConns[accountID]
-	if !exists {
-		s = &semaphore{max: c.maxAccountConns}
-		c.accountConns[accountID] = s
-	}
-	c.accountConnsMu.Unlock()
-	return s.Acquire()
+	return acquireMapped(&c.accountConnsMu, c.accountConns, accountID, c.maxAccountConns)
 }
 
 func (c *Counters) AcquireChannel(connID string) (func(), bool) {
-	c.channelsMu.Lock()
-	s, exists := c.channels[connID]
-	if !exists {
-		s = &semaphore{max: c.maxChannels}
-		c.channels[connID] = s
-	}
-	c.channelsMu.Unlock()
-	return s.Acquire()
+	return acquireMapped(&c.channelsMu, c.channels, connID, c.maxChannels)
 }
 
 func (c *Counters) AcquireChannelAccount(accountID uuid.UUID) (func(), bool) {
-	c.channelAcctsMu.Lock()
-	s, exists := c.channelAccounts[accountID]
-	if !exists {
-		s = &semaphore{max: c.maxChannelAccts}
-		c.channelAccounts[accountID] = s
-	}
-	c.channelAcctsMu.Unlock()
-	return s.Acquire()
+	return acquireMapped(
+		&c.channelAcctsMu,
+		c.channelAccounts,
+		accountID,
+		c.maxChannelAccts,
+	)
 }
 
 func (c *Counters) AcquireCoderProcess() (func(), bool) {
@@ -162,14 +176,14 @@ func (c *Counters) AcquireCoderAPI() (func(), bool) {
 }
 
 type LimitsUsage struct {
-	GlobalConns     int
-	Handshakes      int
-	IPs             map[string]int
-	Keys            map[uuid.UUID]int
-	Accounts        map[uuid.UUID]int
-	Channels        map[string]int
-	ChannelAccounts map[uuid.UUID]int
-	CoderProcesses  int
+	GlobalConns      int
+	Handshakes       int
+	IPs              map[string]int
+	Keys             map[uuid.UUID]int
+	Accounts         map[uuid.UUID]int
+	Channels         map[string]int
+	ChannelAccounts  map[uuid.UUID]int
+	CoderProcesses   int
 	CoderAPIRequests int
 }
 
@@ -236,14 +250,14 @@ func (c *Counters) Usage() LimitsUsage {
 	c.coderAPI.mu.Unlock()
 
 	return LimitsUsage{
-		GlobalConns:       globalConns,
-		Handshakes:        handshakes,
-		IPs:               ips,
-		Keys:              keys,
-		Accounts:          accounts,
-		Channels:          channels,
-		ChannelAccounts:   channelAccts,
-		CoderProcesses:    coderProcs,
+		GlobalConns:      globalConns,
+		Handshakes:       handshakes,
+		IPs:              ips,
+		Keys:             keys,
+		Accounts:         accounts,
+		Channels:         channels,
+		ChannelAccounts:  channelAccts,
+		CoderProcesses:   coderProcs,
 		CoderAPIRequests: coderAPI,
 	}
 }

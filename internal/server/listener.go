@@ -85,6 +85,9 @@ type ServerConfig struct {
 	// TunnelStarter starts workspace tunnels on accepted direct-tcpip
 	// channels (§24.1). Required (T16); T17 provides the real starter.
 	TunnelStarter TunnelStarter
+	// WorkspaceSessionStarter bridges direct workspace `session` channels.
+	// Nil rejects workspace sessions while preserving direct-tcpip operation.
+	WorkspaceSessionStarter WorkspaceSessionStarter
 	// CacheTTL bounds how long a credential snapshot's LastValidatedAt is
 	// trusted before channel-open revalidation (§11.5, §19.9). Zero selects
 	// 15s.

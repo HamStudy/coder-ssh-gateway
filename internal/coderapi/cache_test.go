@@ -47,6 +47,12 @@ type usersMeReply struct {
 	Status   string `json:"status"`
 }
 
+type verifyCallerFunc func(context.Context, []byte) (core.CoderIdentity, error)
+
+func (f verifyCallerFunc) Verify(ctx context.Context, token []byte) (core.CoderIdentity, error) {
+	return f(ctx, token)
+}
+
 func TestTTLExpiry(t *testing.T) {
 	var hitCount int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +157,63 @@ func TestSingleflightCoalesce(t *testing.T) {
 	}
 }
 
+func TestSingleflightDistinctInvalidRuneGenerations(t *testing.T) {
+	firstID := uuid.New()
+	secondID := uuid.New()
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	verifier := verifyCallerFunc(func(context.Context, []byte) (core.CoderIdentity, error) {
+		call := calls.Add(1)
+		entered <- struct{}{}
+		<-release
+		if call == 1 {
+			return core.CoderIdentity{ID: firstID}, nil
+		}
+		return core.CoderIdentity{ID: secondID}, nil
+	})
+	cv := coderapi.NewCachedVerifier(uuid.New(), verifier, 10*time.Second)
+	accountID := uuid.New()
+	token := []byte(cacheTestToken)
+
+	type result struct {
+		identity core.CoderIdentity
+		err      error
+	}
+	results := make(chan result, 2)
+	verify := func(generation int64) {
+		identity, err := cv.VerifyCached(context.Background(), accountID, generation, token)
+		results <- result{identity: identity, err: err}
+	}
+
+	go verify(0x110000)
+	<-entered
+	go verify(0x110001)
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("distinct generations shared one singleflight verification")
+	}
+	close(release)
+
+	seen := make(map[uuid.UUID]bool, 2)
+	for range 2 {
+		got := <-results
+		if got.err != nil {
+			t.Fatalf("VerifyCached: %v", got.err)
+		}
+		seen[got.identity.ID] = true
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("verifier calls = %d, want 2", got)
+	}
+	if !seen[firstID] || !seen[secondID] {
+		t.Fatalf("identities = %v, want both verifier results", seen)
+	}
+}
+
 func TestUnavailableNotCached(t *testing.T) {
 	var hitCount int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +290,10 @@ func TestInvalidCredentialCached(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for second 401")
 	}
+	ce = requireKind(t, err, core.CredentialInvalid)
+	if ce.HTTPStatus != http.StatusUnauthorized {
+		t.Fatalf("cached HTTP status = %d, want %d", ce.HTTPStatus, http.StatusUnauthorized)
+	}
 
 	if got := atomic.LoadInt32(&hitCount); got != 1 {
 		t.Fatalf("second call hitCount = %d, want 1 (401 should be cached short ttl)", got)
@@ -241,6 +308,37 @@ func TestInvalidCredentialCached(t *testing.T) {
 
 	if got := atomic.LoadInt32(&hitCount); got != 2 {
 		t.Fatalf("after expiry hitCount = %d, want 2", got)
+	}
+}
+
+func TestForbiddenCredentialNotCached(t *testing.T) {
+	var hitCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hitCount, 1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	v, srvCleanup := buildVerifier(t, srv)
+	defer srvCleanup()
+
+	cv := coderapi.NewCachedVerifier(uuid.New(), v, 10*time.Second)
+	accountID := uuid.New()
+	token := []byte(cacheTestToken)
+
+	for call := 1; call <= 2; call++ {
+		_, err := cv.VerifyCached(context.Background(), accountID, 1, token)
+		ce := requireKind(t, err, core.CredentialForbidden)
+		if ce.HTTPStatus != http.StatusForbidden {
+			t.Fatalf("call %d HTTP status = %d, want %d", call, ce.HTTPStatus, http.StatusForbidden)
+		}
+	}
+
+	if got := atomic.LoadInt32(&hitCount); got != 2 {
+		t.Fatalf("hitCount = %d, want 2 (403 must not be cached)", got)
+	}
+	if got := cv.CacheStats(); got != 0 {
+		t.Fatalf("cache entries = %d, want 0", got)
 	}
 }
 

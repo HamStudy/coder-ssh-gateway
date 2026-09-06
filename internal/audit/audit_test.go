@@ -25,7 +25,7 @@ func TestEventJSONSerialization(t *testing.T) {
 		EventType:            "auth_success",
 		Result:               "success",
 		PeerAddress:          "192.168.1.1:12345",
-		Target:               "workspace1.coder-gateway.example.com",
+		Target:               "workspace1",
 		CredentialGeneration: &credGen,
 		DurationMs:           &durationMs,
 		BytesUp:              &bytesUp,

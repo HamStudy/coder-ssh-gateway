@@ -11,7 +11,6 @@ import (
 // package never redefines the canonical values.
 const (
 	codeInvalidPayload = core.ROUTE_INVALID_PAYLOAD
-	codeSuffixDenied   = core.ROUTE_SUFFIX_DENIED
 	codePortDenied     = core.ROUTE_PORT_DENIED
 	codeNameInvalid    = core.ROUTE_NAME_INVALID
 )
@@ -52,67 +51,52 @@ type RouteCodec interface {
 
 var _ RouteCodec = (*Codec)(nil)
 
-// Codec is the hostname-suffix RouteCodec for one deployment.
-type Codec struct {
-	suffix string
-}
+// Codec validates bare Coder workspace targets for one deployment.
+type Codec struct{}
 
-// NewCodec validates suffix with the strict label grammar (§17.4) and
-// requires at least two labels.
-func NewCodec(suffix string) (*Codec, error) {
-	s, err := normalizeSuffix(suffix)
-	if err != nil {
-		return nil, err
-	}
-	return &Codec{suffix: s}, nil
-}
-
-// Suffix returns the normalized configured target suffix.
-func (c *Codec) Suffix() string {
-	return c.suffix
-}
+// NewCodec returns the strict bare-target codec.
+func NewCodec() *Codec { return &Codec{} }
 
 // ParseDirectTCPIP validates a direct-tcpip target per §17.4 and returns
 // the route per §17.5. The originator fields of the direct-tcpip payload
 // are never accepted here and must never be used for authorization.
 //
-// WorkspaceHost is the full normalized target passed verbatim to
-// `coder ssh --hostname-suffix` (§17.3 — Coder normalizes workspace
-// semantics, the gateway does not). DisplayTarget is a safe loggable form:
+// WorkspaceHost is the normalized bare target passed verbatim to Coder.
+// DisplayTarget is a safe loggable form:
 // the strict grammar guarantees lowercase ASCII [a-z0-9.-] only.
 func (c *Codec) ParseDirectTCPIP(host string, port uint32) (core.Route, error) {
 	if port != 22 {
 		return core.Route{}, newError(codePortDenied, "target port must be 22")
 	}
-	h, err := normalizeHostname(host)
+	route, err := ParseBareTarget(host)
+	if err != nil {
+		return core.Route{}, err
+	}
+	route.RequestedPort = port
+	return route, nil
+}
+
+// ParseBareTarget validates a bare Coder target shared by session-ready and
+// direct-tcpip routing. It permits one to three strict DNS labels only.
+func ParseBareTarget(target string) (core.Route, error) {
+	h, err := normalizeHostname(target)
 	if err != nil {
 		return core.Route{}, err
 	}
 	if len(h) > maxHostnameBytes {
-		return core.Route{}, newError(codeNameInvalid, "hostname exceeds 253 bytes")
+		return core.Route{}, newError(codeNameInvalid, "target exceeds 253 bytes")
 	}
-	// Exact suffix match on a DNS-label boundary (§17.4): "xcoder-gateway..."
-	// and "...ham.dev.evil.com" must both be denied.
-	switch {
-	case len(h) > len(c.suffix) && strings.HasSuffix(h, c.suffix) && h[len(h)-len(c.suffix)-1] == '.':
-		// ok
-	case h == c.suffix:
-		return core.Route{}, newError(codeNameInvalid, "no labels before target suffix")
-	default:
-		return core.Route{}, newError(codeSuffixDenied, "host is not under the configured target suffix")
-	}
-	labels := strings.Split(h[:len(h)-len(c.suffix)-1], ".")
+	labels := strings.Split(h, ".")
 	if len(labels) > maxRouteLabels {
-		return core.Route{}, newError(codeNameInvalid, "requires 1-3 labels before target suffix")
+		return core.Route{}, newError(codeNameInvalid, "target requires 1-3 labels")
 	}
-	for _, l := range labels {
-		if !validLabel(l) {
-			return core.Route{}, newError(codeNameInvalid, "invalid label in target hostname")
+	for _, label := range labels {
+		if !validLabel(label) {
+			return core.Route{}, newError(codeNameInvalid, "invalid label in target")
 		}
 	}
 	return core.Route{
-		RequestedHost: host,
-		RequestedPort: port,
+		RequestedHost: target,
 		WorkspaceHost: h,
 		DisplayTarget: h,
 	}, nil

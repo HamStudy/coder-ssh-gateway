@@ -1,7 +1,9 @@
 package limits
 
 import (
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -200,6 +202,202 @@ func TestCountersAccountBoundary(t *testing.T) {
 	_, ok = c.AcquireAccount(accountID)
 	if !ok {
 		t.Error("after release, should be able to acquire")
+	}
+}
+
+func TestCountersIdentityEntriesRemovedWhenIdle(t *testing.T) {
+	cases := []struct {
+		name    string
+		acquire func(*Counters, int) (func(), bool)
+		size    func(LimitsUsage) int
+	}{
+		{
+			name: "IP",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				return c.AcquireIP(fmt.Sprintf("198.51.%d.%d", identity/256, identity%256))
+			},
+			size: func(usage LimitsUsage) int { return len(usage.IPs) },
+		},
+		{
+			name: "key",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("key-%d", identity)))
+				return c.AcquireKey(id)
+			},
+			size: func(usage LimitsUsage) int { return len(usage.Keys) },
+		},
+		{
+			name: "account",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("account-%d", identity)))
+				return c.AcquireAccount(id)
+			},
+			size: func(usage LimitsUsage) int { return len(usage.Accounts) },
+		},
+		{
+			name: "connection channel",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				return c.AcquireChannel(fmt.Sprintf("connection-%d", identity))
+			},
+			size: func(usage LimitsUsage) int { return len(usage.Channels) },
+		},
+		{
+			name: "account channel",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("channel-account-%d", identity)))
+				return c.AcquireChannelAccount(id)
+			},
+			size: func(usage LimitsUsage) int { return len(usage.ChannelAccounts) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(config.Default())
+			for identity := 0; identity < 2048; identity++ {
+				release, ok := tc.acquire(c, identity)
+				if !ok {
+					t.Fatalf("acquire identity %d: got false, want true", identity)
+				}
+				release()
+				release()
+			}
+
+			if got := tc.size(c.Usage()); got != 0 {
+				t.Fatalf("idle identity entries: got %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestCountersIdentityLimitsDuringConcurrentChurn(t *testing.T) {
+	cases := []struct {
+		name    string
+		acquire func(*Counters, int) (func(), bool)
+		size    func(LimitsUsage) int
+		count   func(LimitsUsage, int) int
+	}{
+		{
+			name: "IP",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				return c.AcquireIP(fmt.Sprintf("203.0.%d.%d", identity/256, identity%256))
+			},
+			size: func(usage LimitsUsage) int { return len(usage.IPs) },
+			count: func(usage LimitsUsage, identity int) int {
+				return usage.IPs[fmt.Sprintf("203.0.%d.%d", identity/256, identity%256)]
+			},
+		},
+		{
+			name: "key",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("concurrent-key-%d", identity)))
+				return c.AcquireKey(id)
+			},
+			size: func(usage LimitsUsage) int { return len(usage.Keys) },
+			count: func(usage LimitsUsage, identity int) int {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("concurrent-key-%d", identity)))
+				return usage.Keys[id]
+			},
+		},
+		{
+			name: "account",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("concurrent-account-%d", identity)))
+				return c.AcquireAccount(id)
+			},
+			size: func(usage LimitsUsage) int { return len(usage.Accounts) },
+			count: func(usage LimitsUsage, identity int) int {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("concurrent-account-%d", identity)))
+				return usage.Accounts[id]
+			},
+		},
+		{
+			name: "connection channel",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				return c.AcquireChannel(fmt.Sprintf("concurrent-connection-%d", identity))
+			},
+			size: func(usage LimitsUsage) int { return len(usage.Channels) },
+			count: func(usage LimitsUsage, identity int) int {
+				return usage.Channels[fmt.Sprintf("concurrent-connection-%d", identity)]
+			},
+		},
+		{
+			name: "account channel",
+			acquire: func(c *Counters, identity int) (func(), bool) {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("concurrent-channel-account-%d", identity)))
+				return c.AcquireChannelAccount(id)
+			},
+			size: func(usage LimitsUsage) int { return len(usage.ChannelAccounts) },
+			count: func(usage LimitsUsage, identity int) int {
+				id := uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("concurrent-channel-account-%d", identity)))
+				return usage.ChannelAccounts[id]
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Limits.ConnectionsPerIP = 1
+			cfg.Limits.ConnectionsPerKey = 1
+			cfg.Limits.ConnectionsPerAccount = 1
+			cfg.Limits.ChannelsPerConnection = 1
+			cfg.Limits.ChannelsPerAccount = 1
+			c := New(cfg)
+
+			const activeIdentity = 65535
+			activeRelease, ok := tc.acquire(c, activeIdentity)
+			if !ok {
+				t.Fatal("acquire active identity: got false, want true")
+			}
+
+			const workers = 32
+			const identitiesPerWorker = 64
+			start := make(chan struct{})
+			var failures atomic.Int64
+			var wg sync.WaitGroup
+			wg.Add(workers)
+			for worker := 0; worker < workers; worker++ {
+				go func() {
+					defer wg.Done()
+					<-start
+					for offset := 0; offset < identitiesPerWorker; offset++ {
+						identity := worker*identitiesPerWorker + offset
+						release, acquired := tc.acquire(c, identity)
+						if !acquired {
+							failures.Add(1)
+							continue
+						}
+						release()
+						release()
+
+						if unexpectedRelease, acquired := tc.acquire(c, activeIdentity); acquired {
+							failures.Add(1)
+							unexpectedRelease()
+						}
+					}
+				}()
+			}
+			close(start)
+			wg.Wait()
+
+			if got := failures.Load(); got != 0 {
+				t.Fatalf("limit or churn failures: got %d, want 0", got)
+			}
+			usage := c.Usage()
+			if got := tc.size(usage); got != 1 {
+				t.Fatalf("entries with one active identity: got %d, want 1", got)
+			}
+			if got := tc.count(usage, activeIdentity); got != 1 {
+				t.Fatalf("active identity count: got %d, want 1", got)
+			}
+
+			activeRelease()
+			activeRelease()
+			if got := tc.size(c.Usage()); got != 0 {
+				t.Fatalf("entries after final release: got %d, want 0", got)
+			}
+		})
 	}
 }
 
@@ -474,7 +672,7 @@ func TestCountersAllLimitsFromConfig(t *testing.T) {
 
 	// Verify we can acquire and release all limit types
 	limits := []struct {
-		name   string
+		name    string
 		acquire func() (func(), bool)
 	}{
 		{"Global", c.AcquireGlobal},

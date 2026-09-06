@@ -3,13 +3,16 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -63,9 +66,95 @@ func waitHTTPReady(t *testing.T, url string) {
 	t.Fatalf("%s did not answer 200 within 5s", url)
 }
 
-func pgrepFakeCoder() string {
-	out, _ := exec.Command("pgrep", "-fa", "fake-coder").Output()
-	return strings.TrimSpace(string(out))
+func fixtureCoderPIDs(fakeBin, globalConfig string) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+
+	var pids []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		procDir := filepath.Join("/proc", entry.Name())
+		exe, err := os.Readlink(filepath.Join(procDir, "exe"))
+		if err != nil || exe != fakeBin {
+			continue
+		}
+		stat, err := os.ReadFile(filepath.Join(procDir, "stat"))
+		if err != nil {
+			continue
+		}
+		closeParen := bytes.LastIndexByte(stat, ')')
+		if closeParen < 0 {
+			continue
+		}
+		fields := strings.Fields(string(stat[closeParen+1:]))
+		if len(fields) < 2 || fields[1] != strconv.Itoa(os.Getpid()) {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join(procDir, "cmdline"))
+		if err != nil {
+			continue
+		}
+		args := bytes.Split(bytes.TrimSuffix(cmdline, []byte{0}), []byte{0})
+		for i := 0; i+1 < len(args); i++ {
+			if string(args[i]) == "--global-config" && string(args[i+1]) == globalConfig {
+				pids = append(pids, pid)
+				break
+			}
+		}
+	}
+	return pids
+}
+
+func waitFixtureCoderPID(t *testing.T, fakeBin, globalConfig string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		pids := fixtureCoderPIDs(fakeBin, globalConfig)
+		if len(pids) == 1 {
+			return pids[0]
+		}
+		if len(pids) > 1 {
+			t.Fatalf("fixture started multiple coder children: %v", pids)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("fixture coder child never appeared for the open tunnel")
+	return 0
+}
+
+func processGroupGone(pgid int) bool {
+	err := syscall.Kill(-pgid, 0)
+	return errors.Is(err, syscall.ESRCH)
+}
+
+func waitProcessGroupGone(pgid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if processGroupGone(pgid) {
+			return true
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return processGroupGone(pgid)
+}
+
+func startUnrelatedFakeCoderArgv(t *testing.T) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("sleep", "60")
+	cmd.Args[0] = "unrelated-fake-coder"
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start unrelated process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd
 }
 
 // TestOpsQA is the hands-on §32/§33/§34.2 verification: boot `serve`
@@ -100,7 +189,7 @@ func TestOpsQA(t *testing.T) {
 		t.Fatalf("key add: exit %d\nstdout: %s\nstderr: %s", code, out, errOut)
 	}
 	token := "opsqa-token-0123456789abcdef"
-	f.coder.addToken(token, f.coderUserID, "taxilian")
+	f.coder.addToken(token, f.coderUserID, "ops-qa-user")
 	code, out, errOut = runCLI(t, token+"\n", "--state-dir", f.dir, "admin", "credential", "set",
 		"--account", acctID.String(), "--stdin")
 	if code != 0 {
@@ -123,6 +212,7 @@ func TestOpsQA(t *testing.T) {
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	codeCh, outBuf, errBuf := serve(ctx1)
 	waitHTTPReady(t, livezURL)
+	unrelated := startUnrelatedFakeCoderArgv(t)
 
 	// --- health evidence (§33) ---
 	var healthEvidence strings.Builder
@@ -194,19 +284,13 @@ func TestOpsQA(t *testing.T) {
 		DestPort uint32
 		OrigAddr string
 		OrigPort uint32
-	}{"examtools-docs.coder-gateway.example.com", 22, "127.0.0.1", 2222})
+	}{"ops-qa-workspace", 22, "127.0.0.1", 2222})
 	ch, _, err := client.OpenChannel("direct-tcpip", payload)
 	if err != nil {
 		t.Fatalf("open tunnel channel: %v", err)
 	}
-	tunnelDeadline := time.Now().Add(5 * time.Second)
-	for pgrepFakeCoder() == "" && time.Now().Before(tunnelDeadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-	midTunnel := pgrepFakeCoder()
-	if midTunnel == "" {
-		t.Fatal("fake coder child never appeared for the open tunnel")
-	}
+	globalConfig := filepath.Join(f.dir, "coder-config")
+	childPID := waitFixtureCoderPID(t, fakeBin, globalConfig)
 
 	cancel1() // SIGTERM equivalent
 	var exitCode int
@@ -217,18 +301,22 @@ func TestOpsQA(t *testing.T) {
 	}
 	client.Close()
 	ch.Close()
-	postExitProcs := pgrepFakeCoder()
+	childGroupGone := waitProcessGroupGone(childPID, 5*time.Second)
+	if err := unrelated.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("unrelated fake-coder argv process exited unexpectedly: %v", err)
+	}
 
 	var shutdownEvidence strings.Builder
-	fmt.Fprintf(&shutdownEvidence, "mid-tunnel child processes (pgrep -fa fake-coder):\n%s\n\n", midTunnel)
+	fmt.Fprintf(&shutdownEvidence, "fixture coder child PID/process group: %d\n\n", childPID)
 	fmt.Fprintf(&shutdownEvidence, "serve exit code after cancel (SIGTERM equivalent): %d\n\n", exitCode)
-	fmt.Fprintf(&shutdownEvidence, "post-exit child processes (pgrep -fa fake-coder):\n%s\n\n", postExitProcs)
+	fmt.Fprintf(&shutdownEvidence, "fixture coder process group gone after exit: %t\n\n", childGroupGone)
+	fmt.Fprintf(&shutdownEvidence, "unrelated fake-coder argv PID remained alive: %d\n\n", unrelated.Process.Pid)
 	fmt.Fprintf(&shutdownEvidence, "serve stdout:\n%s\n\nserve stderr:\n%s\n", outBuf.String(), errBuf.String())
 	if exitCode != 0 {
 		t.Errorf("serve exit code = %d, want 0", exitCode)
 	}
-	if postExitProcs != "" {
-		t.Errorf("orphan coder children after shutdown:\n%s", postExitProcs)
+	if !childGroupGone {
+		t.Errorf("fixture coder process group %d still exists after shutdown", childPID)
 	}
 
 	// flock released: a second serve must start and answer /livez.

@@ -3,6 +3,8 @@ package coderapi
 import (
 	"context"
 	"errors"
+	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -43,7 +45,7 @@ type cacheKey struct {
 }
 
 func (k cacheKey) String() string {
-	return k.deploymentID.String() + "/" + k.accountID.String() + "/" + string(rune(k.generation))
+	return k.deploymentID.String() + "/" + k.accountID.String() + "/" + strconv.FormatInt(k.generation, 10)
 }
 
 func NewCachedVerifier(deploymentID uuid.UUID, v VerifyCaller, ttl time.Duration) *CachedVerifier {
@@ -82,13 +84,11 @@ func (cv *CachedVerifier) VerifyCached(ctx context.Context, accountID uuid.UUID,
 
 		ident, err := cv.verifier.Verify(ctx, token)
 		if err != nil {
-			ce := &core.CredentialError{}
-			if errors.As(err, &ce) {
-				if ce.Kind == core.ControlPlaneUnavailable ||
-					ce.Kind == core.CredentialMalformedReply ||
-					ce.Kind == core.ControlPlaneIncompatible {
-					return ident, err
-				}
+			var ce *core.CredentialError
+			if !errors.As(err, &ce) ||
+				ce.Kind != core.CredentialInvalid ||
+				ce.HTTPStatus != http.StatusUnauthorized {
+				return ident, err
 			}
 			cv.mu.Lock()
 			cv.cache[key] = &cachedResult{

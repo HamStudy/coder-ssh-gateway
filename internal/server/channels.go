@@ -28,6 +28,12 @@ type TunnelStarter interface {
 	Start(ctx context.Context, channel ssh.Channel, route core.Route, credential core.CredentialSnapshot) error
 }
 
+// WorkspaceSessionStarter starts an authenticated workspace session over an
+// accepted outer session channel.
+type WorkspaceSessionStarter interface {
+	Start(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, target string, credential core.CredentialSnapshot) error
+}
+
 // MaintenanceHandler runs the restricted §14 maintenance session on the
 // single admitted `session` channel of a maintenance-mode connection (T21;
 // *maintenance.Handler satisfies it). The dispatcher closes the channel and
@@ -131,6 +137,106 @@ func (s *Server) dispatchMaintenanceChannels(ctx context.Context, state *sshauth
 			s.rec.ChannelRejected()
 			_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
 		}
+	}
+}
+
+// dispatchWorkspaceChannels permits only one session channel for a direct
+// workspace username. Unlike transport mode it never accepts direct-tcpip.
+func (s *Server) dispatchWorkspaceChannels(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, target string, channels <-chan ssh.NewChannel) {
+	served := false
+	for newCh := range channels {
+		if newCh.ChannelType() != "session" || served || s.cfg.WorkspaceSessionStarter == nil {
+			s.rec.ChannelRejected()
+			_ = newCh.Reject(ssh.Prohibited, "workspace connections permit one session channel")
+			continue
+		}
+		if s.draining.Load() {
+			s.rec.ChannelRejected()
+			_ = newCh.Reject(ssh.Prohibited, "server is shutting down")
+			continue
+		}
+		served = true
+		s.admitWorkspaceSession(ctx, state, perms, target, newCh)
+	}
+}
+
+func (s *Server) admitWorkspaceSession(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, target string, newCh ssh.NewChannel) {
+	// Parsing happens here, after the enrolled key has been authenticated.
+	if perms.MustReconnect {
+		s.rec.ChannelRejected()
+		_ = newCh.Reject(ssh.Prohibited, "reconnect required")
+		return
+	}
+	rt, err := route.ParseBareTarget(target)
+	if err != nil {
+		ch, requests, acceptErr := newCh.Accept()
+		if acceptErr == nil {
+			go drainChannelRequests(requests)
+			_, _ = ch.Stderr().Write([]byte("workspace target is invalid or unavailable\r\n"))
+			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 255}))
+			_ = ch.CloseWrite()
+			_ = ch.Close()
+		}
+		s.rec.ChannelRejected()
+		s.auditChannelOpen(state, perms, "", false, route.CodeOf(err))
+		return
+	}
+	relChan, ok := s.cfg.Counters.AcquireChannel(state.ID())
+	if !ok {
+		s.rejectChannelLimit(state, perms, newCh)
+		return
+	}
+	defer relChan()
+	relAcct, ok := s.cfg.Counters.AcquireChannelAccount(perms.AccountID)
+	if !ok {
+		s.rejectChannelLimit(state, perms, newCh)
+		return
+	}
+	defer relAcct()
+	relProc, ok := s.cfg.Counters.AcquireCoderProcess()
+	if !ok {
+		s.rejectChannelLimit(state, perms, newCh)
+		return
+	}
+	defer relProc()
+
+	snap, err := s.cfg.Auth.Store.LoadCredential(ctx, perms.AccountID)
+	if err != nil {
+		s.rec.ChannelRejected()
+		s.auditChannelOpen(state, perms, rt.DisplayTarget, false, core.STORE_UNAVAILABLE)
+		_ = newCh.Reject(ssh.ConnectionFailed, "credential store unavailable")
+		return
+	}
+	defer secretbox.BestEffortWipe(snap.Token)
+	if snap.State == core.CredentialStateInvalid || snap.State == core.CredentialStateMissing || len(snap.Token) == 0 {
+		detail := core.AUTH_CREDENTIAL_UNAUTHORIZED
+		if snap.State == core.CredentialStateMissing {
+			detail = core.AUTH_CREDENTIAL_MISSING
+		}
+		_ = state.Close()
+		s.rec.ChannelRejected()
+		s.auditChannelOpen(state, perms, rt.DisplayTarget, false, detail)
+		_ = newCh.Reject(ssh.Prohibited, "credential no longer valid; reconnect")
+		return
+	}
+	if time.Since(snap.LastValidatedAt) > s.cfg.CacheTTL {
+		if _, err := s.cfg.Auth.Verifier.VerifyCached(ctx, perms.AccountID, snap.Generation, snap.Token); err != nil {
+			s.rejectOnRevalidationFailure(ctx, state, perms, rt, newCh, err)
+			return
+		}
+		snap.LastValidatedAt = time.Now()
+	}
+	ch, requests, err := newCh.Accept()
+	if err != nil {
+		return
+	}
+	s.rec.ChannelAccepted()
+	s.activeChannels.Add(1)
+	defer s.activeChannels.Add(-1)
+	defer s.rec.ChannelClosed()
+	s.auditChannelOpen(state, perms, rt.DisplayTarget, true, "")
+	if err := s.cfg.WorkspaceSessionStarter.Start(ctx, ch, requests, rt.WorkspaceHost, snap); err != nil {
+		_ = ch.Close()
 	}
 }
 

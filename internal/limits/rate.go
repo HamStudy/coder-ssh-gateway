@@ -1,6 +1,7 @@
 package limits
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -46,23 +47,23 @@ func (tb *tokenBucket) refill(now time.Time) {
 }
 
 type RateLimits struct {
-	mu                  sync.Mutex
-	preAuthIP           map[string]*tokenBucket
-	maxPreAuthIP        int
-	ipBucket            map[string]*bucketEntry
-	muIP                sync.Mutex
-	keyBucket           map[string]*tokenBucket
-	accountBucket       map[uuid.UUID]*accountBucketEntry
-	muAccount           sync.Mutex
-	clock               func() time.Time
-	maxMapSize          int
-	maxIdle             time.Duration
+	mu                    sync.Mutex
+	preAuthIP             map[string]*tokenBucket
+	maxPreAuthIP          int
+	ipBucket              map[string]*bucketEntry
+	muIP                  sync.Mutex
+	keyBucket             map[string]*bucketEntry
+	accountBucket         map[uuid.UUID]*accountBucketEntry
+	muAccount             sync.Mutex
+	clock                 func() time.Time
+	maxMapSize            int
+	maxIdle               time.Duration
 	renewalAttemptsPerMin int
 }
 
 type bucketEntry struct {
-	bucket    *tokenBucket
-	lastSeen  time.Time
+	bucket   *tokenBucket
+	lastSeen time.Time
 }
 
 type accountBucketEntry struct {
@@ -93,7 +94,7 @@ func newRateLimitsWithEviction(l config.Limits, clock func() time.Time, maxMapSi
 		preAuthIP:             make(map[string]*tokenBucket),
 		maxPreAuthIP:          l.ConnectionsPerIP,
 		ipBucket:              make(map[string]*bucketEntry),
-		keyBucket:             make(map[string]*tokenBucket),
+		keyBucket:             make(map[string]*bucketEntry),
 		accountBucket:         make(map[uuid.UUID]*accountBucketEntry),
 		clock:                 clock,
 		maxMapSize:            maxMapSize,
@@ -109,10 +110,10 @@ func (r *RateLimits) AllowPreAuthIP(ip string) bool {
 	entry, exists := r.ipBucket[ip]
 	now := r.clock()
 	if !exists {
-		r.evictIfNeededLocked(now)
+		r.evictStringBucketsIfNeededLocked(r.ipBucket, now)
 		entry = &bucketEntry{
-			bucket:    newTokenBucket(r.maxPreAuthIP, r.maxPreAuthIP),
-			lastSeen:  now,
+			bucket:   newTokenBucket(r.maxPreAuthIP, r.maxPreAuthIP),
+			lastSeen: now,
 		}
 		r.ipBucket[ip] = entry
 	}
@@ -120,53 +121,63 @@ func (r *RateLimits) AllowPreAuthIP(ip string) bool {
 	return entry.bucket.Allow(now)
 }
 
-func (r *RateLimits) evictIfNeededLocked(now time.Time) {
-	targetSize := r.maxMapSize / 2
-	if targetSize < 100 {
-		targetSize = 100
+type stringBucketCandidate struct {
+	key      string
+	lastSeen time.Time
+}
+
+func (r *RateLimits) evictStringBucketsIfNeededLocked(buckets map[string]*bucketEntry, now time.Time) {
+	// The caller must hold the mutex that owns buckets.
+	hardLimit := r.maxMapSize
+	if hardLimit < 1 {
+		hardLimit = 1
+	}
+	targetSize := hardLimit / 2
+	if targetSize < 1 {
+		targetSize = 1
 	}
 
-	currentSize := len(r.ipBucket)
-	if currentSize < targetSize {
+	currentSize := len(buckets)
+	if currentSize < hardLimit {
 		return
 	}
 
 	idleCutoff := now.Add(-r.maxIdle)
 
-	idleEntries := make([]string, 0)
-	otherEntries := make([]string, 0)
-	for ip, entry := range r.ipBucket {
+	idleEntries := make([]stringBucketCandidate, 0)
+	otherEntries := make([]stringBucketCandidate, 0)
+	for key, entry := range buckets {
+		candidate := stringBucketCandidate{key: key, lastSeen: entry.lastSeen}
 		if entry.lastSeen.Before(idleCutoff) {
-			idleEntries = append(idleEntries, ip)
+			idleEntries = append(idleEntries, candidate)
 		} else {
-			otherEntries = append(otherEntries, ip)
+			otherEntries = append(otherEntries, candidate)
 		}
 	}
+	sortStringBucketCandidates(idleEntries)
+	sortStringBucketCandidates(otherEntries)
 
 	// If all entries are idle, delete them all
 	if len(otherEntries) == 0 {
-		for _, ip := range idleEntries {
-			delete(r.ipBucket, ip)
+		for _, entry := range idleEntries {
+			delete(buckets, entry.key)
 		}
 		return
 	}
 
-	entriesToDelete := currentSize - targetSize
-	if entriesToDelete <= 0 {
-		return
-	}
+	entriesToDelete := currentSize - targetSize + 1
 
 	deleted := 0
-	for _, ip := range idleEntries {
-		delete(r.ipBucket, ip)
+	for _, entry := range idleEntries {
+		delete(buckets, entry.key)
 		deleted++
 		if deleted >= entriesToDelete {
 			return
 		}
 	}
 
-	for _, ip := range otherEntries {
-		delete(r.ipBucket, ip)
+	for _, entry := range otherEntries {
+		delete(buckets, entry.key)
 		deleted++
 		if deleted >= entriesToDelete {
 			return
@@ -174,16 +185,31 @@ func (r *RateLimits) evictIfNeededLocked(now time.Time) {
 	}
 }
 
+func sortStringBucketCandidates(candidates []stringBucketCandidate) {
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].lastSeen.Equal(candidates[j].lastSeen) {
+			return candidates[i].key < candidates[j].key
+		}
+		return candidates[i].lastSeen.Before(candidates[j].lastSeen)
+	})
+}
+
 func (r *RateLimits) AllowUnknownKeyAttempt(ip string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	bucket, exists := r.keyBucket[ip]
+	entry, exists := r.keyBucket[ip]
+	now := r.clock()
 	if !exists {
-		bucket = newTokenBucket(10, 10)
-		r.keyBucket[ip] = bucket
+		r.evictStringBucketsIfNeededLocked(r.keyBucket, now)
+		entry = &bucketEntry{
+			bucket:   newTokenBucket(10, 10),
+			lastSeen: now,
+		}
+		r.keyBucket[ip] = entry
 	}
-	return bucket.Allow(r.clock())
+	entry.lastSeen = now
+	return entry.bucket.Allow(now)
 }
 
 func (r *RateLimits) AllowRenewalAttempt(accountID uuid.UUID) bool {
@@ -193,6 +219,9 @@ func (r *RateLimits) AllowRenewalAttempt(accountID uuid.UUID) bool {
 	entry, exists := r.accountBucket[accountID]
 	now := r.clock()
 	if !exists {
+		if !r.evictAccountBucketsIfNeededLocked(now) {
+			return false
+		}
 		entry = &accountBucketEntry{
 			bucket:   newTokenBucket(r.renewalAttemptsPerMin, r.renewalAttemptsPerMin),
 			lastSeen: now,
@@ -217,18 +246,101 @@ func (r *RateLimits) AllowRenewalAttempt(accountID uuid.UUID) bool {
 	return entry.bucket.Allow(now)
 }
 
+type accountBucketCandidate struct {
+	accountID uuid.UUID
+	lastSeen  time.Time
+}
+
+func (r *RateLimits) evictAccountBucketsIfNeededLocked(now time.Time) bool {
+	// The caller must hold muAccount.
+	hardLimit := r.maxMapSize
+	if hardLimit < 1 {
+		hardLimit = 1
+	}
+	targetSize := hardLimit / 2
+	if targetSize < 1 {
+		targetSize = 1
+	}
+
+	currentSize := len(r.accountBucket)
+	if currentSize < hardLimit {
+		return true
+	}
+
+	idleCutoff := now.Add(-r.maxIdle)
+	idleEntries := make([]accountBucketCandidate, 0)
+	otherEntries := make([]accountBucketCandidate, 0)
+	for accountID, entry := range r.accountBucket {
+		candidate := accountBucketCandidate{accountID: accountID, lastSeen: entry.lastSeen}
+
+		entry.allowanceMu.Lock()
+		hasAllowance := entry.allowance
+		entry.allowanceMu.Unlock()
+		if hasAllowance {
+			continue
+		}
+
+		if entry.lastSeen.Before(idleCutoff) {
+			idleEntries = append(idleEntries, candidate)
+		} else {
+			otherEntries = append(otherEntries, candidate)
+		}
+	}
+	sortAccountBucketCandidates(idleEntries)
+	sortAccountBucketCandidates(otherEntries)
+
+	entriesToDelete := currentSize - targetSize + 1
+	if len(otherEntries) == 0 {
+		for _, entry := range idleEntries {
+			delete(r.accountBucket, entry.accountID)
+		}
+	} else {
+		deleted := 0
+		for _, entry := range idleEntries {
+			delete(r.accountBucket, entry.accountID)
+			deleted++
+			if deleted >= entriesToDelete {
+				break
+			}
+		}
+		for _, entry := range otherEntries {
+			if deleted >= entriesToDelete {
+				break
+			}
+			delete(r.accountBucket, entry.accountID)
+			deleted++
+		}
+	}
+
+	return len(r.accountBucket) < hardLimit
+}
+
+func sortAccountBucketCandidates(candidates []accountBucketCandidate) {
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].lastSeen.Equal(candidates[j].lastSeen) {
+			return candidates[i].accountID.String() < candidates[j].accountID.String()
+		}
+		return candidates[i].lastSeen.Before(candidates[j].lastSeen)
+	})
+}
+
 func (r *RateLimits) GrantReconnectAllowance(accountID uuid.UUID) {
 	r.muAccount.Lock()
 	defer r.muAccount.Unlock()
 
 	entry, exists := r.accountBucket[accountID]
+	now := r.clock()
 	if !exists {
+		if !r.evictAccountBucketsIfNeededLocked(now) {
+			return
+		}
 		entry = &accountBucketEntry{
 			bucket:   newTokenBucket(r.renewalAttemptsPerMin, r.renewalAttemptsPerMin),
-			lastSeen: r.clock(),
+			lastSeen: now,
 		}
 		r.accountBucket[accountID] = entry
 	}
+	entry.lastSeen = now
 
 	entry.allowanceMu.Lock()
 	entry.allowance = true

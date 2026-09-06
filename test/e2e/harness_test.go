@@ -1,7 +1,7 @@
 // Package e2e holds the crown-jewel end-to-end tests (§38.3/§38.4): the
 // REAL gateway binary, the REAL /usr/bin/ssh client, and either a fake
 // Coder deployment + fake coder binary (CI-safe) or the live
-// example.test deployment (build tag "live", requires CODER_LIVE_TOKEN).
+// live deployment (build tag "live", requires CODER_LIVE_URL and CODER_LIVE_TOKEN).
 //
 // The fake path proves OpenSSH client compatibility: ProxyJump, the
 // lower-level `ssh -W` stdio forward, the keyboard-interactive credential
@@ -39,14 +39,8 @@ import (
 	"github.com/taxilian/coder-ssh-gateway/internal/testutil"
 )
 
-// testSuffix is the deployment target suffix used by the fake E2E path. It
-// intentionally matches the production suffix shape (§17.4) so routing
-// exercises the real codec.
-const testSuffix = "coder-gateway.example.com"
-
-// testWorkspace is the fake-path target hostname. The fake inner SSH server
-// accepts any target; the suffix is what the gateway route codec validates.
-const testWorkspace = "dev." + testSuffix
+// testWorkspace is a strict bare Coder target used by the fake E2E path.
+const testWorkspace = "dev"
 
 // testCoderUserID is the Coder user UUID the fake control plane returns for
 // every valid test token. The account binds to it on first token.
@@ -237,7 +231,7 @@ func newGatewayFixture(t *testing.T, initialToken string) *gatewayFixture {
 	}
 
 	// 1. init: state layout, host key, encryption key, starter config.
-	f.runCLI(t, nil, "", "init")
+	f.runCLI(t, nil, "", "init", "coder.example.com")
 
 	// 2. Rewrite the config: fake coder_url (HTTPS + custom CA), fake coder
 	// binary, dynamic listen address, temp runtime dirs.
@@ -383,7 +377,6 @@ state:
 deployment:
   id: primary
   coder_url: %q
-  target_suffix: %s
   coder_binary: %s
   coder_global_config: %s
   working_directory: %s
@@ -400,7 +393,7 @@ observability:
   log_level: debug
   metrics_address: "127.0.0.1:0"
   health_address: "127.0.0.1:0"
-`, f.addr, f.stateDir, f.coder.url(), testSuffix, fakeBin,
+`, f.addr, f.stateDir, f.coder.url(), fakeBin,
 		filepath.Join(f.stateDir, "coder-config"), filepath.Join(f.stateDir, "run"), f.coder.caFile)
 	// Ephemeral observability ports only: the 9090/9091 defaults would
 	// collide with any concurrently running gateway on this host.
@@ -555,19 +548,15 @@ func (f *gatewayFixture) sshConfig(t *testing.T) string {
 	path := filepath.Join(t.TempDir(), "ssh_config")
 	// ssh_config keyword semantics are first-value-wins: the inner-target
 	// block must precede Host * or its UserKnownHostsFile is never read.
-	content := fmt.Sprintf(`Host *.%s
+	content := fmt.Sprintf(`Host *
   StrictHostKeyChecking no
   UserKnownHostsFile /dev/null
   LogLevel ERROR
-
-Host *
-  StrictHostKeyChecking accept-new
   IdentitiesOnly yes
   IdentityFile %s
-  UserKnownHostsFile %s
   LogLevel ERROR
   ConnectTimeout 10
-`, testSuffix, f.keyPath, f.knownHosts)
+`, f.keyPath)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write ssh_config: %v", err)
 	}

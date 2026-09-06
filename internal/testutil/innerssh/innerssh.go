@@ -11,7 +11,8 @@
 //
 // Behavior contract (deterministic, asserted by downstream tests):
 //
-//   - exec request with payload P: writes "ECHO:<P>" then exit-status 0.
+//   - exec request "printf hello": writes "hello" then exit-status 0.
+//   - other exec requests with payload P: write "ECHO:<P>" then exit-status 0.
 //   - shell request: writes "FAKE-SHELL-READY\n", then echoes every line
 //     received back to the sender; on channel EOF sends exit-status 0.
 //   - pty-req / window-change: accepted (reply true), otherwise ignored.
@@ -148,7 +149,14 @@ func handleSession(ch ssh.Channel, requests <-chan *ssh.Request) {
 				continue
 			}
 			req.Reply(true, nil)
-			fmt.Fprintf(ch, "%s%s", ExecPrefix, payload.Command)
+			if payload.Command == "printf hello" {
+				io.WriteString(ch, "hello")
+			} else if payload.Command == "exit 7" {
+				sendExitStatus(ch, 7)
+				return
+			} else {
+				fmt.Fprintf(ch, "%s%s", ExecPrefix, payload.Command)
+			}
 			sendExitStatus(ch, 0)
 			return
 		case "shell":
@@ -157,7 +165,7 @@ func handleSession(ch ssh.Channel, requests <-chan *ssh.Request) {
 			echoLines(ch)
 			sendExitStatus(ch, 0)
 			return
-		case "pty-req", "window-change":
+		case "env", "pty-req", "window-change", "signal":
 			// Accepted and ignored: the fake has no terminal, but real
 			// clients routinely request a pty before shell sessions.
 			req.Reply(true, nil)
