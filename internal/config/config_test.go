@@ -339,7 +339,6 @@ func TestDefaultValues(t *testing.T) {
 	}{
 		{"listen.address", c.Listen.Address, ":22"},
 		{"listen.proxy_protocol", c.Listen.ProxyProtocol, false},
-		{"ssh.transport_user", c.SSH.TransportUser, "coder"},
 		{"ssh.allow_ssh_certificates", c.SSH.AllowSSHCertificates, false},
 		{"state.audit_retention_days", c.State.AuditRetentionDays, 90},
 		{"encryption.provider", c.Encryption.Provider, "file"},
@@ -560,9 +559,6 @@ func TestValidate(t *testing.T) {
 			c.State.AuditRetentionDays = 0
 		}, "state.audit_retention_days"},
 
-		{"enrollment user collides with transport", func(t *testing.T, c *Config, e validEnv) {
-			c.Enrollment.User = c.SSH.TransportUser
-		}, "enrollment.user"},
 		{"enrollment user empty when enabled", func(t *testing.T, c *Config, e validEnv) {
 			c.Enrollment.User = ""
 		}, "enrollment.user"},
@@ -631,5 +627,38 @@ func TestValidateCollectsMultipleErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ssh.host_keys") || !strings.Contains(err.Error(), "deployment.wait") {
 		t.Errorf("expected both field names in joined error, got: %v", err)
+	}
+}
+
+// Regression: env: key sources are provider references, not files. Load
+// must not stat them (a Helm deployment with env-injected keys failed to
+// boot because validateEncryption treated the reference as a path).
+func TestLoadEnvKeySource(t *testing.T) {
+	dir := t.TempDir()
+	raw := `ssh:
+  host_keys:
+    - secrets/ssh_host_ed25519_key
+deployment:
+  id: primary
+  coder_url: https://coder.example.com
+  coder_binary: /usr/local/bin/coder
+encryption:
+  provider: file
+  active_key_id: v1
+  keys:
+    v1: env:CSGW_TEST_LOAD_KEY
+`
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o700); err != nil {
+		t.Fatalf("mkdir secrets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets", "ssh_host_ed25519_key"), []byte("host-key"), 0o600); err != nil {
+		t.Fatalf("write host key: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load with env: key source: %v", err)
 	}
 }

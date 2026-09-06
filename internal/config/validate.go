@@ -192,8 +192,6 @@ func (c *Config) validateEnrollment(errs *[]error) {
 	}
 	if c.Enrollment.User == "" {
 		*errs = append(*errs, errors.New("enrollment.user: required when enrollment is enabled"))
-	} else if c.Enrollment.User == c.SSH.TransportUser {
-		*errs = append(*errs, fmt.Errorf("enrollment.user: %q collides with the transport or maintenance username", c.Enrollment.User))
 	}
 	if c.Enrollment.MaxAttempts <= 0 {
 		*errs = append(*errs, fmt.Errorf("enrollment.max_attempts: must be positive, got %d", c.Enrollment.MaxAttempts))
