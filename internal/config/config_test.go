@@ -641,7 +641,7 @@ func TestLoadEnvKeySource(t *testing.T) {
 deployment:
   id: primary
   coder_url: https://coder.example.com
-  coder_binary: /usr/local/bin/coder
+  coder_binary: REPLACE_BIN
 encryption:
   provider: file
   active_key_id: v1
@@ -654,6 +654,13 @@ encryption:
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o700); err != nil {
 		t.Fatalf("mkdir secrets: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "coder-bin"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write coder bin: %v", err)
+	}
+	raw = strings.ReplaceAll(raw, "REPLACE_BIN", filepath.Join(dir, "coder-bin"))
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "secrets", "ssh_host_ed25519_key"), []byte("host-key"), 0o600); err != nil {
 		t.Fatalf("write host key: %v", err)

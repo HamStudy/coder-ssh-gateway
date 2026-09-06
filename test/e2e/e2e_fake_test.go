@@ -238,7 +238,7 @@ func TestE2ECredentialRenewalPTY(t *testing.T) {
 	if _, err := ptmx.Write([]byte("echo-probe-9137\r\n")); err != nil {
 		t.Fatalf("write post-renewal command: %v", err)
 	}
-	waitForTranscript(t, transcript, "echo-probe-9137", 30*time.Second)
+	waitForTranscript(t, transcript, "echo-probe-9137", 30*time.Second, f.logBuf)
 
 	// The fake shell has no exit command; kill the client and verify the
 	// gateway leaves no orphaned children behind.
@@ -295,7 +295,7 @@ func TestE2ERapidPreflightFake(t *testing.T) {
 }
 
 // waitForTranscript polls the PTY transcript until it contains want.
-func waitForTranscript(t *testing.T, buf *lockedBuffer, want string, d time.Duration) {
+func waitForTranscript(t *testing.T, buf *lockedBuffer, want string, d time.Duration, extra ...*lockedBuffer) {
 	t.Helper()
 	deadline := time.Now().Add(d)
 	for {
@@ -303,7 +303,13 @@ func waitForTranscript(t *testing.T, buf *lockedBuffer, want string, d time.Dura
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("PTY transcript did not contain %q within %v\ntranscript:\n%s", want, d, buf.String())
+			msg := "PTY transcript did not contain " + want + " within " + d.String() + "\ntranscript:\n" + buf.String()
+			for _, b := range extra {
+				if b != nil {
+					msg += "\ngateway logs:\n" + b.String()
+				}
+			}
+			t.Fatal(msg)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
