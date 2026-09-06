@@ -162,9 +162,9 @@ func startUnrelatedFakeCoderArgv(t *testing.T) *exec.Cmd {
 // the health and metrics endpoints with real curl, then cancel mid-tunnel
 // (SIGTERM equivalent — main wraps Run's ctx in signal.NotifyContext) and
 // verify exit code 0, no orphaned coder children, and flock release.
-// Evidence is written to .sisyphus/evidence/task-24-*.txt.
+// Raw curl evidence is written to a temp dir for failure debugging.
 func TestOpsQA(t *testing.T) {
-	evidenceDir := filepath.Join("..", "..", ".sisyphus", "evidence")
+	evidenceDir := t.TempDir()
 
 	f := newCLIFixture(t, true)
 	fakeBin := testutil.BuildFakeCoder(t)

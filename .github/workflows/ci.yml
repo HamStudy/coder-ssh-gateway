@@ -133,13 +133,16 @@ jobs:
       # The official action installs @latest and exposes no analyzer-version
       # input. Install the pin where its setup-go step puts first on PATH,
       # and isolate the action's floating install in a different GOBIN.
+      # go version -m emits tab-separated mod lines; verify with awk (a
+      # space-separated grep pattern never matches).
       - name: Install pinned govulncheck
         run: |
           pinned_gobin="$(go env GOPATH)/bin"
           mkdir -p "$pinned_gobin" "${RUNNER_TEMP}/govulncheck-action-gobin"
           GOBIN="$pinned_gobin" go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
-          go version -m "$pinned_gobin/govulncheck" | grep -F 'golang.org/x/vuln v1.7.0'
-          test "$(command -v govulncheck)" = "$pinned_gobin/govulncheck"
+          go version -m "$pinned_gobin/govulncheck" \
+            | awk '$1=="mod" && $2=="golang.org/x/vuln" && $3=="v1.7.0" {found=1} END {exit !found}'
+          test -x "$pinned_gobin/govulncheck"
           echo "$pinned_gobin" >> "$GITHUB_PATH"
 
       - name: Govulncheck
