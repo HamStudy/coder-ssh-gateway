@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -209,6 +210,7 @@ func TestE2ECredentialRenewalPTY(t *testing.T) {
 		"coder@"+f.host, "-p", f.port,
 	)
 	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		t.Fatalf("start ssh under PTY: %v", err)

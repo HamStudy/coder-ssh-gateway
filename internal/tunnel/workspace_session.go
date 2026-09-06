@@ -343,7 +343,7 @@ func handleSessionRequest(session *ssh.Session, req *ssh.Request, started *bool)
 	case "pty-req":
 		var r ptyRequest
 		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Term, 256) || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
-			slog.Info("pty rejected at parse/validation", "payload_len", len(req.Payload))
+			slog.Info("pty rejected at parse/validation", "payload_len", len(req.Payload), "term_len", len(r.Term))
 			return false, false, false
 		}
 		modes, err := parseTerminalModes([]byte(r.Modes))
