@@ -26,11 +26,11 @@ var enrollCoderUserID = uuid.MustParse("55555555-5555-5555-5555-555555555555")
 
 const enrollToken = "enroll-token-0123456789abcdefghij"
 
-// enrollmentAuthConfig arms the init@ enrollment flow on the fixture's
+// enrollmentAuthConfig arms the login@ enrollment flow on the fixture's
 // auth config (real store, real uncached verifier, fake rate limiter).
 func (f *fixture) enrollmentAuthConfig() sshauth.AuthConfig {
 	cfg := f.authConfig()
-	cfg.EnrollmentUser = "init"
+	cfg.EnrollmentUser = "login"
 	cfg.Enrollment = &sshauth.EnrollmentConfig{
 		Enabled:     true,
 		Verifier:    f.rawVerifier,
@@ -203,12 +203,12 @@ func accountForCoderID(t *testing.T, f *fixture, coderID uuid.UUID) (core.Accoun
 	return core.Account{}, false
 }
 
-// enrollOnce drives a full init@ enrollment and returns the parsed final
+// enrollOnce drives a full login@ enrollment and returns the parsed final
 // permissions. The server is expected to close the connection (§13.6).
 func enrollOnce(t *testing.T, ws *wireServer, signer ssh.Signer, ki *kiResponder, password string) (sshauth.FinalPerms, *ssh.Client) {
 	t.Helper()
 	probe := &clientProbe{}
-	client, err := dialGateway(ws.addr(), "init", probe, enrollmentMethods(signer, ki, password)...)
+	client, err := dialGateway(ws.addr(), "login", probe, enrollmentMethods(signer, ki, password)...)
 	if err != nil {
 		t.Fatalf("enrollment auth failed: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestWireEnrollmentConvergence(t *testing.T) {
 	}
 }
 
-// (c) Key conflict: a key already linked to account A, offered to init@
+// (c) Key conflict: a key already linked to account A, offered to login@
 // with a token resolving to account B -> hard reject, no account mutation,
 // no credential change, audit key_already_linked, no retry.
 func TestWireEnrollmentKeyConflict(t *testing.T) {
@@ -398,7 +398,7 @@ func TestWireEnrollmentKeyConflict(t *testing.T) {
 
 	probe := &clientProbe{}
 	ki := &kiResponder{answers: []string{enrollToken, enrollToken, enrollToken}}
-	client, err := dialGateway(ws.addr(), "init", probe, enrollmentMethods(f.signer, ki, "")...)
+	client, err := dialGateway(ws.addr(), "login", probe, enrollmentMethods(f.signer, ki, "")...)
 	if client != nil {
 		client.Close()
 	}
@@ -467,7 +467,7 @@ func TestWireEnrollmentInvalidTokenAndUnavailable(t *testing.T) {
 			"cand-two-eeeeeeeeeeeeeeeeeeee",
 			"cand-three-eeeeeeeeeeeeeeeeee",
 		}}
-		client, err := dialGateway(ws.addr(), "init", &clientProbe{}, enrollmentMethods(newSigner(t), ki, "")...)
+		client, err := dialGateway(ws.addr(), "login", &clientProbe{}, enrollmentMethods(newSigner(t), ki, "")...)
 		if client != nil {
 			client.Close()
 		}
@@ -501,7 +501,7 @@ func TestWireEnrollmentInvalidTokenAndUnavailable(t *testing.T) {
 		defer ws.shutdown()
 
 		ki := &kiResponder{answers: []string{enrollToken, enrollToken, enrollToken}}
-		client, err := dialGateway(ws.addr(), "init", &clientProbe{}, enrollmentMethods(newSigner(t), ki, "")...)
+		client, err := dialGateway(ws.addr(), "login", &clientProbe{}, enrollmentMethods(newSigner(t), ki, "")...)
 		if client != nil {
 			client.Close()
 		}
@@ -520,7 +520,7 @@ func TestWireEnrollmentInvalidTokenAndUnavailable(t *testing.T) {
 	})
 }
 
-// (e) Enrollment disabled (nil config, then Enabled=false): init@ rejects
+// (e) Enrollment disabled (nil config, then Enabled=false): login@ rejects
 // byte-identically to any unknown username (§35 — no oracle).
 func TestWireEnrollmentDisabledUniformReject(t *testing.T) {
 	defer leakCheck(t)
@@ -550,14 +550,14 @@ func TestWireEnrollmentDisabledUniformReject(t *testing.T) {
 
 	unknownRef := rejectText(f.authConfig(), "nosuchuser")
 
-	if got := rejectText(f.authConfig(), "init"); got != unknownRef {
-		t.Errorf("nil enrollment config: init@ error differs from unknown username:\n  %q\n  %q", got, unknownRef)
+	if got := rejectText(f.authConfig(), "login"); got != unknownRef {
+		t.Errorf("nil enrollment config: login@ error differs from unknown username:\n  %q\n  %q", got, unknownRef)
 	}
 
 	disabled := f.enrollmentAuthConfig()
 	disabled.Enrollment.Enabled = false
-	if got := rejectText(disabled, "init"); got != unknownRef {
-		t.Errorf("disabled enrollment: init@ error differs from unknown username:\n  %q\n  %q", got, unknownRef)
+	if got := rejectText(disabled, "login"); got != unknownRef {
+		t.Errorf("disabled enrollment: login@ error differs from unknown username:\n  %q\n  %q", got, unknownRef)
 	}
 }
 
@@ -630,7 +630,7 @@ func TestWireEnrollmentThenTransportAuth(t *testing.T) {
 	}
 }
 
-// (h) A certificate offered to init@ is rejected (§10.3 unchanged).
+// (h) A certificate offered to login@ is rejected (§10.3 unchanged).
 func TestWireEnrollmentRejectsCertificate(t *testing.T) {
 	defer leakCheck(t)
 
@@ -665,7 +665,7 @@ func TestWireEnrollmentRejectsCertificate(t *testing.T) {
 		Serial:          1,
 		CertType:        ssh.UserCert,
 		KeyId:           "enroll-cert",
-		ValidPrincipals: []string{"init"},
+		ValidPrincipals: []string{"login"},
 		ValidAfter:      uint64(time.Now().Add(-time.Hour).Unix()),
 		ValidBefore:     uint64(time.Now().Add(time.Hour).Unix()),
 	}
@@ -678,12 +678,12 @@ func TestWireEnrollmentRejectsCertificate(t *testing.T) {
 	}
 
 	ki := &kiResponder{answers: []string{enrollToken}}
-	client, err := dialGateway(ws.addr(), "init", &clientProbe{}, enrollmentMethods(certSigner, ki, "")...)
+	client, err := dialGateway(ws.addr(), "login", &clientProbe{}, enrollmentMethods(certSigner, ki, "")...)
 	if client != nil {
 		client.Close()
 	}
 	if err == nil {
-		t.Fatal("expected auth failure for certificate on init@")
+		t.Fatal("expected auth failure for certificate on login@")
 	}
 	if ki.promptCount() != 0 {
 		t.Errorf("token challenges = %d, want 0 (certificate rejected at candidate stage)", ki.promptCount())
@@ -747,7 +747,7 @@ func TestWireEnrollmentProbeWithoutProof(t *testing.T) {
 
 	probe := &clientProbe{}
 	ki := &kiResponder{answers: []string{enrollToken}}
-	client, err := dialGateway(ws.addr(), "init", probe,
+	client, err := dialGateway(ws.addr(), "login", probe,
 		ssh.PublicKeys(failingSigner{newSigner(t)}),
 		ssh.KeyboardInteractive(ki.challenge),
 	)
@@ -817,7 +817,7 @@ func TestWireEnrollmentPreTokenGate(t *testing.T) {
 
 		probe := &clientProbe{}
 		ki := &kiResponder{answers: []string{enrollToken}}
-		client, err := dialGateway(ws.addr(), "init", probe, enrollmentMethods(newSigner(t), ki, "")...)
+		client, err := dialGateway(ws.addr(), "login", probe, enrollmentMethods(newSigner(t), ki, "")...)
 		if client != nil {
 			client.Close()
 		}
@@ -856,7 +856,7 @@ func TestWireEnrollmentPreTokenGate(t *testing.T) {
 			"cand-one-eeeeeeeeeeeeeeeeeeee",
 			"cand-two-eeeeeeeeeeeeeeeeeeee",
 		}}
-		client, err := dialGateway(ws.addr(), "init", &clientProbe{}, enrollmentMethods(newSigner(t), ki, "")...)
+		client, err := dialGateway(ws.addr(), "login", &clientProbe{}, enrollmentMethods(newSigner(t), ki, "")...)
 		if client != nil {
 			client.Close()
 		}

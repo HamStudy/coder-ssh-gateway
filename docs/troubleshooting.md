@@ -18,7 +18,7 @@ you're seeing against the table for the exact failure path.
 - **`ssh: Could not resolve hostname` for the workspace** — [Workspace name not accepted](#workspace-name-not-accepted)
 - **"No supported methods remain" after key was already accepted** —
   [Token expired](#token-expired)
-- **`init@` rejected even though you typed a valid token** —
+- **`login@` rejected even though you typed a valid token** —
   [Self-enrollment rejected](#self-enrollment-rejected)
 - **`doctor` reports FAIL** — [`doctor` FAIL](#doctor-fail)
 - **`doctor` reports WARN, not FAIL** — [`doctor` WARN](#doctor-warn)
@@ -115,9 +115,9 @@ existence oracle.
    ~/.ssh/coder-gateway.pub`.
 3. **Did the key get disabled?** A registered key can be disabled
    without removing it. Re-enable with `admin key enable --key UUID`.
-4. **Self-enrollment still available?** If you see this on `init@`,
+4. **Self-enrollment still available?** If you see this on `login@`,
    and your key is not yet registered, run the normal
-   `ssh coder-gateway-init` flow instead — see
+   `ssh coder-gateway-login` flow instead — see
    [Client Setup → Initial enrollment](./client-setup.md#initial-enrollment-the-one-time-step).
 5. **Audit log.** The gateway logs every rejection with a stable
    detail code under `<state-dir>/audit/audit-YYYY-MM-DD.jsonl`. Ask
@@ -266,17 +266,17 @@ The detail codes are `AUTH_CREDENTIAL_MISSING`,
 
 ## Self-enrollment rejected
 
-What you're seeing: `ssh coder-gateway-init` (using the configured
+What you're seeing: `ssh coder-gateway-login` (using the configured
 host alias from [Client Setup](./client-setup.md#initial-enrollment-the-one-time-step))
 rejects your key, prompts you but then rejects the token, or reports
 a generic "key already linked" error.
 
-> A bare `ssh -p 2222 init@gateway.example.com` does not work for
+> A bare `ssh -p 2222 login@gateway.example.com` does not work for
 > enrollment on a typical OpenSSH install: the gateway port must be
 > pinned on the jump block, the non-default key must be selected by
 > `IdentityFile`/`IdentitiesOnly`, and the follow-up token prompt
 > requires `PreferredAuthentications publickey,keyboard-interactive,password`.
-> All three of those are set on the `coder-gateway-init` host block;
+> All three of those are set on the `coder-gateway-login` host block;
 > without that block, OpenSSH silently falls back to the wrong key,
 > the wrong port, or a single-method auth that bails after the
 > public-key check. Use the configured alias, not the bare command.
@@ -297,7 +297,7 @@ Possible causes and what to try:
    wrong-identity rejection: the first valid token anchors whichever
    Coder identity owns it.
 3. **Self-enrollment is disabled.** Your operator may have turned off
-   the `init@` flow. Ask them to either re-enable it
+   the `login@` flow. Ask them to either re-enable it
    (`enrollment.enabled: true`) or provision your account and key
    out-of-band — see
    [Operator Guide → Enrolling a user out-of-band](./operator-guide.md#enrolling-a-user-out-of-band).

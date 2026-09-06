@@ -138,9 +138,9 @@ func TestParseValidFixture(t *testing.T) {
 	if cfg.Listen.Address != ":2222" {
 		t.Errorf("fixture listen.address = %q, want :2222", cfg.Listen.Address)
 	}
-	if !cfg.Enrollment.Enabled || cfg.Enrollment.User != "init" ||
+	if !cfg.Enrollment.Enabled || cfg.Enrollment.User != "login" ||
 		cfg.Enrollment.MaxAttempts != 3 || cfg.Enrollment.Timeout.Std() != 5*time.Minute {
-		t.Errorf("fixture enrollment = %+v, want enabled init/3/5m", cfg.Enrollment)
+		t.Errorf("fixture enrollment = %+v, want enabled login/3/5m", cfg.Enrollment)
 	}
 
 	// Repoint secret/binary/state paths at real temp files, then validate.
@@ -362,7 +362,7 @@ func TestDefaultValues(t *testing.T) {
 		{"maintenance.enabled", c.Maintenance.Enabled, true},
 		{"maintenance.bind_on_first_token_requires_admin_flag", c.Maintenance.BindOnFirstTokenRequiresAdminFlag, true},
 		{"enrollment.enabled", c.Enrollment.Enabled, true},
-		{"enrollment.user", c.Enrollment.User, "init"},
+		{"enrollment.user", c.Enrollment.User, "login"},
 		{"enrollment.max_attempts", c.Enrollment.MaxAttempts, 3},
 		{"observability.log_format", c.Observability.LogFormat, "json"},
 		{"observability.metrics_address", c.Observability.MetricsAddress, "127.0.0.1:9090"},

@@ -123,7 +123,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		Logger:         logger,
 	}
 
-	// CD-2: enrollment disabled leaves a nil Enrollment — init@ then
+	// CD-2: enrollment disabled leaves a nil Enrollment — login@ then
 	// rejects byte-identically to any unknown username (§35).
 	var enrollment *sshauth.EnrollmentConfig
 	if cfg.Enrollment.Enabled {

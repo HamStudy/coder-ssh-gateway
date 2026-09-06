@@ -76,7 +76,7 @@ maintenance:
 
 enrollment:
   enabled: true
-  user: init
+  user: login
   max_attempts: 3
   timeout: 5m
 

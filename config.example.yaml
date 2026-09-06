@@ -231,7 +231,7 @@ maintenance:
                                             # created with
                                             # --bind-on-first-token
 
-# Self-enrollment (init@).
+# Self-enrollment (login@).
 enrollment:
   enabled: true                             # [DEPLOYMENT] primary
                                             # onboarding path. Set to
@@ -239,7 +239,7 @@ enrollment:
                                             # memberships where only
                                             # out-of-band admin
                                             # provisioning is permitted
-  user: init                                # [DEFAULT] SSH username that
+  user: login                               # [DEFAULT] SSH username that
                                             # triggers enrollment; must
                                             # differ from transport_user
                                             # and maintenance_user

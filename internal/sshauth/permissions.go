@@ -32,7 +32,7 @@ const (
 	// ModeWorkspace is an authenticated direct workspace session. Its target
 	// comes from the outer SSH username and is parsed only after key proof.
 	ModeWorkspace = "workspace"
-	// ModeEnrollment marks candidate permissions for the init@ self-
+	// ModeEnrollment marks candidate permissions for the login@ self-
 	// enrollment flow (CD-2): the key is not (yet) linked to any account.
 	ModeEnrollment = "enrollment"
 )
@@ -69,7 +69,7 @@ func CandidatePermissions(accountID, keyID uuid.UUID) *ssh.Permissions {
 	}
 }
 
-// EnrollmentCandidatePermissions builds candidate permissions for the init@
+// EnrollmentCandidatePermissions builds candidate permissions for the login@
 // self-enrollment flow: mode=enrollment plus the proven key's digest. There
 // are deliberately no account/key UUIDs — they do not exist yet.
 func EnrollmentCandidatePermissions(keyDigestHex string) *ssh.Permissions {

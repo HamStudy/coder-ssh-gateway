@@ -105,7 +105,7 @@ type EnrollmentStore interface {
 	ReplaceCredential(ctx context.Context, req core.ReplaceCredentialRequest) (core.CredentialSnapshot, error)
 }
 
-// EnrollmentConfig carries the dependencies and policy knobs for the init@
+// EnrollmentConfig carries the dependencies and policy knobs for the login@
 // self-enrollment flow (CD-2): any client key is accepted as the first
 // factor, and a valid Coder token anchors the account identity.
 type EnrollmentConfig struct {
@@ -525,7 +525,7 @@ func (ec *EnrollmentConfig) linkEnrollment(
 			return fail(DetailEnrollmentKeyAlreadyLinked, ErrEnrollmentKeyConflict)
 		}
 	} else {
-		label := "enrolled " + time.Now().UTC().Format(time.RFC3339) + " via init@"
+		label := "enrolled " + time.Now().UTC().Format(time.RFC3339) + " via login@"
 		keyRecord, err = ec.Store.AddKey(account.ID, key, label)
 		if err != nil {
 			log.Debug("enrollment key link failed", slog.String("detail_code", store.CodeOf(err)))

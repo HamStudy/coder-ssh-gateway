@@ -22,8 +22,8 @@ credential broker and the host as a credential-storage target.
 
 - **Connect from any SSH client.** Desktop, laptop, iPad, jump host. Same
   workflow once the client block is set up.
-- **Self-enroll in one command.** Add a `coder-gateway-init` host
-  block, then run `ssh coder-gateway-init` with a Coder session token.
+- **Self-enroll in one command.** Add a `coder-gateway-login` host
+  block, then run `ssh coder-gateway-login` with a Coder session token.
   Your device is registered and the gateway links it to the Coder
   identity that owns the token. No operator action needed.
 - **Use the gateway on port 22 or 2222.** Native installs default to 2222 so
@@ -53,7 +53,7 @@ key fingerprint in `known_hosts` before trusting the connection.
 
 If your operator disabled self-enrollment, send your operator your SSH
 **public key** (one file per device) and an account label. They will provision
-your account and key out-of-band; you skip the `init@gateway` flow.
+your account and key out-of-band; you skip the `login@gateway` flow.
 
 ## Quick start (operators, native install)
 
@@ -120,14 +120,14 @@ The unit applies a hardened sandbox and uses the same `--state-dir`.
 # 1. Generate a dedicated key on this device, if you don't have one.
 ssh-keygen -t ed25519 -f ~/.ssh/coder-gateway
 
-# 2. Add an init host block FIRST — it lets the enrollment prompt
+# 2. Add a login host block FIRST — it lets the enrollment prompt
 #    render after the public-key check. Without these follow-up
 #    methods, OpenSSH silently gives up before the token prompt.
 cat >> ~/.ssh/config <<'EOF'
-Host coder-gateway-init
+Host coder-gateway-login
     HostName gateway.example.com
     Port 2222
-    User init
+    User login
     IdentitiesOnly yes
     IdentityFile ~/.ssh/coder-gateway
     PreferredAuthentications publickey,keyboard-interactive,password
@@ -138,13 +138,13 @@ EOF
 # 3. Run the enrollment. The gateway accepts your newly generated key
 #    and then prompts for a Coder token; the Coder identity that owns
 #    that token becomes your gateway account.
-ssh coder-gateway-init
+ssh coder-gateway-login
 #   -> open https://coder.example.com/cli-auth, copy the token,
 #      paste it at the hidden prompt.
 #   -> the gateway validates, links the key, prints "Enrolled.",
 #      and disconnects by design.
 
-# 4. Add the daily-use config (separate from the init block).
+# 4. Add the daily-use config (separate from the login block).
 cat >> ~/.ssh/config <<'EOF'
 Host gateway.example.com
     HostName gateway.example.com

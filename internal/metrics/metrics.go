@@ -217,7 +217,7 @@ func New() *Metrics {
 		}, []string{"operation", "result"}),
 		enrollments: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: namespace, Name: "enrollments_total",
-			Help: "CD-2 init@ self-enrollment outcomes by result.",
+			Help: "CD-2 login@ self-enrollment outcomes by result.",
 		}, []string{"result"}),
 		limitsUsage: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace, Name: "limits_usage",

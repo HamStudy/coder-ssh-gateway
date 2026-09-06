@@ -157,7 +157,7 @@ func auditLogText(t *testing.T, f *cliFixture) string {
 	return sb.String()
 }
 
-// Full assembly: a fresh key + valid token against init@ enrolls end-to-end
+// Full assembly: a fresh key + valid token against login@ enrolls end-to-end
 // (account created, key linked, credential stored), the success banner
 // carries the Coder username, the server closes the connection (§13.6), and
 // the enrollment metric counts the success.
@@ -171,7 +171,7 @@ func TestServeEnrollmentEnabledEndToEnd(t *testing.T) {
 
 	signer := newEnrollmentSigner(t)
 	banners := &bannerCapture{}
-	client, err := dialEnrollment(t, es.addr, "init", banners, ssh.PublicKeys(signer), ssh.Password(token))
+	client, err := dialEnrollment(t, es.addr, "login", banners, ssh.PublicKeys(signer), ssh.Password(token))
 	if err != nil {
 		t.Fatalf("enrollment dial: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestServeEnrollmentEnabledEndToEnd(t *testing.T) {
 	}
 }
 
-// Disabled enrollment: init@ rejects byte-identically to an unknown
+// Disabled enrollment: login@ rejects byte-identically to an unknown
 // username (§35 uniformity), nothing is stored.
 func TestServeEnrollmentDisabledUniformReject(t *testing.T) {
 	f := newCLIFixture(t, false)
@@ -252,8 +252,8 @@ func TestServeEnrollmentDisabledUniformReject(t *testing.T) {
 	}
 
 	unknownRef := dialErr("nosuchuser")
-	if got := dialErr("init"); got != unknownRef {
-		t.Errorf("disabled init@ error differs from unknown username:\n  %q\n  %q", got, unknownRef)
+	if got := dialErr("login"); got != unknownRef {
+		t.Errorf("disabled login@ error differs from unknown username:\n  %q\n  %q", got, unknownRef)
 	}
 
 	accounts, err := es.built.Store.ListAccounts()
@@ -285,7 +285,7 @@ func TestServeEnrollmentRateLimited(t *testing.T) {
 	// ten, the sixth is refused before any prompt.
 	for i := 0; i < 6; i++ {
 		banners := &bannerCapture{}
-		client, err := dialEnrollment(t, es.addr, "init", banners,
+		client, err := dialEnrollment(t, es.addr, "login", banners,
 			ssh.PublicKeys(newEnrollmentSigner(t)), ssh.Password("wrong-token-0123456789abcdefgh"))
 		if client != nil {
 			client.Close()

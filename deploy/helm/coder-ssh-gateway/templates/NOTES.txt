@@ -19,7 +19,7 @@
 
 4. Enroll a device:
 
-   ssh -p {{ .Values.service.port }} init@<hostname>
+   ssh -p {{ .Values.service.port }} login@<hostname>
    (paste a Coder token from {{ printf "https://%s/cli-auth" .Values.coder.domain }})
 
 Rotation note: key files reach the pod through subPath mounts, which do not

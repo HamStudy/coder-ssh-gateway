@@ -119,14 +119,14 @@ type Maintenance struct {
 	BindOnFirstTokenRequiresAdminFlag bool     `yaml:"bind_on_first_token_requires_admin_flag"`
 }
 
-// Enrollment configures the CD-2 init@ token-anchored self-enrollment flow.
+// Enrollment configures the CD-2 login@ token-anchored self-enrollment flow.
 // Enabled by default: self-configuration is the primary onboarding path.
 type Enrollment struct {
 	// Enabled arms the enrollment user. False makes the enrollment
 	// username behave exactly like any unknown username (§35).
 	Enabled bool `yaml:"enabled"`
 	// User is the outer SSH username that triggers enrollment
-	// (default "init"). It must differ from the transport and
+	// (default "login"). It must differ from the transport and
 	// maintenance usernames.
 	User string `yaml:"user"`
 	// MaxAttempts bounds candidate token attempts per enrollment
@@ -205,7 +205,7 @@ func Default() *Config {
 		},
 		Enrollment: Enrollment{
 			Enabled:     true,
-			User:        "init",
+			User:        "login",
 			MaxAttempts: 3,
 			Timeout:     Duration(5 * time.Minute),
 		},

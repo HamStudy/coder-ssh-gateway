@@ -38,10 +38,10 @@ follow-up authentication methods. A dedicated host block does this
 without touching your workspace entries:
 
 ```sshconfig
-Host coder-gateway-init
+Host coder-gateway-login
     HostName gateway.example.com
     Port 2222
-    User init
+    User login
     IdentitiesOnly yes
     IdentityFile ~/.ssh/coder-gateway
     PreferredAuthentications publickey,keyboard-interactive,password
@@ -52,7 +52,7 @@ Host coder-gateway-init
 Then:
 
 ```bash
-ssh coder-gateway-init
+ssh coder-gateway-login
 ```
 
 What happens:
@@ -171,7 +171,7 @@ Host dev
 
 ### First connection (verification)
 
-1. `ssh coder-gateway-init` and compare the displayed host-key
+1. `ssh coder-gateway-login` and compare the displayed host-key
    fingerprint against the one your operator published **before
    answering `yes`**.
 2. Paste your Coder session token at the `Coder token:` prompt, wait
@@ -193,7 +193,7 @@ Name:             Coder Gateway Init
 Connection type:  SSH
 Host:             gateway.example.com
 Port:             2222
-Username:         init
+Username:         login
 Authentication:   this device's SSH key
 Jump host:        none
 ```

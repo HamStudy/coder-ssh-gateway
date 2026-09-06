@@ -10,7 +10,7 @@ deployment.
 - [Kubernetes](#kubernetes)
 - [First boot: init and doctor](#first-boot-init-and-doctor)
 - [Migrating from earlier releases](#migrating-from-earlier-releases)
-- [Self-enrollment (`init@`)](#self-enrollment-init)
+- [Self-enrollment (`login@`)](#self-enrollment-login)
 - [Enrolling a user out-of-band](#enrolling-a-user-out-of-band)
 - [Configuration reference](#configuration-reference)
 - [State directory layout](#state-directory-layout)
@@ -486,18 +486,18 @@ the boot:
   one, two, or three labels in the form `workspace`, `workspace.agent`,
   or `agent.workspace.owner`).
 
-## Self-enrollment (`init@`)
+## Self-enrollment (`login@`)
 
 With `enrollment.enabled: true` (the default), users onboard
 themselves from any device. The exact SSH command they run depends on
 their local `~/.ssh/config` — they must use the configured
-`coder-gateway-init` host alias (defined in the
+`coder-gateway-login` host alias (defined in the
 [Client Setup](./client-setup.md#initial-enrollment-the-one-time-step)
 guide) so OpenSSH selects the correct key, permits follow-up auth
-methods, and pins the gateway port. A bare `ssh -p 2222 init@<gateway>`
+methods, and pins the gateway port. A bare `ssh -p 2222 login@<gateway>`
 does not satisfy any of those on a typical OpenSSH install.
 
-The gateway's behavior once the user connects to `init@`:
+The gateway's behavior once the user connects to `login@`:
 
 1. Verifies the device's public-key proof of possession.
 2. Prompts for a Coder session token (input is hidden).
@@ -768,7 +768,7 @@ wins over both `state.dir` in YAML and any default.
 | `maintenance.session_timeout` | `5m` | Whole-session bound for maintenance. |
 | `maintenance.input_timeout` | `2m` | Negotiation and per-keystroke bound. |
 | `maintenance.bind_on_first_token_requires_admin_flag` | `true` | First-token binding only for accounts created with `--bind-on-first-token`. |
-| `enrollment.enabled` | `true` | Enable the init@ token-anchored self-enrollment flow. |
+| `enrollment.enabled` | `true` | Enable the login@ token-anchored self-enrollment flow. |
 | `enrollment.user` | `init` | SSH username that triggers enrollment; must differ from transport and maintenance users. |
 | `enrollment.max_attempts` | `3` | Token submissions allowed per enrollment connection. |
 | `enrollment.timeout` | `5m` | Handshake deadline extension while an enrollment token prompt is open. |

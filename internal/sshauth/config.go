@@ -54,7 +54,7 @@ type AuthConfig struct {
 	Renewal *RenewalConfig
 
 	// EnrollmentUser is the outer username that triggers self-enrollment
-	// (CD-2, e.g. "init"). It is active only when Enrollment is non-nil
+	// (CD-2, default "login"). It is active only when Enrollment is non-nil
 	// and Enabled; Enrollment.User overrides it when set.
 	EnrollmentUser string
 	// Enrollment carries the CD-2 self-enrollment continuation
