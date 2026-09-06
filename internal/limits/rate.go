@@ -48,7 +48,6 @@ func (tb *tokenBucket) refill(now time.Time) {
 
 type RateLimits struct {
 	mu                    sync.Mutex
-	preAuthIP             map[string]*tokenBucket
 	maxPreAuthIP          int
 	ipBucket              map[string]*bucketEntry
 	muIP                  sync.Mutex
@@ -91,7 +90,6 @@ func newRateLimitsWithEviction(l config.Limits, clock func() time.Time, maxMapSi
 		clock = time.Now
 	}
 	return &RateLimits{
-		preAuthIP:             make(map[string]*tokenBucket),
 		maxPreAuthIP:          l.ConnectionsPerIP,
 		ipBucket:              make(map[string]*bucketEntry),
 		keyBucket:             make(map[string]*bucketEntry),
