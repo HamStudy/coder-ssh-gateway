@@ -229,14 +229,13 @@ func (f *fixture) installCredential(t *testing.T, token string) core.CredentialS
 
 func (f *fixture) authConfig() sshauth.AuthConfig {
 	return sshauth.AuthConfig{
-		TransportUser: "coder",
-		DeploymentID:  f.dep.ID,
-		CoderURL:      f.dep.CoderURL,
-		Store:         f.store,
-		Verifier:      f.verifier,
-		Audit:         f.audit,
-		Logger:        slog.New(f.logs),
-		Renewal:       f.renewalConfig(),
+		DeploymentID: f.dep.ID,
+		CoderURL:     f.dep.CoderURL,
+		Store:        f.store,
+		Verifier:     f.verifier,
+		Audit:        f.audit,
+		Logger:       slog.New(f.logs),
+		Renewal:      f.renewalConfig(),
 	}
 }
 
@@ -494,7 +493,7 @@ func TestWireTransportAuthSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseFinalPermissions: %v", err)
 	}
-	if perms.Mode != sshauth.ModeTransport {
+	if perms.Mode != sshauth.ModeWorkspace {
 		t.Errorf("mode = %q", perms.Mode)
 	}
 	if perms.AccountID != f.acct.ID {

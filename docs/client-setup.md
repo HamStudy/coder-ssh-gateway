@@ -234,44 +234,32 @@ The inner port (`22`) is the Coder workspace agent SSH port, set by
 Coder, not the gateway. The outer port (`2222`) is the gateway's
 external SSH listener.
 
-### Maintenance connection
-
-```text
-Name:             Coder Gateway Auth
-Connection type:  SSH
-Host:             gateway.example.com
-Port:             2222
-Username:         auth
-Authentication:   same registered SSH key
-Jump host:        none
-```
-
 ### Expired-token workflow
 
-1. Open the workspace connection.
-2. If Moshi renders the gateway's second authentication step, open the
-   displayed `/cli-auth` URL in a browser, create a token, and paste it
-   at the prompt.
-3. The gateway validates, stores, confirms, and closes the connection.
-4. Reopen the workspace connection.
-5. If Moshi does not render the second authentication method, open the
-   **Coder Gateway Auth** connection instead, paste the token there,
-   wait for the confirmation and disconnect, then reopen the workspace
-   connection.
+1. Open the workspace connection as usual.
+2. The gateway reports the stored credential is expired and shows the
+   hidden `Coder token:` prompt. Open the displayed `/cli-auth` URL in
+   a browser, create a token, and paste it.
+3. The gateway validates, stores, and continues straight into the
+   workspace — no reconnect.
+
+If Moshi does not render the second authentication method, add the
+follow-up methods to the workspace connection (see
+[Credential maintenance](#credential-maintenance)).
 
 ## Credential maintenance
 
-When the stored token expires, renew it through the maintenance user
-without exposing the token on the command line. A successful renewal
-prints a confirmation and disconnects you by design; the next workspace
-connection then works without prompting. The host block below
-lets the renewal prompt render:
+When the stored token expires, your next workspace connection prompts
+you for a fresh token inline — same connection, same key, no special
+username. Paste it once and you land straight in the workspace.
+
+For the prompt to render, the workspace connection must allow the
+follow-up authentication methods (your key is still verified first;
+enabling password here does not enable token-only gateway login):
 
 ```sshconfig
-Host coder-gateway-auth
-    HostName gateway.example.com
+Host gateway.example.com
     Port 2222
-    User auth
     IdentitiesOnly yes
     IdentityFile ~/.ssh/coder-gateway
     PreferredAuthentications publickey,keyboard-interactive,password
@@ -279,33 +267,11 @@ Host coder-gateway-auth
     PasswordAuthentication yes
 ```
 
-Then:
-
-```bash
-ssh coder-gateway-auth    # follow the hidden prompt to paste a fresh token
-```
-
-For renewal to work after the stored token is rejected, the client must
-allow the follow-up `keyboard-interactive` and `password` methods.
-Public key is still required first; enabling password here does not
-enable token-only gateway login.
-
-### Renewal-friendly variant for daily-use jump
-
-If your stored token sometimes expires mid-day and you'd rather have the
-gateway prompt you inline on the workspace connection, add the same
-follow-up methods to the daily-use jump block:
-
-```sshconfig
-Host coder-jump
-    PreferredAuthentications publickey,keyboard-interactive,password
-    KbdInteractiveAuthentication yes
-    PasswordAuthentication yes
-```
-
-The server still requires your public key first. Enabling password here
-does not enable token-only gateway login; it only lets the hidden token
-prompt render after your key is accepted.
+The flow: connect as usual; the gateway tells you the stored credential
+is expired and shows the hidden `Coder token:` prompt; paste a fresh
+token from the `/cli-auth` page; the connection continues straight into
+your workspace. The token is never echoed and never touches your
+command line or shell history.
 
 ## Host keys: what you are trusting
 
@@ -344,7 +310,7 @@ exactly as you would when using `coder ssh` directly.
 - **Pasting the wrong token.** The token must be a working Coder
   session token. On a *fresh* enrollment (no prior binding) the first
   valid token anchors whichever Coder identity owns it, so any token
-  you can issue works. On a *renewal* session (`ssh auth@gateway`),
+  you can issue works. On an *inline renewal* (expired stored token),
   or on a *re-enrollment* of a key already linked to an account, the
   token must be for the Coder user that account is bound to;
   otherwise the gateway rejects it as `AUTH_WRONG_CODER_IDENTITY`
@@ -355,7 +321,7 @@ exactly as you would when using `coder ssh` directly.
   outer port (2222 native, 22 in many Kubernetes deployments). The
   inner Coder workspace agent always listens on 22, regardless of the
   gateway's port.
-- **Disabling password auth "for security".** The maintenance flow uses
+- **Disabling password auth "for security".** The inline renewal flow uses
   a `password` method prompt only to render the hidden token input.
   Disabling it disables token renewal, not just password login.
 

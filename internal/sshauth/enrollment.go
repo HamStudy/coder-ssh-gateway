@@ -434,7 +434,7 @@ func (ec *EnrollmentConfig) validateAndLink(state *ConnState, key ssh.PublicKey,
 	)
 	ec.auditEnrollment(scope, &account, &keyRecord, ResultSuccess, strings.Join(details, ","))
 	state.SetMustReconnect(true)
-	return FinalTransportPermissions(account.ID, ec.DeploymentID, keyRecord.ID, generation, true), nil
+	return FinalEnrollmentPermissions(account.ID, ec.DeploymentID, keyRecord.ID, generation), nil
 }
 
 // linkEnrollment performs the CD-2 store mutations after a token verifies:

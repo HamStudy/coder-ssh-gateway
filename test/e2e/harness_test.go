@@ -368,7 +368,6 @@ listen:
   renewal_auth_timeout: 2m
 
 ssh:
-  transport_user: coder
 
 state:
   dir: %s

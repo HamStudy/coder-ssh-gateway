@@ -245,13 +245,12 @@ func (f *gwFixture) auditEvents(eventType string) []audit.Event {
 
 func (f *gwFixture) authConfig() sshauth.AuthConfig {
 	return sshauth.AuthConfig{
-		TransportUser: "coder",
-		DeploymentID:  f.dep.ID,
-		CoderURL:      f.dep.CoderURL,
-		Store:         f.store,
-		Verifier:      f.verifier,
-		Audit:         f.audit,
-		Logger:        slog.New(f.logs),
+		DeploymentID: f.dep.ID,
+		CoderURL:     f.dep.CoderURL,
+		Store:        f.store,
+		Verifier:     f.verifier,
+		Audit:        f.audit,
+		Logger:       slog.New(f.logs),
 	}
 }
 

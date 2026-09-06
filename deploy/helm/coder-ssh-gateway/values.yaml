@@ -14,19 +14,6 @@ coder:
   domain: coder.com
 
 gateway:
-  # Reserved OUTER usernames clients can connect as, both also used in
-  # users' ssh configs:
-  #   transportUser — the raw-transport (ProxyJump) name: ssh -J
-  #     <transportUser>@gateway workspace-connections tunnel as raw
-  #     direct-tcpip channels. Workspace connections (general@gateway)
-  #     ignore it. Rename to keep scanners guessing.
-  #   maintenanceUser — the renewal name: reconnect and paste a fresh
-  #     Coder token when the stored one expires.
-  # NOT the username inside the workspace: that is the workspace agent's
-  # own user, set by the workspace template (the Coder CLI takes no
-  # username for it).
-  transportUser: coder
-  maintenanceUser: auth
   autostart: true
   wait: auto          # yes | no | auto
   auditRetentionDays: 90

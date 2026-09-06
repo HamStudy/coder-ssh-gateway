@@ -80,15 +80,19 @@ func EnrollmentCandidatePermissions(keyDigestHex string) *ssh.Permissions {
 	}
 }
 
-func FinalTransportPermissions(accountID, deploymentID, keyID uuid.UUID, generation int64, mustReconnect bool) *ssh.Permissions {
-	return finalWorkspacePermissions(ModeTransport, accountID, deploymentID, keyID, generation, mustReconnect)
-}
-
 // FinalWorkspacePermissions records an authenticated workspace-session mode.
 // The route itself is intentionally not copied into Permissions: it remains
 // the SSH username and is parsed after authentication by the server.
 func FinalWorkspacePermissions(accountID, deploymentID, keyID uuid.UUID, generation int64) *ssh.Permissions {
 	return finalWorkspacePermissions(ModeWorkspace, accountID, deploymentID, keyID, generation, false)
+}
+
+// FinalEnrollmentPermissions authenticates a completed enrollment. The
+// connection has no workspace target (the outer username was the
+// enrollment name), so it is flagged for immediate close (§13.6) instead
+// of entering the channel dispatch.
+func FinalEnrollmentPermissions(accountID, deploymentID, keyID uuid.UUID, generation int64) *ssh.Permissions {
+	return finalWorkspacePermissions(ModeWorkspace, accountID, deploymentID, keyID, generation, true)
 }
 
 func finalWorkspacePermissions(mode string, accountID, deploymentID, keyID uuid.UUID, generation int64, mustReconnect bool) *ssh.Permissions {
@@ -133,7 +137,7 @@ func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
 	ext := perms.Extensions
 
 	mode := ext[PermissionMode]
-	if mode != ModeTransport && mode != ModeWorkspace {
+	if mode != ModeWorkspace {
 		return FinalPerms{}, fmt.Errorf("%w: %q", ErrInvalidMode, mode)
 	}
 

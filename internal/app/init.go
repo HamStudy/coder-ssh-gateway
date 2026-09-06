@@ -338,8 +338,6 @@ listen:
   # proxy_protocol: false       # enable only behind a PROXY-v1-speaking load balancer
 
 ssh:
-  transport_user: coder         # SSH username for workspace transport
-  maintenance_user: auth        # SSH username for the credential-maintenance session
   host_keys:
     - secrets/ssh_host_ed25519_key # BACK UP
 

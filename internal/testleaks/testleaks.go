@@ -1,7 +1,9 @@
 // Package testleaks provides a helper to detect goroutine leaks in tests.
 //
 // Convention: every server/tunnel/store package test file should call
-//   defer testleaks.Verify(t)
+//
+//	defer testleaks.Verify(t)
+//
 // or use TestMain with goleak.VerifyTestMain.
 //
 // This package wraps goleak.VerifyNone with standard ignore options

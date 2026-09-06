@@ -51,7 +51,6 @@ type Listen struct {
 }
 
 type SSH struct {
-	TransportUser        string   `yaml:"transport_user"`
 	MaintenanceUser      string   `yaml:"maintenance_user"`
 	ServerVersion        string   `yaml:"server_version"`
 	HostKeys             []string `yaml:"host_keys"`
@@ -150,8 +149,6 @@ func Default() *Config {
 			ProxyProtocol:      false,
 		},
 		SSH: SSH{
-			TransportUser:        "coder",
-			ServerVersion:        "SSH-2.0-CoderSSHGW_0.1",
 			AllowSSHCertificates: false,
 		},
 		State: State{

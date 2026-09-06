@@ -47,54 +47,51 @@ type directTCPIPRequest struct {
 // §8.5 reason matrix. direct-tcpip admission runs in its own goroutine so a
 // slow credential revalidation never blocks sibling channel opens (§19.9
 // multiplexing).
-func (s *Server) dispatchTransportChannels(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, channels <-chan ssh.NewChannel) {
-	log := s.log.With(slog.String("connection_id", state.ID()))
-	var wg sync.WaitGroup
-	for newCh := range channels {
-		if newCh.ChannelType() != "direct-tcpip" {
-			s.rejectUnsupportedChannel(log, newCh)
-			continue
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			s.admitDirectTCPIP(ctx, state, perms, newCh)
-		}()
-	}
-	wg.Wait()
-}
-
 // rejectUnsupportedChannel maps §8.3 rejections to §8.5 reason codes.
 // `session` is a known type rejected by policy → Prohibited; every other
 // type is unsupported by this server → UnknownChannelType.
 func (s *Server) rejectUnsupportedChannel(log *slog.Logger, newCh ssh.NewChannel) {
 	s.rec.ChannelRejected()
 	chType := newCh.ChannelType()
-	if chType == "session" {
-		log.Debug("rejecting session channel in transport mode (§8.3)")
-		_ = newCh.Reject(ssh.Prohibited, "session channels are not permitted in transport mode")
-		return
-	}
 	log.Debug("rejecting unsupported channel type", slog.String("channel_type", chType))
 	_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
 }
 
+// dispatchWorkspaceChannels implements §8.3 for workspace connections.
+// The username is the workspace target for session channels; direct-tcpip
+// channels are admitted for any authenticated connection so ProxyJump,
+// SFTP, and agent forwarding work without a reserved username. Session
+// channels: exactly one (first wins), each bridged to a fresh inner
+// `coder ssh --stdio` session.
 func (s *Server) dispatchWorkspaceChannels(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, target string, channels <-chan ssh.NewChannel) {
 	served := false
+	var wg sync.WaitGroup
 	for newCh := range channels {
-		if newCh.ChannelType() != "session" || served || s.cfg.WorkspaceSessionStarter == nil {
-			s.rec.ChannelRejected()
-			_ = newCh.Reject(ssh.Prohibited, "workspace connections permit one session channel")
-			continue
+		switch newCh.ChannelType() {
+		case "session":
+			if served || s.cfg.WorkspaceSessionStarter == nil {
+				s.rec.ChannelRejected()
+				_ = newCh.Reject(ssh.Prohibited, "workspace connections permit one session channel")
+				continue
+			}
+			if s.draining.Load() {
+				s.rec.ChannelRejected()
+				_ = newCh.Reject(ssh.Prohibited, "server is shutting down")
+				continue
+			}
+			served = true
+			s.admitWorkspaceSession(ctx, state, perms, target, newCh)
+		case "direct-tcpip":
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.admitDirectTCPIP(ctx, state, perms, newCh)
+			}()
+		default:
+			s.rejectUnsupportedChannel(s.log.With(slog.String("connection_id", state.ID())), newCh)
 		}
-		if s.draining.Load() {
-			s.rec.ChannelRejected()
-			_ = newCh.Reject(ssh.Prohibited, "server is shutting down")
-			continue
-		}
-		served = true
-		s.admitWorkspaceSession(ctx, state, perms, target, newCh)
 	}
+	wg.Wait()
 }
 
 func (s *Server) admitWorkspaceSession(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, target string, newCh ssh.NewChannel) {

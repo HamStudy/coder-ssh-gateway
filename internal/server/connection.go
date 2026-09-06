@@ -217,12 +217,9 @@ func (s *Server) handleConn(raw net.Conn) {
 		s.handleGlobalRequests(connCtx, state, requests)
 	}()
 
-	// §8.3 dispatch: transport mode admits only direct-tcpip (T16);
-	// workspace mode admits session channels for the username's target plus
-	// direct-tcpip raw transport.
+	// §8.3 dispatch: workspace connections admit session channels (target =
+	// username) and direct-tcpip raw transport, in any order.
 	switch perms.Mode {
-	case sshauth.ModeTransport:
-		s.dispatchTransportChannels(connCtx, state, perms, channels)
 	case sshauth.ModeWorkspace:
 		s.dispatchWorkspaceChannels(connCtx, state, perms, serverConn.User(), channels)
 	default:

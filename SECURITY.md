@@ -144,9 +144,10 @@ their `known_hosts` records and pin the new fingerprint. Verify with
 
 For each affected Coder user, revoke the existing session token in
 Coder (the gateway holds encrypted copies; revoking at Coder is the
-authoritative action). Have users reconnect through the maintenance
-user and paste fresh tokens. Verify: the revoked token is rejected at the
-next workspace connect (`AUTH_CREDENTIAL_UNAUTHORIZED` in the audit log).
+authoritative action). Have users reconnect; the gateway prompts them
+inline for fresh tokens on the next workspace connect. Verify: the
+revoked token is rejected at the next workspace connect
+(`AUTH_CREDENTIAL_UNAUTHORIZED` in the audit log).
 Procedure:
 [Client Setup → Credential maintenance](./docs/client-setup.md#credential-maintenance).
 
@@ -185,7 +186,7 @@ after confirming the backups themselves were not touched. Procedure:
 | Threat | Mitigations | Residual risk |
 | --- | --- | --- |
 | Internet client without an approved key | Public-key-only first factor; no top-level password/token login; handshake and per-IP rate limits; safe SSH algorithm set; byte-identical generic rejection for unknown key, wrong username, disabled account, and certificates (no existence oracle). | Scanning cost is bounded by limits, not eliminated. |
-| Stolen approved SSH private key | Fast key disable/revocation (`admin key disable`); per-account connection limits; full audit trail. | Attacker can ride a still-valid stored Coder token until the key is disabled; token replacement in maintenance mode additionally requires a valid token for the SAME bound Coder UUID. |
+| Stolen approved SSH private key | Fast key disable/revocation (`admin key disable`); per-account connection limits; full audit trail. | Attacker can ride a still-valid stored Coder token until the key is disabled; inline token replacement additionally requires a valid token for the SAME bound Coder UUID. |
 | Token for the wrong Coder account | Immutable Coder user UUID comparison before storage; wrong-identity submissions are audited as security events (`ssh_wrong_user_token`); no username-only binding. | Operator mis-binding at enrollment. |
 | State-dir (backup) theft | AES-256-GCM envelope encryption with per-write random nonce; AAD binds deployment, account, and generation so ciphertexts cannot be transplanted; encryption key stored separately from records; 0600/0700 permissions; backup separation mandated. | A backup of the state dir PLUS the encryption key yields all stored tokens. Restrict access to both. |
 | Gateway host compromise | Minimal host/container image; non-root service; read-only root filesystem; dropped capabilities; pinned and checksummed CLI; disabled core dumps; no public pprof; systemd sandboxing. | Mitigations reduce probability, NOT impact. A compromised gateway can decrypt stored tokens, alter the CLI, proxy or substitute workspace sessions, and capture newly entered tokens. Treat the gateway as a high-value credential broker and defend it accordingly. |

@@ -8,7 +8,7 @@ import (
 // Independent restatements of the accepted grammar (ParseBareTarget's
 // contract): dotted 1-3 labels, or slashed 2-3 labels, never mixed.
 var (
-	safeDottedRE = regexp.MustCompile(`^[a-z0-9-]+(?:\.[a-z0-9-]+){0,2}$`)
+	safeDottedRE  = regexp.MustCompile(`^[a-z0-9-]+(?:\.[a-z0-9-]+){0,2}$`)
 	safeSlashedRE = regexp.MustCompile(`^[a-z0-9-]+(?:/[a-z0-9-]+){1,2}$`)
 )
 

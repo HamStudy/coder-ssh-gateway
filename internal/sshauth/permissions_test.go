@@ -26,50 +26,21 @@ func TestCandidatePermissions(t *testing.T) {
 	}
 }
 
-func TestFinalTransportPermissions(t *testing.T) {
-	accountID := uuid.New()
-	deploymentID := uuid.New()
-	keyID := uuid.New()
-	generation := int64(42)
-
-	perms := sshauth.FinalTransportPermissions(accountID, deploymentID, keyID, generation, false)
-
-	ext := perms.Extensions
-	if ext["gateway.mode"] != string(sshauth.ModeTransport) {
-		t.Errorf("mode = %q, want %q", ext["gateway.mode"], string(sshauth.ModeTransport))
-	}
-	if ext["gateway.account_id"] != accountID.String() {
-		t.Errorf("account_id = %q, want %q", ext["gateway.account_id"], accountID.String())
-	}
-	if ext["gateway.deployment_id"] != deploymentID.String() {
-		t.Errorf("deployment_id = %q, want %q", ext["gateway.deployment_id"], deploymentID.String())
-	}
-	if ext["gateway.ssh_key_id"] != keyID.String() {
-		t.Errorf("ssh_key_id = %q, want %q", ext["gateway.ssh_key_id"], keyID.String())
-	}
-	if ext["gateway.credential_generation"] != "42" {
-		t.Errorf("credential_generation = %q, want %q", ext["gateway.credential_generation"], "42")
-	}
-	if ext["gateway.must_reconnect"] != "false" {
-		t.Errorf("must_reconnect = %q, want %q", ext["gateway.must_reconnect"], "false")
-	}
-}
-
 func TestParseFinalPermissions_RoundTrip(t *testing.T) {
 	accountID := uuid.New()
 	deploymentID := uuid.New()
 	keyID := uuid.New()
 	generation := int64(99)
 
-	built := sshauth.FinalTransportPermissions(accountID, deploymentID, keyID, generation, true)
+	built := sshauth.FinalWorkspacePermissions(accountID, deploymentID, keyID, generation)
 
 	parsed, err := sshauth.ParseFinalPermissions(built)
 	if err != nil {
 		t.Fatalf("ParseFinalPermissions() error = %v", err)
 	}
 
-	if parsed.Mode != sshauth.ModeTransport {
-		t.Errorf("Mode = %v, want %v", parsed.Mode, sshauth.ModeTransport)
+	if parsed.Mode != sshauth.ModeWorkspace {
+		t.Errorf("Mode = %v, want %v", parsed.Mode, sshauth.ModeWorkspace)
 	}
 	if parsed.AccountID != accountID {
 		t.Errorf("AccountID = %v, want %v", parsed.AccountID, accountID)
@@ -83,8 +54,8 @@ func TestParseFinalPermissions_RoundTrip(t *testing.T) {
 	if parsed.CredentialGeneration != generation {
 		t.Errorf("CredentialGeneration = %v, want %v", parsed.CredentialGeneration, generation)
 	}
-	if !parsed.MustReconnect {
-		t.Error("MustReconnect = false, want true")
+	if parsed.MustReconnect {
+		t.Error("MustReconnect = true, want false")
 	}
 }
 
@@ -120,7 +91,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "non-integer generation",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":                  "transport",
+					"gateway.mode":                  "workspace",
 					"gateway.account_id":            uuid.New().String(),
 					"gateway.deployment_id":         uuid.New().String(),
 					"gateway.ssh_key_id":            uuid.New().String(),
@@ -133,7 +104,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "negative generation",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":                  "transport",
+					"gateway.mode":                  "workspace",
 					"gateway.account_id":            uuid.New().String(),
 					"gateway.deployment_id":         uuid.New().String(),
 					"gateway.ssh_key_id":            uuid.New().String(),
@@ -157,7 +128,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "empty account_id",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":       "transport",
+					"gateway.mode":       "workspace",
 					"gateway.account_id": "",
 					"gateway.ssh_key_id": uuid.New().String(),
 				},
@@ -168,7 +139,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "invalid account_id uuid",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":       "transport",
+					"gateway.mode":       "workspace",
 					"gateway.account_id": "not-a-uuid",
 					"gateway.ssh_key_id": uuid.New().String(),
 				},
@@ -179,7 +150,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "zero account_id",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":       "transport",
+					"gateway.mode":       "workspace",
 					"gateway.account_id": uuid.Nil.String(),
 					"gateway.ssh_key_id": uuid.New().String(),
 				},
@@ -190,7 +161,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "zero ssh_key_id",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":       "transport",
+					"gateway.mode":       "workspace",
 					"gateway.account_id": uuid.New().String(),
 					"gateway.ssh_key_id": uuid.Nil.String(),
 				},
@@ -201,7 +172,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "malformed must_reconnect",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":                  "transport",
+					"gateway.mode":                  "workspace",
 					"gateway.account_id":            uuid.New().String(),
 					"gateway.deployment_id":         uuid.New().String(),
 					"gateway.ssh_key_id":            uuid.New().String(),
@@ -215,7 +186,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "transport without deployment_id",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":       "transport",
+					"gateway.mode":       "workspace",
 					"gateway.account_id": uuid.New().String(),
 					"gateway.ssh_key_id": uuid.New().String(),
 				},
@@ -226,7 +197,7 @@ func TestParsePermissions_RejectsMalformed(t *testing.T) {
 			name: "zero deployment_id",
 			perms: &ssh.Permissions{
 				Extensions: map[string]string{
-					"gateway.mode":          "transport",
+					"gateway.mode":          "workspace",
 					"gateway.account_id":    uuid.New().String(),
 					"gateway.deployment_id": uuid.Nil.String(),
 					"gateway.ssh_key_id":    uuid.New().String(),
@@ -253,7 +224,7 @@ func TestParsePermissions_RejectsTampered(t *testing.T) {
 	t.Run("missing critical key", func(t *testing.T) {
 		perms := &ssh.Permissions{
 			Extensions: map[string]string{
-				"gateway.mode":       "transport",
+				"gateway.mode":       "workspace",
 				"gateway.account_id": uuid.New().String(),
 			},
 		}
@@ -267,7 +238,7 @@ func TestParsePermissions_RejectsTampered(t *testing.T) {
 		accountID := uuid.New()
 		deploymentID := uuid.New()
 		keyID := uuid.New()
-		perms := sshauth.FinalTransportPermissions(accountID, deploymentID, keyID, 1, false)
+		perms := sshauth.FinalWorkspacePermissions(accountID, deploymentID, keyID, 1)
 		perms.Extensions["gateway.extra_field"] = "disallowed"
 		_, err := sshauth.ParseFinalPermissions(perms)
 		if err == nil {
@@ -279,9 +250,6 @@ func TestParsePermissions_RejectsTampered(t *testing.T) {
 func TestModeConstants(t *testing.T) {
 	if sshauth.ModeCandidate != "candidate" {
 		t.Errorf("ModeCandidate = %q, want %q", sshauth.ModeCandidate, "candidate")
-	}
-	if sshauth.ModeTransport != "transport" {
-		t.Errorf("ModeTransport = %q, want %q", sshauth.ModeTransport, "transport")
 	}
 }
 

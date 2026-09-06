@@ -742,8 +742,6 @@ wins over both `state.dir` in YAML and any default.
 | `listen.renewal_auth_timeout` | `5m` | Handshake deadline extension while a credential renewal prompt is open. |
 | `listen.tcp_keepalive` | `30s` | TCP keepalive on accepted connections. Must be positive; 0 is rejected at startup. |
 | `listen.proxy_protocol` | `false` | Accept PROXY v1 headers. Enable only behind a trusted balancer; never auto-detected. |
-| `ssh.transport_user` | `coder` | SSH username for workspace transport connections. |
-| `ssh.maintenance_user` | `auth` | SSH username for the credential-maintenance session. |
 | `ssh.server_version` | `SSH-2.0-CoderSSHGW_0.1` | SSH protocol version banner. |
 | `ssh.host_keys` | `secrets/ssh_host_ed25519_key` (config-file-relative) | Host private key paths. Multiple keys supported for rotation. Startup fails if none load. |
 | `ssh.allow_ssh_certificates` | `false` | Reserved for schema compatibility; `true` is rejected at startup. |
@@ -781,12 +779,8 @@ wins over both `state.dir` in YAML and any default.
 | `limits.renewal_attempts_per_account_per_minute` | `5` | Renewal rate limit per account. |
 | `limits.process_shutdown_grace` | `5s` | Grace between SIGTERM and SIGKILL for child processes. |
 | `limits.stderr_buffer_bytes` | `65536` | Bounded ring for child stderr diagnostics. |
-| `maintenance.enabled` | `true` | Enable the maintenance session (`auth` user). |
-| `maintenance.session_timeout` | `5m` | Whole-session bound for maintenance. |
-| `maintenance.input_timeout` | `2m` | Negotiation and per-keystroke bound. |
-| `maintenance.bind_on_first_token_requires_admin_flag` | `true` | First-token binding only for accounts created with `--bind-on-first-token`. |
 | `enrollment.enabled` | `true` | Enable the login@ token-anchored self-enrollment flow. |
-| `enrollment.user` | `init` | SSH username that triggers enrollment; must differ from transport and maintenance users. |
+| `enrollment.user` | `login` | SSH username that triggers enrollment. |
 | `enrollment.max_attempts` | `3` | Token submissions allowed per enrollment connection. |
 | `enrollment.timeout` | `5m` | Handshake deadline extension while an enrollment token prompt is open. |
 | `observability.log_format` | `json` | `json` or `text`. |

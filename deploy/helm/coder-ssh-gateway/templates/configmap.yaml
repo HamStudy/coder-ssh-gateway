@@ -24,8 +24,6 @@ data:
             "metrics_address" "0.0.0.0:9090"
             "health_address" "0.0.0.0:9091")
           "ssh" (dict
-            "transport_user" .Values.gateway.transportUser
-            "maintenance_user" .Values.gateway.maintenanceUser
             "host_keys" (list $hostKeyPath))
           "state" (dict "audit_retention_days" .Values.gateway.auditRetentionDays)
           "encryption" (dict

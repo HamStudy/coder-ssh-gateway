@@ -256,8 +256,8 @@ func TestWireEnrollmentFirstSystem(t *testing.T) {
 	if perms.AccountID != account.ID {
 		t.Errorf("perms account = %v, want %v", perms.AccountID, account.ID)
 	}
-	if perms.Mode != sshauth.ModeTransport {
-		t.Errorf("mode = %q, want transport", perms.Mode)
+	if perms.Mode != sshauth.ModeWorkspace {
+		t.Errorf("mode = %q, want workspace", perms.Mode)
 	}
 	if perms.CredentialGeneration != 1 {
 		t.Errorf("generation = %d, want 1", perms.CredentialGeneration)
@@ -619,7 +619,7 @@ func TestWireEnrollmentThenTransportAuth(t *testing.T) {
 		t.Fatalf("server handshake error: %v", res.err)
 	}
 	perms := mustParseFinalPerms(t, res.perms)
-	if perms.Mode != sshauth.ModeTransport || perms.MustReconnect {
+	if perms.Mode != sshauth.ModeWorkspace || perms.MustReconnect {
 		t.Errorf("unexpected perms: %+v", perms)
 	}
 	if perms.AccountID != enrollPerms.AccountID || perms.SSHKeyID != enrollPerms.SSHKeyID {

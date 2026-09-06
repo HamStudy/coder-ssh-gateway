@@ -147,7 +147,6 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		}
 	}
 	authCfg := sshauth.AuthConfig{
-		TransportUser:      cfg.SSH.TransportUser,
 		DeploymentID:       dep.ID,
 		CoderURL:           dep.CoderURL,
 		RenewalAuthTimeout: cfg.Listen.RenewalAuthTimeout.Std(),

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/google/uuid"
 )
 
 func TestCredentialState(t *testing.T) {

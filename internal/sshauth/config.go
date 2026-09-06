@@ -30,9 +30,6 @@ type CachedTokenVerifier interface {
 // AuthConfig carries the dependencies and policy knobs for the SSH auth
 // callbacks. BuildCallbacks fails closed when the config is invalid.
 type AuthConfig struct {
-	// TransportUser is the outer username for workspace transport (§8.1,
-	// default "coder").
-	TransportUser string
 	// DeploymentID scopes key lookup and credential verification to one
 	// Coder deployment.
 	DeploymentID uuid.UUID
@@ -70,9 +67,6 @@ type AuthConfig struct {
 // validate enforces fail-closed construction: any missing dependency makes
 // every callback reject.
 func (c AuthConfig) validate() error {
-	if c.TransportUser == "" {
-		return errors.New("sshauth: transport username is required")
-	}
 	if c.DeploymentID == uuid.Nil {
 		return errors.New("sshauth: deployment ID is required")
 	}
@@ -83,9 +77,6 @@ func (c AuthConfig) validate() error {
 		user := c.enrollmentUser()
 		if user == "" {
 			return errors.New("sshauth: enabled enrollment requires an enrollment username")
-		}
-		if user == c.TransportUser {
-			return errors.New("sshauth: enrollment username must differ from the transport username")
 		}
 		if c.Enrollment.Verifier == nil || c.Enrollment.Store == nil {
 			return errors.New("sshauth: enabled enrollment requires verifier and store")

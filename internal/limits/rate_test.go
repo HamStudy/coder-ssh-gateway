@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/HamStudy/coder-ssh-gateway/internal/config"
+	"github.com/google/uuid"
 )
 
 func TestRateLimitsPreAuthIP(t *testing.T) {

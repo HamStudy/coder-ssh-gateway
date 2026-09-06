@@ -82,13 +82,8 @@ listen:
                                             # ignored and the socket peer
                                             # is used.
 
-# SSH user namespaces.
+# SSH server presentation.
 ssh:
-  transport_user: coder                     # [DEFAULT] username for
-                                            # workspace transport
-  maintenance_user: auth                    # [DEFAULT] username for the
-                                            # credential-maintenance
-                                            # session
   server_version: "SSH-2.0-CoderSSHGW_0.1"  # [DEFAULT] banner clients see.
                                             # Not a security boundary.
   host_keys:
@@ -248,9 +243,7 @@ enrollment:
                                             # out-of-band admin
                                             # provisioning is permitted
   user: login                               # [DEFAULT] SSH username that
-                                            # triggers enrollment; must
-                                            # differ from transport_user
-                                            # and maintenance_user
+                                            # triggers enrollment
   max_attempts: 3                           # [DEFAULT] token submissions
                                             # allowed per enrollment
                                             # connection

@@ -166,9 +166,10 @@ authentication methods.
    [Client Setup → Initial enrollment](./client-setup.md#initial-enrollment-the-one-time-step)
    enables those methods. Without it, OpenSSH silently gives up after
    the public-key check.
-2. **Same host block, different user.** Use the same
-   `PreferredAuthentications publickey,keyboard-interactive,password`
-   block for the maintenance user (`auth`), not just `init`.
+2. **Allow the follow-up methods on the workspace block too.** Use the
+   same `PreferredAuthentications publickey,keyboard-interactive,password`
+   block for your workspace connection, not just the enrollment one —
+   an expired token prompts on the next workspace connect.
 3. **Check audit logs.** Look for
    `event_type=ssh_credential_renewal` or
    `event_type=enrollment_rejected` to confirm whether the gateway is
@@ -245,12 +246,14 @@ Most likely cause: the stored Coder session token is missing or
 expired. The gateway offers a renewal prompt after key auth when this
 happens.
 
-1. **Reconnect through the maintenance user** to paste a fresh token:
+1. **Reconnect to the workspace as usual** — the gateway prompts for a
+   fresh token inline:
    ```bash
-   ssh -p 2222 auth@gateway.example.com
+   ssh -p 2222 general@gateway.example.com
    ```
    The prompt is hidden. Paste the new token from
-   `https://coder.example.com/cli-auth`.
+   `https://coder.example.com/cli-auth` and the session continues into
+   the workspace.
 2. **If your client doesn't render the prompt**, use the dedicated
    host block from
    [Credential maintenance](./client-setup.md#credential-maintenance)

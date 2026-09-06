@@ -61,8 +61,9 @@ Connection to gateway.example.com closed.
 ```
 
 It's your workspace — your shell, your dotfiles, your files. When a
-stored token eventually expires, a quick reconnect through the `auth`
-user lets you paste a fresh one ([renewal](./docs/client-setup.md#credential-maintenance)).
+stored token eventually expires, your next connection simply prompts
+for a fresh one and continues on through
+([renewal](./docs/client-setup.md#credential-maintenance)).
 
 ## Installing
 

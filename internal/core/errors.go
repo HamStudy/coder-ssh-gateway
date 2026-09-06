@@ -9,9 +9,9 @@ type CredentialErrorKind string
 
 const (
 	CredentialMissing        CredentialErrorKind = "missing"
-	CredentialInvalid       CredentialErrorKind = "invalid"
-	CredentialForbidden     CredentialErrorKind = "forbidden"
-	CredentialWrongIdentity CredentialErrorKind = "wrong_identity"
+	CredentialInvalid        CredentialErrorKind = "invalid"
+	CredentialForbidden      CredentialErrorKind = "forbidden"
+	CredentialWrongIdentity  CredentialErrorKind = "wrong_identity"
 	CredentialMalformedReply CredentialErrorKind = "malformed_reply"
 	ControlPlaneUnavailable  CredentialErrorKind = "control_plane_unavailable"
 	ControlPlaneIncompatible CredentialErrorKind = "control_plane_incompatible"

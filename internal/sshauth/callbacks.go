@@ -64,7 +64,7 @@ func (c AuthConfig) publicKeyCallback(state *ConnState, cfgErr error, meta ssh.C
 	}
 
 	user := meta.User()
-	if user != c.TransportUser {
+	{
 		// CD-2: the enrollment user is the only other recognized username,
 		// and only while enrollment is armed; otherwise it rejects
 		// identically to any unknown username (§35).
@@ -165,9 +165,6 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 			log.Warn("credential resolved to wrong Coder identity",
 				slog.String("account_id", account.ID.String()))
 			return nil, reject("wrong_coder_identity", core.AUTH_WRONG_CODER_IDENTITY, account.ID, keyRecord.ID)
-		}
-		if meta.User() == c.TransportUser {
-			return FinalTransportPermissions(account.ID, c.DeploymentID, keyRecord.ID, snap.Generation, false), nil
 		}
 		return FinalWorkspacePermissions(account.ID, c.DeploymentID, keyRecord.ID, snap.Generation), nil
 	}
