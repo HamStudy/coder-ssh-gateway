@@ -143,9 +143,11 @@ One paragraph per moving part:
 - **Each session becomes a Coder session.** For every accepted SSH
   channel the gateway spawns an isolated
   `coder ssh --stdio` child and bridges your terminal to it. Shell,
-  exec, PTY, signals, and window changes all pass through (direct
-  mode); ProxyJump is available when a client needs exotic inner-SSH
-  features like SFTP or agent forwarding.
+  exec, PTY, signals, and window changes pass through, plus SFTP/scp,
+  agent forwarding (`ssh -A`), and port forwarding (`-L`/`-R`/`-D`) —
+  forwarding targets resolve inside the workspace, so `-L
+  8080:localhost:8080` reaches your workspace's dev server. ProxyJump
+  syntax also works for anything the bridge does not carry.
 - **The username routes the connection.** `general` is your workspace,
   `general.main` names a specific agent. To reach a teammate's
   workspace, prefix the owner: `alicia/general` or

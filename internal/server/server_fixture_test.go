@@ -114,8 +114,9 @@ type gwFixture struct {
 	logs     *logCapture
 	coder    *httptest.Server
 	verifier *coderapi.CachedVerifier
-	codec    *route.Codec
-	starter  *fakeTunnelStarter
+	codec      *route.Codec
+	starter    *fakeTunnelStarter
+	transports *fakeTransportFactory
 }
 
 func (f *gwFixture) close(t *testing.T) {
@@ -201,6 +202,7 @@ func newFixture(t *testing.T, handler http.Handler) *gwFixture {
 
 	f.codec = route.NewCodec()
 	f.starter = newFakeTunnelStarter("TUNNEL-OK")
+	f.transports = newFakeTransportFactory()
 
 	return f
 }
@@ -282,12 +284,13 @@ func startTestServer(t *testing.T, f *gwFixture, mutate func(*server.ServerConfi
 
 	limitsCfg := config.Default()
 	sc := server.ServerConfig{
-		HostSigners:   []ssh.Signer{hostSigner(t)},
-		Auth:          f.authConfig(),
-		Audit:         f.audit,
-		Logger:        slog.New(f.logs),
-		RouteCodec:    f.codec,
-		TunnelStarter: f.starter,
+		HostSigners:         []ssh.Signer{hostSigner(t)},
+		Auth:                f.authConfig(),
+		Audit:               f.audit,
+		Logger:              slog.New(f.logs),
+		RouteCodec:          f.codec,
+		TunnelStarter:       f.starter,
+		WorkspaceTransports: f.transports,
 	}
 	if mutate != nil {
 		mutate(&sc, limitsCfg)

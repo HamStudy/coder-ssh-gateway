@@ -13,13 +13,16 @@ import (
 
 	"github.com/HamStudy/coder-ssh-gateway/internal/audit"
 	"github.com/HamStudy/coder-ssh-gateway/internal/core"
-	"github.com/HamStudy/coder-ssh-gateway/internal/server"
 	"github.com/HamStudy/coder-ssh-gateway/internal/testleaks"
 	"github.com/HamStudy/coder-ssh-gateway/internal/testutil"
 	"github.com/HamStudy/coder-ssh-gateway/internal/testutil/innerssh"
 )
 
-var _ server.TunnelStarter = (*TunnelStarter)(nil)
+// server.TunnelStarter declared structurally to avoid a test-only import
+// cycle (server imports tunnel).
+var _ interface {
+	Start(ctx context.Context, channel ssh.Channel, route core.Route, credential core.CredentialSnapshot) error
+} = (*TunnelStarter)(nil)
 
 func testDeployment(t *testing.T, bin string) core.Deployment {
 	t.Helper()

@@ -15,6 +15,7 @@ import (
 	"github.com/HamStudy/coder-ssh-gateway/internal/config"
 	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 	"github.com/HamStudy/coder-ssh-gateway/internal/server"
+	"github.com/HamStudy/coder-ssh-gateway/internal/tunnel"
 )
 
 // fakeTunnelCall is one recorded TunnelStarter invocation.
@@ -36,6 +37,95 @@ type fakeTunnelStarter struct {
 
 func newFakeTunnelStarter(marker string) *fakeTunnelStarter {
 	return &fakeTunnelStarter{marker: marker}
+}
+
+// fakeTransportFactory stands in for the tunnel.TransportFactory: it records
+// creation calls and every relayed channel/global request.
+type fakeTransportFactory struct {
+	mu        sync.Mutex
+	created   int
+	targets   []string
+	withToken []bool
+	tr        *fakeTransport
+}
+
+func newFakeTransportFactory() *fakeTransportFactory {
+	f := &fakeTransportFactory{}
+	f.tr = &fakeTransport{owner: f}
+	return f
+}
+
+func (f *fakeTransportFactory) NewTransport(ctx context.Context, target string, snap core.CredentialSnapshot, out ssh.Conn) (tunnel.WorkspaceTransport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.created++
+	f.targets = append(f.targets, target)
+	f.withToken = append(f.withToken, len(snap.Token) > 0)
+	return f.tr, nil
+}
+
+type fakeTransport struct {
+	owner    *fakeTransportFactory
+	channels []string
+	globals  []string
+}
+
+func (t *fakeTransport) recordChannel(typ string) {
+	t.owner.mu.Lock()
+	defer t.owner.mu.Unlock()
+	t.channels = append(t.channels, typ)
+}
+
+func (t *fakeTransport) recordGlobal(typ string) {
+	t.owner.mu.Lock()
+	defer t.owner.mu.Unlock()
+	t.globals = append(t.globals, typ)
+}
+
+func (t *fakeTransport) counts() (channels, globals int) {
+	t.owner.mu.Lock()
+	defer t.owner.mu.Unlock()
+	return len(t.channels), len(t.globals)
+}
+
+func (t *fakeTransport) BridgeSession(ctx context.Context, ch ssh.Channel, requests <-chan *ssh.Request) error {
+	for req := range requests {
+		accepted := req.Type == "shell" || req.Type == "exec" || req.Type == "pty-req"
+		if req.WantReply {
+			_ = req.Reply(accepted, nil)
+		}
+	}
+	return nil
+}
+
+func (t *fakeTransport) RelayChannel(newCh ssh.NewChannel) {
+	t.recordChannel(newCh.ChannelType())
+	ch, requests, err := newCh.Accept()
+	if err != nil {
+		return
+	}
+	go func() {
+		for req := range requests {
+			if req.WantReply {
+				_ = req.Reply(false, nil)
+			}
+		}
+	}()
+	_, _ = io.Copy(io.Discard, ch)
+	_ = ch.Close()
+}
+
+func (t *fakeTransport) RelayGlobalRequest(reqType string, wantReply bool, payload []byte) (bool, []byte) {
+	t.recordGlobal(reqType)
+	return true, nil
+}
+
+func (t *fakeTransport) Close() {}
+
+func (f *fakeTunnelStarter) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
 }
 
 func (f *fakeTunnelStarter) Start(ctx context.Context, ch ssh.Channel, rt core.Route, snap core.CredentialSnapshot) error {
@@ -206,9 +296,11 @@ func TestDirectTCPIPFullPath(t *testing.T) {
 	})
 }
 
-// §8.3/§8.5 rejection matrix for transport mode: each disallowed open maps
-// to the correct RFC 4254 reason and (where routed) the stable detail code.
-func TestTransportChannelRejectionMatrix(t *testing.T) {
+// §8.3 dispatch matrix for workspace connections: arbitrary direct-tcpip
+// targets relay through the connection transport, workspace:22 targets get
+// jump tunnels, malformed payloads are rejected, and exactly one session
+// channel is admitted.
+func TestWorkspaceChannelDispatchMatrix(t *testing.T) {
 	defer leakCheck(t)
 
 	f := newFixture(t, coderOKHandler(testCoderUserID))
@@ -224,37 +316,30 @@ func TestTransportChannelRejectionMatrix(t *testing.T) {
 	}
 	defer client.Close()
 
-	t.Run("port not 22", func(t *testing.T) {
-		_, _, err := openDirectTCPIP(client, "dev", 2222)
-		reason, ok := openChannelReason(err)
-		if !ok || reason != ssh.Prohibited {
-			t.Errorf("err = %v, want OpenChannelError Prohibited", err)
+	t.Run("arbitrary target relays through transport", func(t *testing.T) {
+		channelsBefore, globalsBefore := f.transports.tr.counts()
+		ch, _, err := openDirectTCPIP(client, "localhost", 8080)
+		if err != nil {
+			t.Fatalf("relay open: %v", err)
 		}
-		if !channelAuditHasDetail(f, core.ROUTE_PORT_DENIED) {
-			t.Error("missing audit with ROUTE_PORT_DENIED")
-		}
-	})
-
-	t.Run("IP literal denied", func(t *testing.T) {
-		_, _, err := openDirectTCPIP(client, "192.0.2.1", 22)
-		reason, ok := openChannelReason(err)
-		if !ok || reason != ssh.Prohibited {
-			t.Errorf("err = %v, want OpenChannelError Prohibited", err)
-		}
-		if !channelAuditHasDetail(f, core.ROUTE_NAME_INVALID) {
-			t.Error("missing audit with ROUTE_NAME_INVALID")
+		_ = ch.Close()
+		waitFor(t, 5*time.Second, func() bool {
+			channels, _ := f.transports.tr.counts()
+			return channels > channelsBefore
+		})
+		if _, globals := f.transports.tr.counts(); globals != globalsBefore {
+			t.Error("unexpected global request relay")
 		}
 	})
 
-	t.Run("too many labels", func(t *testing.T) {
-		_, _, err := openDirectTCPIP(client, "a.b.c.d", 22)
-		reason, ok := openChannelReason(err)
-		if !ok || reason != ssh.Prohibited {
-			t.Errorf("err = %v, want OpenChannelError Prohibited", err)
+	t.Run("workspace target jumps", func(t *testing.T) {
+		callsBefore := f.starter.count()
+		ch, _, err := openDirectTCPIP(client, "dev", 22)
+		if err != nil {
+			t.Fatalf("jump open: %v", err)
 		}
-		if !channelAuditHasDetail(f, core.ROUTE_NAME_INVALID) {
-			t.Error("missing audit with ROUTE_NAME_INVALID")
-		}
+		_ = ch.Close()
+		waitFor(t, 5*time.Second, func() bool { return f.starter.count() > callsBefore })
 	})
 
 	t.Run("malformed payload", func(t *testing.T) {
@@ -269,11 +354,19 @@ func TestTransportChannelRejectionMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("session rejected as policy", func(t *testing.T) {
-		_, _, err := client.OpenChannel("session", nil)
+	t.Run("session admitted once then rejected", func(t *testing.T) {
+		ch, _, err := client.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatalf("first session open: %v", err)
+		}
+		if ok, err := ch.SendRequest("shell", true, nil); err != nil || !ok {
+			t.Errorf("shell request: ok=%v err=%v, want accepted", ok, err)
+		}
+		_ = ch.Close()
+		_, _, err = client.OpenChannel("session", nil)
 		reason, ok := openChannelReason(err)
 		if !ok || reason != ssh.Prohibited {
-			t.Errorf("err = %v, want OpenChannelError Prohibited", err)
+			t.Errorf("second session err = %v, want OpenChannelError Prohibited", err)
 		}
 	})
 
@@ -292,14 +385,7 @@ func TestTransportChannelRejectionMatrix(t *testing.T) {
 			t.Errorf("err = %v, want OpenChannelError UnknownChannelType", err)
 		}
 	})
-
-	if got := len(f.starter.recorded()); got != 0 {
-		t.Errorf("starter calls = %d, want 0 after all rejections", got)
-	}
 }
-
-// §8.5: an exhausted per-connection channel semaphore maps to
-// ResourceShortage and audits TUNNEL_LIMIT_REACHED.
 func TestChannelLimitResourceShortage(t *testing.T) {
 	defer leakCheck(t)
 

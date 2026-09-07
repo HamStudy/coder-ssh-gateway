@@ -211,17 +211,19 @@ func (s *Server) handleConn(raw net.Conn) {
 	connCtx, cancel := context.WithCancel(state.Context())
 	defer cancel()
 
+	wc := &workspaceContext{srv: s, state: state, perms: perms, target: serverConn.User(), out: serverConn}
+
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.handleGlobalRequests(connCtx, state, requests)
+		s.handleGlobalRequests(connCtx, state, wc, requests)
 	}()
 
 	// §8.3 dispatch: workspace connections admit session channels (target =
-	// username) and direct-tcpip raw transport, in any order.
+	// username) and direct-tcpip relays/jumps, in any order.
 	switch perms.Mode {
 	case sshauth.ModeWorkspace:
-		s.dispatchWorkspaceChannels(connCtx, state, perms, serverConn.User(), channels)
+		s.dispatchWorkspaceChannels(connCtx, wc, channels)
 	default:
 		log.Warn("unknown permission mode; closing", slog.String("mode", perms.Mode))
 		rejectChannelAll(channels)

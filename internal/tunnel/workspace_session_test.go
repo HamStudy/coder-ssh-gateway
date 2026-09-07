@@ -25,7 +25,7 @@ func TestWorkspaceSessionStarterStopsStartupWatchdogAfterHandshake(t *testing.T)
 	timerC := make(chan time.Time)
 	registry := NewRegistry()
 	credential := testCredential()
-	starter := &WorkspaceSessionStarter{
+	factory := &TransportFactory{
 		Launcher:        &Launcher{Dep: testDeployment(t, testutil.BuildFakeCoder(t)), Log: slog.New(slog.DiscardHandler)},
 		StartupTimeout:  time.Millisecond,
 		ShutdownGrace:   time.Second,
@@ -36,7 +36,7 @@ func TestWorkspaceSessionStarterStopsStartupWatchdogAfterHandshake(t *testing.T)
 	ch, clientR, clientW := newFakeChannel(t)
 	defer clientR.Close()
 	defer clientW.Close()
-	client, startDone := startWorkspaceSession(t, ch, clientR, clientW, starter, credential)
+	client, startDone, transport := startWorkspaceSession(t, ch, clientR, clientW, factory, credential)
 	session, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -70,8 +70,9 @@ func TestWorkspaceSessionStarterStopsStartupWatchdogAfterHandshake(t *testing.T)
 	case <-time.After(5 * time.Second):
 		t.Fatal("Start did not finish")
 	}
+	(<-transport).Close()
 	if got := len(registry.List()); got != 0 {
-		t.Fatalf("registry entries after session = %d, want 0", got)
+		t.Fatalf("registry entries after close = %d, want 0", got)
 	}
 }
 
@@ -84,17 +85,20 @@ func TestWorkspaceSessionStarterStartupFailureTerminatesChild(t *testing.T) {
 	}
 	timerC := make(chan time.Time, 1)
 	timerC <- time.Now()
-	starter := &WorkspaceSessionStarter{
+	factory := &TransportFactory{
 		Launcher:        &Launcher{Dep: testDeployment(t, bin), Log: slog.New(slog.DiscardHandler)},
 		StartupTimeout:  time.Hour,
 		ShutdownGrace:   time.Second,
 		NewStartupTimer: func(time.Duration) (<-chan time.Time, func()) { return timerC, func() {} },
 	}
-	ch, clientR, clientW := newFakeChannel(t)
+	_, clientR, clientW := newFakeChannel(t)
 	defer clientR.Close()
 	defer clientW.Close()
 	done := make(chan error, 1)
-	go func() { done <- starter.Start(context.Background(), ch, nil, "workspace", testCredential()) }()
+	go func() {
+		_, err := factory.NewTransport(context.Background(), "workspace", testCredential(), nil)
+		done <- err
+	}()
 	select {
 	case err := <-done:
 		var startErr *StartError
@@ -109,11 +113,12 @@ func TestWorkspaceSessionStarterStartupFailureTerminatesChild(t *testing.T) {
 func TestWorkspaceSessionStarterRelaysNonzeroExitWithoutFailure(t *testing.T) {
 	defer testleaks.Verify(t)
 
-	starter := &WorkspaceSessionStarter{Launcher: &Launcher{Dep: testDeployment(t, testutil.BuildFakeCoder(t)), Log: slog.New(slog.DiscardHandler)}}
+	factory := &TransportFactory{Launcher: &Launcher{Dep: testDeployment(t, testutil.BuildFakeCoder(t)), Log: slog.New(slog.DiscardHandler)}}
 	ch, clientR, clientW := newFakeChannel(t)
 	defer clientR.Close()
 	defer clientW.Close()
-	client, done := startWorkspaceSession(t, ch, clientR, clientW, starter, testCredential())
+	client, done, trDone := startWorkspaceSession(t, ch, clientR, clientW, factory, testCredential())
+	defer func() { (<-trDone).Close() }()
 	session, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -141,11 +146,12 @@ func TestWorkspaceSessionStarterRelaysNonzeroExitWithoutFailure(t *testing.T) {
 func TestWorkspaceSessionStarterReapsOnOuterClose(t *testing.T) {
 	defer testleaks.Verify(t)
 
-	starter := &WorkspaceSessionStarter{Launcher: &Launcher{Dep: testDeployment(t, testutil.BuildFakeCoder(t)), Log: slog.New(slog.DiscardHandler)}}
+	factory := &TransportFactory{Launcher: &Launcher{Dep: testDeployment(t, testutil.BuildFakeCoder(t)), Log: slog.New(slog.DiscardHandler)}}
 	ch, clientR, clientW := newFakeChannel(t)
 	defer clientR.Close()
 	defer clientW.Close()
-	client, done := startWorkspaceSession(t, ch, clientR, clientW, starter, testCredential())
+	client, done, trDone := startWorkspaceSession(t, ch, clientR, clientW, factory, testCredential())
+	defer func() { (<-trDone).Close() }()
 	session, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -175,7 +181,7 @@ func workspaceTestClient(t *testing.T, reader, writer *os.File) *ssh.Client {
 	return ssh.NewClient(conn, chans, requests)
 }
 
-func startWorkspaceSession(t *testing.T, transport ssh.Channel, reader, writer *os.File, starter *WorkspaceSessionStarter, credential core.CredentialSnapshot) (*ssh.Client, <-chan error) {
+func startWorkspaceSession(t *testing.T, transport ssh.Channel, reader, writer *os.File, factory *TransportFactory, credential core.CredentialSnapshot) (*ssh.Client, <-chan error, <-chan WorkspaceTransport) {
 	t.Helper()
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -186,6 +192,7 @@ func startWorkspaceSession(t *testing.T, transport ssh.Channel, reader, writer *
 		t.Fatalf("new signer: %v", err)
 	}
 	done := make(chan error, 1)
+	trDone := make(chan WorkspaceTransport, 1)
 	go func() {
 		config := &ssh.ServerConfig{NoClientAuth: true}
 		config.AddHostKey(signer)
@@ -206,7 +213,13 @@ func startWorkspaceSession(t *testing.T, transport ssh.Channel, reader, writer *
 			done <- err
 			return
 		}
-		done <- starter.Start(context.Background(), channel, requests, "workspace", credential)
+		tr, err := factory.NewTransport(context.Background(), "workspace", credential, conn)
+		if err != nil {
+			done <- err
+			return
+		}
+		trDone <- tr
+		done <- tr.BridgeSession(context.Background(), channel, requests)
 	}()
-	return workspaceTestClient(t, reader, writer), done
+	return workspaceTestClient(t, reader, writer), done, trDone
 }

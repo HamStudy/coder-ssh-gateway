@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -13,202 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
-
-	"github.com/HamStudy/coder-ssh-gateway/internal/core"
 )
-
-// WorkspaceSessionStarter terminates the SSH protocol exposed by `coder ssh
-// --stdio` and forwards an outer session channel to a fresh inner session.
-// It intentionally does not use the byte-copy tunnel proxy: the child stdio
-// is an SSH transport, not terminal bytes.
-type WorkspaceSessionStarter struct {
-	Launcher        *Launcher
-	StartupTimeout  time.Duration
-	ShutdownGrace   time.Duration
-	StderrRingBytes int64
-	Log             *slog.Logger
-	Rechecker       *Rechecker
-	Registry        *Registry
-	// NewStartupTimer is injectable for deterministic lifecycle tests. Nil uses
-	// a real timer and is stopped immediately after inner SSH startup succeeds.
-	NewStartupTimer func(time.Duration) (<-chan time.Time, func())
-}
-
-var _ interface {
-	Start(context.Context, ssh.Channel, <-chan *ssh.Request, string, core.CredentialSnapshot) error
-} = (*WorkspaceSessionStarter)(nil)
-
-func (s *WorkspaceSessionStarter) Start(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, target string, credential core.CredentialSnapshot) error {
-	log := s.Log
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
-	if s.Launcher == nil {
-		return s.fail(channel, "workspace is unavailable", core.TUNNEL_PROCESS_START_FAILED, fmt.Errorf("nil launcher"))
-	}
-	route := core.Route{WorkspaceHost: target, DisplayTarget: target}
-	if err := EnsureGlobalConfigDir(s.Launcher.Dep.GlobalConfig); err != nil {
-		return s.fail(channel, "workspace is unavailable", core.TUNNEL_PROCESS_START_FAILED, err)
-	}
-	proc, err := s.Launcher.Launch(ctx, route, credential)
-	if err != nil {
-		return s.fail(channel, "workspace is unavailable", core.TUNNEL_PROCESS_START_FAILED, err)
-	}
-	var sessionID uuid.UUID
-	if s.Registry != nil {
-		sessionID = uuid.New()
-		s.Registry.Add(TunnelInfo{
-			ID:           sessionID,
-			AccountID:    credential.AccountID,
-			DeploymentID: s.Launcher.Dep.ID,
-			Generation:   credential.Generation,
-			Route:        route,
-			StartedAt:    time.Now(),
-			ConnectionID: credential.AccountID.String(),
-		})
-		defer s.Registry.Remove(sessionID)
-	}
-
-	ring := NewStderrRing(s.StderrRingBytes)
-	stderrDone := make(chan struct{})
-	go func() {
-		defer proc.StderrDrained()
-		_, _ = io.Copy(ring, proc.Stderr)
-		close(stderrDone)
-	}()
-
-	innerConn := &stdioConn{r: proc.Stdout, w: proc.Stdin, closeFn: func() {
-		_ = proc.Stdin.Close()
-		_ = proc.Stdout.Close()
-	}}
-	stdoutDrained := false
-	defer func() {
-		if !stdoutDrained {
-			proc.StdoutDrained()
-		}
-		_ = innerConn.Close()
-	}()
-
-	startupTimeout := s.StartupTimeout
-	if startupTimeout <= 0 {
-		startupTimeout = DefaultStartupTimeout
-	}
-	newTimer := s.NewStartupTimer
-	if newTimer == nil {
-		newTimer = realTimer
-	}
-	startupC, stopStartup := newTimer(startupTimeout)
-	watchdogDone := make(chan struct{})
-	watchdogStopped := make(chan struct{})
-	watchdogTimedOut := make(chan struct{})
-	go func() {
-		defer close(watchdogStopped)
-		select {
-		case <-startupC:
-			close(watchdogTimedOut)
-			_ = innerConn.Close()
-			requestProcessTermination(proc)
-		case <-ctx.Done():
-			_ = innerConn.Close()
-			requestProcessTermination(proc)
-		case <-watchdogDone:
-		}
-	}()
-
-	conn, chans, reqs, err := ssh.NewClientConn(innerConn, target, &ssh.ClientConfig{
-		User:            "coder",
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         startupTimeout,
-	})
-	close(watchdogDone)
-	<-watchdogStopped
-	stopStartup()
-	if err != nil {
-		_ = innerConn.Close()
-		proc.StdoutDrained()
-		stdoutDrained = true
-		_ = terminateProcess(proc, s.ShutdownGrace)
-		<-stderrDone
-		code := core.TUNNEL_CODER_EXITED
-		select {
-		case <-watchdogTimedOut:
-			code = core.TUNNEL_START_TIMEOUT
-		default:
-		}
-		s.recheckAfterFailure(ctx, credential, code)
-		log.Debug("workspace inner SSH handshake failed", slog.String("code", code), slog.String("stderr_tail", string(ring.Tail())))
-		return s.fail(channel, "workspace target is invalid or unavailable", code, err)
-	}
-	client := ssh.NewClient(conn, chans, reqs)
-
-	session, err := client.NewSession()
-	if err != nil {
-		_ = client.Close()
-		_ = innerConn.Close()
-		proc.StdoutDrained()
-		stdoutDrained = true
-		_ = terminateProcess(proc, s.ShutdownGrace)
-		<-stderrDone
-		return s.fail(channel, "workspace target is invalid or unavailable", core.TUNNEL_CODER_EXITED, err)
-	}
-
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		_ = session.Close()
-		_ = client.Close()
-		_ = innerConn.Close()
-		proc.StdoutDrained()
-		stdoutDrained = true
-		_ = terminateProcess(proc, s.ShutdownGrace)
-		<-stderrDone
-		return s.fail(channel, "workspace session failed", core.TUNNEL_STREAM_FAILED, err)
-	}
-	session.Stdout = channel
-	session.Stderr = channel.Stderr()
-	inputDone := make(chan struct{})
-	go func() {
-		defer close(inputDone)
-		_, _ = io.Copy(stdin, channel)
-		_ = stdin.Close()
-	}()
-
-	err = forwardSessionRequests(ctx, channel, session, requests)
-	var exitErr *ssh.ExitError
-	if err != nil && !errors.As(err, &exitErr) {
-		_ = s.fail(channel, "workspace session failed", core.TUNNEL_STREAM_FAILED, err)
-		log.Debug("workspace session failed", slog.String("target", route.DisplayTarget), slog.String("stderr_tail", string(ring.Tail())))
-	}
-	// Wait owns the inner stdout/stderr copy functions, so all output has
-	// reached the outer channel before it returns.
-	_ = channel.Close()
-	<-inputDone
-	_ = session.Close()
-	_ = client.Close()
-	_ = innerConn.Close()
-	proc.StdoutDrained()
-	stdoutDrained = true
-	_ = terminateProcess(proc, s.ShutdownGrace)
-	<-stderrDone
-	if err != nil && !errors.As(err, &exitErr) {
-		return &StartError{Code: core.TUNNEL_STREAM_FAILED, Err: err}
-	}
-	return nil
-}
-
-func (s *WorkspaceSessionStarter) recheckAfterFailure(ctx context.Context, credential core.CredentialSnapshot, code string) {
-	if s.Rechecker != nil && (code == core.TUNNEL_CODER_EXITED || code == core.TUNNEL_START_TIMEOUT) {
-		s.Rechecker.RecheckAfterFailure(ctx, credential.AccountID, credential.Generation)
-	}
-}
-
-func (s *WorkspaceSessionStarter) fail(channel ssh.Channel, message, code string, err error) error {
-	_, _ = channel.Stderr().Write([]byte(message + "\r\n"))
-	_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 255}))
-	_ = channel.CloseWrite()
-	return &StartError{Code: code, Err: err}
-}
 
 func terminateProcess(proc *Process, grace time.Duration) error {
 	requestProcessTermination(proc)
@@ -265,8 +70,15 @@ type ptyRequest struct {
 type windowChangeRequest struct{ Columns, Rows, Width, Height uint32 }
 type execRequest struct{ Command string }
 type signalRequest struct{ Signal string }
+type subsystemRequest struct{ Name string }
 
-func forwardSessionRequests(ctx context.Context, channel ssh.Channel, session *ssh.Session, requests <-chan *ssh.Request) error {
+// sessionPipes carries the bridge-managed inner stream completion signals.
+type sessionPipes struct {
+	stdoutDone <-chan struct{}
+	stderrDone <-chan struct{}
+}
+
+func forwardSessionRequests(ctx context.Context, channel ssh.Channel, session *ssh.Session, requests <-chan *ssh.Request, pipes *sessionPipes) error {
 	started := false
 	var waitCh <-chan error
 	for {
@@ -285,16 +97,16 @@ func forwardSessionRequests(ctx context.Context, channel ssh.Channel, session *s
 			if req == nil {
 				continue
 			}
-			ok, done, waitable := handleSessionRequest(session, req, &started)
+			ok, done, wait := handleSessionRequest(session, req, &started, pipes)
 			if req.WantReply {
 				_ = req.Reply(ok, nil)
 			}
 			if done {
 				return errors.New("workspace session start failed")
 			}
-			if waitable && waitCh == nil {
+			if wait != nil && waitCh == nil {
 				result := make(chan error, 1)
-				go func() { result <- session.Wait() }()
+				go func() { result <- wait() }()
 				waitCh = result
 			}
 		}
@@ -313,23 +125,23 @@ func abortSession(session *ssh.Session, waitCh <-chan error, cause error) error 
 	return cause
 }
 
-func handleSessionRequest(session *ssh.Session, req *ssh.Request, started *bool) (ok, done, waitable bool) {
+func handleSessionRequest(session *ssh.Session, req *ssh.Request, started *bool, pipes *sessionPipes) (ok, done bool, wait func() error) {
 	if *started {
 		switch req.Type {
 		case "window-change":
 			var r windowChangeRequest
 			if ssh.Unmarshal(req.Payload, &r) != nil || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
-				return false, false, false
+				return false, false, nil
 			}
-			return session.WindowChange(int(r.Rows), int(r.Columns)) == nil, false, false
+			return session.WindowChange(int(r.Rows), int(r.Columns)) == nil, false, nil
 		case "signal":
 			var r signalRequest
 			if ssh.Unmarshal(req.Payload, &r) != nil || !validSignal(r.Signal) {
-				return false, false, false
+				return false, false, nil
 			}
-			return session.Signal(ssh.Signal(r.Signal)) == nil, false, false
+			return session.Signal(ssh.Signal(r.Signal)) == nil, false, nil
 		default:
-			return false, false, false
+			return false, false, nil
 		}
 	}
 
@@ -337,52 +149,91 @@ func handleSessionRequest(session *ssh.Session, req *ssh.Request, started *bool)
 	case "env":
 		var r envRequest
 		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Name, 256) || !validSessionString(r.Value, 32*1024) {
-			return false, false, false
+			return false, false, nil
 		}
-		return session.Setenv(r.Name, r.Value) == nil, false, false
+		return session.Setenv(r.Name, r.Value) == nil, false, nil
+	case "auth-agent-req@openssh.com":
+		// ssh -A: mirror the request; the workspace then opens auth-agent
+		// channels, relayed to the client's agent by the transport.
+		innerOK, err := session.SendRequest("auth-agent-req@openssh.com", req.WantReply, req.Payload)
+		if err != nil {
+			return false, false, nil
+		}
+		return innerOK, false, nil
+	case "subsystem":
+		// SFTP/scp: a start request like exec; the inner server owns the
+		// subsystem name allowlist. RequestSubsystem skips x/crypto's pipe
+		// setup, so the wait function tracks the manual copies instead of
+		// session.Wait.
+		var r subsystemRequest
+		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Name, 64) {
+			return false, false, nil
+		}
+		innerOK, err := session.SendRequest("subsystem", true, ssh.Marshal(struct{ Subsystem string }{r.Name}))
+		if err != nil || !innerOK {
+			return false, true, nil
+		}
+		*started = true
+		return true, false, func() error {
+			<-pipes.stdoutDone
+			<-pipes.stderrDone
+			_ = session.Close()
+			return nil
+		}
 	case "pty-req":
 		var r ptyRequest
 		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Term, 256) || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
-			slog.Info("pty rejected at parse/validation", "payload_len", len(req.Payload), "term_len", len(r.Term))
-			return false, false, false
+			slog.Debug("pty rejected at parse/validation", "payload_len", len(req.Payload), "term_len", len(r.Term))
+			return false, false, nil
 		}
 		modes, err := parseTerminalModes([]byte(r.Modes))
 		if err != nil {
-			slog.Info("pty rejected at modes parse", "modes_err", err.Error())
-			return false, false, false
+			slog.Debug("pty rejected at modes parse", "modes_err", err.Error())
+			return false, false, nil
 		}
 		if err := session.RequestPty(r.Term, int(r.Rows), int(r.Columns), modes); err != nil {
-			slog.Info("pty rejected by inner", "inner_err", err.Error())
-			return false, false, false
+			slog.Debug("pty rejected by inner", "inner_err", err.Error())
+			return false, false, nil
 		}
-		return true, false, false
+		return true, false, nil
 	case "window-change":
 		var r windowChangeRequest
 		if ssh.Unmarshal(req.Payload, &r) != nil || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
-			return false, false, false
+			return false, false, nil
 		}
-		return session.WindowChange(int(r.Rows), int(r.Columns)) == nil, false, false
+		return session.WindowChange(int(r.Rows), int(r.Columns)) == nil, false, nil
 	case "shell":
 		if len(req.Payload) != 0 {
-			return false, false, false
+			return false, false, nil
 		}
 		if err := session.Shell(); err != nil {
-			return false, true, false
+			return false, true, nil
 		}
 		*started = true
-		return true, false, true
+		return true, false, waitDrained(session, pipes)
 	case "exec":
 		var r execRequest
 		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Command, 4096) {
-			return false, false, false
+			return false, false, nil
 		}
 		if err := session.Start(r.Command); err != nil {
-			return false, true, false
+			return false, true, nil
 		}
 		*started = true
-		return true, false, true
+		return true, false, waitDrained(session, pipes)
 	default:
-		return false, false, false
+		return false, false, nil
+	}
+}
+
+// waitDrained keeps the old guarantee that output reaches the outer channel
+// before the wait result surfaces: exit status first, then copy completion.
+func waitDrained(session *ssh.Session, pipes *sessionPipes) func() error {
+	return func() error {
+		err := session.Wait()
+		<-pipes.stdoutDone
+		<-pipes.stderrDone
+		return err
 	}
 }
 

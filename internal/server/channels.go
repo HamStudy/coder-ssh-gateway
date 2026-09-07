@@ -16,6 +16,7 @@ import (
 	"github.com/HamStudy/coder-ssh-gateway/internal/route"
 	"github.com/HamStudy/coder-ssh-gateway/internal/secretbox"
 	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/tunnel"
 )
 
 // EventTypeChannelOpen audits channel target acceptance/rejection (§34.3).
@@ -28,10 +29,11 @@ type TunnelStarter interface {
 	Start(ctx context.Context, channel ssh.Channel, route core.Route, credential core.CredentialSnapshot) error
 }
 
-// WorkspaceSessionStarter starts an authenticated workspace session over an
-// accepted outer session channel.
-type WorkspaceSessionStarter interface {
-	Start(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, target string, credential core.CredentialSnapshot) error
+// WorkspaceTransportFactory creates the per-connection workspace transport
+// (one `coder ssh --stdio` child + inner SSH client) shared by the session
+// bridge, direct-tcpip relays, and tcpip-forward global requests.
+type WorkspaceTransportFactory interface {
+	NewTransport(ctx context.Context, target string, credential core.CredentialSnapshot, out ssh.Conn) (tunnel.WorkspaceTransport, error)
 }
 
 // directTCPIPRequest is the RFC 4254 §7.2 direct-tcpip open payload (§19.2).
@@ -57,21 +59,125 @@ func (s *Server) rejectUnsupportedChannel(log *slog.Logger, newCh ssh.NewChannel
 	_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
 }
 
-// dispatchWorkspaceChannels implements §8.3 for workspace connections.
-// The username is the workspace target for session channels; direct-tcpip
-// channels are admitted for any authenticated connection so ProxyJump,
-// SFTP, and agent forwarding work without a reserved username. Session
-// channels: exactly one (first wins), each bridged to a fresh inner
-// `coder ssh --stdio` session.
-func (s *Server) dispatchWorkspaceChannels(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, target string, channels <-chan ssh.NewChannel) {
+// workspaceContext is the per-connection lazily-created workspace transport
+// plus the context every admission path shares. The transport spawns on
+// first need: the session channel, an arbitrary direct-tcpip target
+// (ssh -L/-D), or a tcpip-forward global request (ssh -R).
+type workspaceContext struct {
+	srv    *Server
+	state  *sshauth.ConnState
+	perms  sshauth.FinalPerms
+	target string
+	out    ssh.Conn
+
+	mu          sync.Mutex
+	tr          tunnel.WorkspaceTransport
+	releaseProc func()
+}
+
+// transport returns the connection transport, creating it (with full
+// credential validation) on first use.
+func (w *workspaceContext) transport(ctx context.Context) (tunnel.WorkspaceTransport, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.tr != nil {
+		return w.tr, nil
+	}
+	snap, verr := w.srv.loadValidatedCredential(ctx, w.state, w.perms)
+	if verr != nil {
+		return nil, verr
+	}
+	return w.createLocked(ctx, snap)
+}
+
+// bindTransport creates-or-returns the transport using an already-validated
+// credential snapshot (the session channel path).
+func (w *workspaceContext) bindTransport(ctx context.Context, snap core.CredentialSnapshot) (tunnel.WorkspaceTransport, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.tr != nil {
+		return w.tr, nil
+	}
+	return w.createLocked(ctx, snap)
+}
+
+func (w *workspaceContext) createLocked(ctx context.Context, snap core.CredentialSnapshot) (tunnel.WorkspaceTransport, error) {
+	relProc, ok := w.srv.cfg.Counters.AcquireCoderProcess()
+	if !ok {
+		w.srv.rec.LimitRejection(string(limits.ReasonCoderProcess))
+		return nil, &transportError{detail: core.TUNNEL_LIMIT_REACHED}
+	}
+	tr, err := w.srv.cfg.WorkspaceTransports.NewTransport(ctx, w.target, snap, w.out)
+	if err != nil {
+		relProc()
+		return nil, &transportError{detail: startErrorCode(err), err: err}
+	}
+	w.tr = tr
+	w.releaseProc = relProc
+	return tr, nil
+}
+
+// existing returns the transport without creating one.
+func (w *workspaceContext) existing() tunnel.WorkspaceTransport {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.tr
+}
+
+// close tears the transport down and waits for the session bridge and
+// inbound relays to unwind. Called after the dispatch loop ends.
+func (w *workspaceContext) close() {
+	w.mu.Lock()
+	tr := w.tr
+	w.tr = nil
+	release := w.releaseProc
+	w.releaseProc = nil
+	w.mu.Unlock()
+	if tr != nil {
+		tr.Close()
+	}
+	if release != nil {
+		release()
+	}
+}
+
+// transportError carries a failure reason for lazy transport creation.
+type transportError struct {
+	detail string
+	err    error
+}
+
+func (e *transportError) Error() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return e.detail
+}
+
+func startErrorCode(err error) string {
+	var se *tunnel.StartError
+	if errors.As(err, &se) {
+		return se.Code
+	}
+	return core.TUNNEL_PROCESS_START_FAILED
+}
+
+// dispatchWorkspaceChannels implements §8.3 for workspace connections. The
+// username is the workspace target for session channels. direct-tcpip
+// channels with a workspace target (:22) get a dedicated jump tunnel;
+// everything else relays through the connection transport (ssh -L/-D).
+// Session channels: exactly one (first wins). Channel handlers run in their
+// own goroutines so multiplexing never blocks on a slow channel (§19.9).
+func (s *Server) dispatchWorkspaceChannels(ctx context.Context, wc *workspaceContext, channels <-chan ssh.NewChannel) {
 	served := false
+	defer wc.close()
 	var wg sync.WaitGroup
 	for newCh := range channels {
 		switch newCh.ChannelType() {
 		case "session":
-			if served || s.cfg.WorkspaceSessionStarter == nil {
+			if served || s.cfg.WorkspaceTransports == nil {
 				s.rec.ChannelRejected()
-				s.log.Info("session channel rejected", "reason_reason", "already served or no starter", "served", served, "starter_nil", s.cfg.WorkspaceSessionStarter == nil)
+				s.log.Info("session channel rejected", "reason", "already served or no factory", "served", served)
 				_ = newCh.Reject(ssh.Prohibited, "workspace connections permit one session channel")
 				continue
 			}
@@ -82,21 +188,26 @@ func (s *Server) dispatchWorkspaceChannels(ctx context.Context, state *sshauth.C
 				continue
 			}
 			served = true
-			s.admitWorkspaceSession(ctx, state, perms, target, newCh)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.admitWorkspaceSession(ctx, wc, newCh)
+			}()
 		case "direct-tcpip":
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				s.admitDirectTCPIP(ctx, state, perms, newCh)
+				s.admitDirectTCPIP(ctx, wc, newCh)
 			}()
 		default:
-			s.rejectUnsupportedChannel(s.log.With(slog.String("connection_id", state.ID())), newCh)
+			s.rejectUnsupportedChannel(s.log.With(slog.String("connection_id", wc.state.ID())), newCh)
 		}
 	}
 	wg.Wait()
 }
 
-func (s *Server) admitWorkspaceSession(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, target string, newCh ssh.NewChannel) {
+func (s *Server) admitWorkspaceSession(ctx context.Context, wc *workspaceContext, newCh ssh.NewChannel) {
+	state, perms, target := wc.state, wc.perms, wc.target
 	// Parsing happens here, after the enrolled key has been authenticated.
 	if perms.MustReconnect {
 		s.rec.ChannelRejected()
@@ -129,12 +240,6 @@ func (s *Server) admitWorkspaceSession(ctx context.Context, state *sshauth.ConnS
 		return
 	}
 	defer relAcct()
-	relProc, ok := s.cfg.Counters.AcquireCoderProcess()
-	if !ok {
-		s.rejectChannelLimit(state, perms, newCh)
-		return
-	}
-	defer relProc()
 
 	snap, err := s.cfg.Auth.Store.LoadCredential(ctx, perms.AccountID)
 	if err != nil {
@@ -171,15 +276,34 @@ func (s *Server) admitWorkspaceSession(ctx context.Context, state *sshauth.ConnS
 	defer s.activeChannels.Add(-1)
 	defer s.rec.ChannelClosed()
 	s.auditChannelOpen(state, perms, rt.DisplayTarget, true, "")
-	if err := s.cfg.WorkspaceSessionStarter.Start(ctx, ch, requests, rt.WorkspaceHost, snap); err != nil {
+
+	tr, err := wc.bindTransport(ctx, snap)
+	if err != nil {
+		message, code := "workspace is unavailable", core.TUNNEL_PROCESS_START_FAILED
+		var te *transportError
+		if errors.As(err, &te) {
+			message, code = "workspace is unavailable", te.detail
+		}
+		_, _ = ch.Stderr().Write([]byte(message + "\r\n"))
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 255}))
+		_ = ch.CloseWrite()
+		_ = ch.Close()
+		s.log.Debug("workspace transport creation failed", slog.String("code", code), slog.String("detail", err.Error()))
+		return
+	}
+	// Blocks until the session ends; the transport outlives it so -L/-R
+	// relays keep working.
+	if err := tr.BridgeSession(ctx, ch, requests); err != nil {
 		_ = ch.Close()
 	}
 }
 
-// admitDirectTCPIP runs the §19.1 admission order for one direct-tcpip
-// channel open: cheap validation first, channel accepted only after every
-// admission check passes, then handed to the TunnelStarter.
-func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, newCh ssh.NewChannel) {
+// admitDirectTCPIP routes one direct-tcpip open (§19.1 admission order).
+// Workspace targets on port 22 get a dedicated jump tunnel (ProxyJump);
+// every other target relays through the connection transport so ssh -L/-D
+// resolves inside the workspace network.
+func (s *Server) admitDirectTCPIP(ctx context.Context, wc *workspaceContext, newCh ssh.NewChannel) {
+	state, perms := wc.state, wc.perms
 	log := s.log.With(
 		slog.String("connection_id", state.ID()),
 		slog.String("account_id", perms.AccountID.String()),
@@ -216,15 +340,19 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 		slog.Uint64("originator_port", uint64(req.OriginatorPort)),
 	)
 
-	// §19.1(4): strict target validation (§17.4/§17.5).
+	// §19.1(4): workspace targets (§17.4/§17.5) take the jump path.
 	rt, err := s.cfg.RouteCodec.ParseDirectTCPIP(req.DestinationAddress, req.DestinationPort)
-	if err != nil {
-		s.rec.ChannelRejected()
-		s.auditChannelOpen(state, perms, "", false, route.CodeOf(err))
-		_ = newCh.Reject(ssh.Prohibited, "target not permitted")
+	if err == nil {
+		s.startJumpTunnel(ctx, wc, newCh, rt, log)
 		return
 	}
+	s.relayDirectTCPIP(ctx, wc, newCh, log)
+}
 
+// startJumpTunnel is the §19.1 dedicated-child path for workspace:22
+// targets: full per-channel validation, then a TunnelStarter child.
+func (s *Server) startJumpTunnel(ctx context.Context, wc *workspaceContext, newCh ssh.NewChannel, rt core.Route, log *slog.Logger) {
+	state, perms := wc.state, wc.perms
 	// §19.1(6): channel + process admission semaphores. Released when the
 	// tunnel ends (§19.1 step 15); released immediately on later failure.
 	relChan, ok := s.cfg.Counters.AcquireChannel(state.ID())
@@ -321,6 +449,73 @@ func (s *Server) admitDirectTCPIP(ctx context.Context, state *sshauth.ConnState,
 	if err := s.cfg.TunnelStarter.Start(ctx, ch, rt, snap); err != nil {
 		log.Debug("tunnel start failed", slog.String("detail", err.Error()))
 		_ = ch.Close()
+	}
+}
+
+// relayDirectTCPIP relays a non-workspace direct-tcpip open through the
+// connection transport. The transport dial happens inside RelayChannel
+// before acceptance, so in-workspace connect failures surface to the client
+// as native SSH_OPEN_CONNECT_FAILED rejections. Relay targets are
+// client-supplied free-form host:port and are never audited (§34.1).
+func (s *Server) relayDirectTCPIP(ctx context.Context, wc *workspaceContext, newCh ssh.NewChannel, log *slog.Logger) {
+	state, perms := wc.state, wc.perms
+	if s.cfg.WorkspaceTransports == nil {
+		s.rec.ChannelRejected()
+		s.auditChannelOpen(state, perms, "", false, core.TUNNEL_PROCESS_START_FAILED)
+		_ = newCh.Reject(ssh.Prohibited, "port forwarding unavailable")
+		return
+	}
+	relChan, ok := s.cfg.Counters.AcquireChannel(state.ID())
+	if !ok {
+		s.rec.LimitRejection(string(limits.ReasonChannelConn))
+		s.rejectChannelLimit(state, perms, newCh)
+		return
+	}
+	defer relChan()
+	relAcct, ok := s.cfg.Counters.AcquireChannelAccount(perms.AccountID)
+	if !ok {
+		s.rec.LimitRejection(string(limits.ReasonChannelAccount))
+		s.rejectChannelLimit(state, perms, newCh)
+		return
+	}
+	defer relAcct()
+
+	tr, err := wc.transport(ctx)
+	if err != nil {
+		s.rejectTransportFailure(ctx, state, perms, newCh, err)
+		return
+	}
+	s.rec.ChannelAccepted()
+	s.activeChannels.Add(1)
+	defer s.activeChannels.Add(-1)
+	defer s.rec.ChannelClosed()
+	s.auditChannelOpen(state, perms, "", true, "")
+	tr.RelayChannel(newCh)
+}
+
+// rejectTransportFailure maps a lazy transport creation failure to channel
+// rejections with the same consequences as channel-open revalidation.
+func (s *Server) rejectTransportFailure(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, newCh ssh.NewChannel, err error) {
+	var te *transportError
+	if !errors.As(err, &te) {
+		s.rec.ChannelRejected()
+		_ = newCh.Reject(ssh.ConnectionFailed, "workspace is unavailable")
+		return
+	}
+	switch {
+	case te.detail == core.STORE_UNAVAILABLE:
+		s.rec.ChannelRejected()
+		s.auditChannelOpen(state, perms, "", false, core.STORE_UNAVAILABLE)
+		_ = newCh.Reject(ssh.ConnectionFailed, "credential store unavailable")
+	case te.detail == core.AUTH_CODER_UNAVAILABLE:
+		s.rec.ChannelRejected()
+		s.auditChannelOpen(state, perms, "", false, core.AUTH_CODER_UNAVAILABLE)
+		_ = newCh.Reject(ssh.ConnectionFailed, "coder control plane unavailable")
+	default:
+		s.rec.ChannelRejected()
+		s.auditChannelOpen(state, perms, "", false, te.detail)
+		_ = newCh.Reject(ssh.Prohibited, "credential no longer valid; reconnect")
+		_ = state.Close()
 	}
 }
 

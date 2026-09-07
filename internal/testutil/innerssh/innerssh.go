@@ -112,21 +112,28 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		}
 	}()
 
-	go ssh.DiscardRequests(reqs)
+	reg := newForwardRegistry()
+	defer reg.closeAll()
+	go handleGlobalRequests(srvConn, reg, reqs)
 
 	var wg sync.WaitGroup
 	for newChan := range chans {
-		if newChan.ChannelType() != "session" {
-			newChan.Reject(ssh.UnknownChannelType, "only session channels supported")
-			continue
+		switch newChan.ChannelType() {
+		case "session":
+			ch, requests, err := newChan.Accept()
+			if err != nil {
+				continue
+			}
+			wg.Go(func() {
+				handleSession(srvConn, ch, requests)
+			})
+		case "direct-tcpip":
+			wg.Go(func() {
+				handleDirectTCPIP(newChan)
+			})
+		default:
+			newChan.Reject(ssh.UnknownChannelType, "unsupported channel type")
 		}
-		ch, requests, err := newChan.Accept()
-		if err != nil {
-			continue
-		}
-		wg.Go(func() {
-			handleSession(ch, requests)
-		})
 	}
 	wg.Wait()
 
@@ -138,7 +145,7 @@ func Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 }
 
 // handleSession services one accepted session channel until it closes.
-func handleSession(ch ssh.Channel, requests <-chan *ssh.Request) {
+func handleSession(srvConn *ssh.ServerConn, ch ssh.Channel, requests <-chan *ssh.Request) {
 	defer ch.Close()
 	for req := range requests {
 		switch req.Type {
@@ -154,6 +161,13 @@ func handleSession(ch ssh.Channel, requests <-chan *ssh.Request) {
 			} else if payload.Command == "exit 7" {
 				sendExitStatus(ch, 7)
 				return
+			} else if payload.Command == "agent-ping" {
+				summary, err := agentRequestIdentities(srvConn)
+				if err != nil {
+					fmt.Fprintf(ch, "%s%s", ExecPrefix, err.Error())
+				} else {
+					io.WriteString(ch, summary)
+				}
 			} else {
 				fmt.Fprintf(ch, "%s%s", ExecPrefix, payload.Command)
 			}
@@ -165,7 +179,20 @@ func handleSession(ch ssh.Channel, requests <-chan *ssh.Request) {
 			echoLines(ch)
 			sendExitStatus(ch, 0)
 			return
-		case "env", "pty-req", "window-change", "signal":
+		case "subsystem":
+			var payload struct{ Subsystem string }
+			if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+				req.Reply(false, nil)
+				continue
+			}
+			if payload.Subsystem != "sftp" {
+				req.Reply(false, nil)
+				continue
+			}
+			req.Reply(true, nil)
+			serveSFTP(ch)
+			return
+		case "env", "pty-req", "window-change", "signal", "auth-agent-req@openssh.com":
 			// Accepted and ignored: the fake has no terminal, but real
 			// clients routinely request a pty before shell sessions.
 			req.Reply(true, nil)

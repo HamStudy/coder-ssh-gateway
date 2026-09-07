@@ -24,4 +24,5 @@ Test doubles for the Coder CLI and the workspace SSH endpoint. Everything integr
 ## INNERSHH behavior (innerssh/innerssh.go)
 - exec `printf hello` → literal `hello`; other exec → `ECHO:<command>`; `exit 7` → status 7.
 - shell → prints `FAKE-SHELL-READY`, then echoes lines VERBATIM (no `ECHO:` prefix — probes must match raw line text).
-- Supports pty-req/shell/exec/env/signal/window-change; no auth; no network listener (stdio pipes only).
+- Supports pty-req/shell/exec/env/signal/window-change/subsystem sftp (pkg/sftp, real FS)/auth-agent-req + agent channel (agent-ping exec lists keys via the REAL agent when forwarded); no auth; no network listener (stdio pipes only).
+- Feature extensions (innerssh_features.go): direct-tcpip dials real addresses; tcpip-forward binds real listeners and opens forwarded-tcpip channels. `agent-ping` exec probes the agent chain end to end.

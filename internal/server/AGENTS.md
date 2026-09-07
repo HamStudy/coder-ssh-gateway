@@ -12,7 +12,8 @@ Outer SSH listener: admission control, limits, handshake, auth callback installa
 
 ## MODEL
 - Admission order: pre-auth IP check → global/IP/handshake limits → optional PROXY-v1 → deadlines → handshake → auth callbacks → authenticated (account/key) limits → dispatch.
-- Dispatch admits workspace permissions only: ONE session channel per connection (`served` flag) + concurrent direct-tcpip channels. Direct-tcpip admission runs in separate goroutines so one slow target never blocks multiplexing.
+- Dispatch admits workspace permissions only: ONE session channel per connection (`served` flag) + concurrent direct-tcpip channels, each handled in its own goroutine so multiplexing never blocks (session bridges included).
+- direct-tcpip routing: workspace-shaped :22 targets take the dedicated jump-tunnel path (TunnelStarter); every other target relays through the connection's workspace transport (ssh -L/-D). tcpip-forward/cancel global requests (ssh -R) also ride the transport. A nil WorkspaceTransports factory rejects relays and sessions but preserves jump tunnels.
 - Channel admission happens BEFORE the slow child spawn; credential is reloaded/revalidated at channel open (generation-checked), not trusted from auth time.
 - Shutdown: listener close → drain period → connection cancellation → (children killed in internal/tunnel).
 

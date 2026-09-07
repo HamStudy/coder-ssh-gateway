@@ -14,6 +14,7 @@ Application chart for the gateway. Versioning is coupled to git tags by the publ
 - `configOverride` deep-merges over the generated config: the supported escape hatch for any gateway setting the chart doesn't expose.
 
 ## SURFACE
+- Install path: `oci://ghcr.io/<org>/charts/coder-ssh-gateway` (pushed by publish.yml on release tags); the GitHub Release tarball is the fallback asset.
 - Service: LoadBalancer, external 22 → container 2222. Metrics service off by default. `terminationGracePeriodSeconds: 90` for tunnel drain.
 - Values keys: image, coder, gateway, configOverride, secrets, service, metrics, persistence, resources, scheduling knobs.
 - Changing generated config shape → update templates/configmap.yaml AND docs/operator-guide.md migration notes together.

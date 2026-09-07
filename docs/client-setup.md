@@ -119,7 +119,7 @@ whether your account may connect to it.
 
 ### What direct mode supports
 
-The direct flow forwards a constrained session channel to a fresh inner
+The direct flow bridges a constrained session channel to a fresh inner
 `coder ssh --stdio` session:
 
 - shell (default)
@@ -128,17 +128,24 @@ The direct flow forwards a constrained session channel to a fresh inner
 - `env` (forward environment variables)
 - `window-change` (terminal resize)
 - signals (the inner CLI process exits cleanly on hangup)
+- subsystems — `sftp` (so `sftp`, GUI SFTP clients, and modern `scp` work)
+- agent forwarding (`ssh -A`): the workspace reaches your local agent
+- port forwarding: `-L` (local), `-R` (remote), and `-D` (dynamic/SOCKS)
 
-Direct mode does NOT forward subsystem requests (`sftp`, etc.), SSH
-agent forwarding, or port forwarding (`-L`/`-R`/`-D`, `direct-tcpip`).
-Use `ProxyJump` (next section) when you need any of those.
+Port-forwarding targets resolve inside the workspace network, exactly as
+if you were connected to the workspace directly: `-L 8080:localhost:8080`
+reaches the dev server running in your workspace. Targets shaped like a
+workspace (`workspace:22`) instead open a jump tunnel to that workspace,
+so ProxyJump keeps working on the same connection.
 
 ### ProxyJump — raw inner SSH transport
 
-Use `ProxyJump` when you need full inner SSH features the direct flow
-doesn't forward (SFTP, subsystem requests, agent forwarding, port
-forwarding). ProxyJump carries an OpenSSH session through the gateway as
-a transport hop and lands on the inner Coder workspace SSH server:
+`ProxyJump` (`-J`) carries your own OpenSSH session through the gateway
+as a transport hop and lands on the inner Coder workspace SSH server.
+Everything above already works without it; the jump remains available
+for exotic inner-SSH features the gateway does not bridge (for example
+stream-local forwarding) or when a client wants the gateway treated as a
+plain jump host:
 
 ```sshconfig
 Host csgw-jump

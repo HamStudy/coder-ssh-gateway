@@ -173,7 +173,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		Rechecker:       &tunnel.Rechecker{Verifier: instVerifier, Store: instStore, Log: logger},
 		Registry:        registry,
 	}
-	workspaceStarter := &tunnel.WorkspaceSessionStarter{
+	workspaceTransports := &tunnel.TransportFactory{
 		Launcher:        &tunnel.Launcher{Dep: dep, Log: logger},
 		StartupTimeout:  cfg.Deployment.WorkspaceConnectTimeout.Std(),
 		ShutdownGrace:   cfg.Limits.ProcessShutdownGrace.Std(),
@@ -184,19 +184,19 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 	}
 
 	srv, err := server.New(server.ServerConfig{
-		HostSigners:             signers,
-		Auth:                    authCfg,
-		Counters:                counters,
-		PreAuthGate:             rateLimits.AllowPreAuthIP,
-		HandshakeTimeout:        cfg.Listen.HandshakeTimeout.Std(),
-		TCPKeepalive:            cfg.Listen.TCPKeepalive.Std(),
-		ServerVersion:           cfg.SSH.ServerVersion,
-		ProxyProtocol:           cfg.Listen.ProxyProtocol,
-		RouteCodec:              codec,
-		TunnelStarter:           starter,
-		WorkspaceSessionStarter: workspaceStarter,
-		CacheTTL:                cfg.Deployment.TokenValidationCache.Std(),
-		Metrics:                 m,
+		HostSigners:         signers,
+		Auth:                authCfg,
+		Counters:            counters,
+		PreAuthGate:         rateLimits.AllowPreAuthIP,
+		HandshakeTimeout:    cfg.Listen.HandshakeTimeout.Std(),
+		TCPKeepalive:        cfg.Listen.TCPKeepalive.Std(),
+		ServerVersion:       cfg.SSH.ServerVersion,
+		ProxyProtocol:       cfg.Listen.ProxyProtocol,
+		RouteCodec:          codec,
+		TunnelStarter:       starter,
+		WorkspaceTransports: workspaceTransports,
+		CacheTTL:            cfg.Deployment.TokenValidationCache.Std(),
+		Metrics:             m,
 		// §32 step 4: the drain period reuses limits.process_shutdown_grace
 		// (documented choice): the same budget governs graceful channel
 		// finish and child-process TERM/KILL escalation.

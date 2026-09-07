@@ -165,7 +165,9 @@ func TestSessionChannelRejectedPlaceholder(t *testing.T) {
 	defer f.close(t)
 	f.installCredential(t, "wire-token-transport-0123456789")
 
-	ts := startTestServer(t, f, nil)
+	ts := startTestServer(t, f, func(sc *server.ServerConfig, lc *config.Config) {
+		sc.WorkspaceTransports = nil
+	})
 	defer ts.shutdown(t)
 
 	client, err := dialGateway(ts.addr(), "coder", ssh.PublicKeys(f.signer))
@@ -176,7 +178,7 @@ func TestSessionChannelRejectedPlaceholder(t *testing.T) {
 
 	_, _, err = client.OpenChannel("session", nil)
 	if err == nil {
-		t.Fatal("session channel must be rejected by the placeholder")
+		t.Fatal("session channel must be rejected without a transport factory")
 	}
 	var openErr *ssh.OpenChannelError
 	if !errors.As(err, &openErr) {
