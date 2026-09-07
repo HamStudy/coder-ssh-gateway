@@ -6,17 +6,7 @@ import (
 )
 
 func NewLogger(format string, level string) (*slog.Logger, error) {
-	var handler slog.Handler
 	opts := &slog.HandlerOptions{}
-
-	switch format {
-	case "json":
-		handler = slog.NewJSONHandler(os.Stdout, opts)
-	case "text":
-		handler = slog.NewTextHandler(os.Stdout, opts)
-	default:
-		return nil, ErrInvalidLogFormat
-	}
 
 	var logLevel slog.Level
 	switch level {
@@ -31,11 +21,19 @@ func NewLogger(format string, level string) (*slog.Logger, error) {
 	default:
 		return nil, ErrInvalidLogLevel
 	}
-
 	opts.Level = logLevel
 
-	logger := slog.New(handler)
-	return logger, nil
+	var handler slog.Handler
+	switch format {
+	case "json":
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	case "text":
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	default:
+		return nil, ErrInvalidLogFormat
+	}
+
+	return slog.New(handler), nil
 }
 
 func WithStdFields(logger *slog.Logger, connectionID string, deploymentID string) *slog.Logger {
