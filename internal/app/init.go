@@ -62,11 +62,11 @@ func (c *cli) cmdInit(args []string) int {
 
 	hostKeyPath := config.DefaultHostKeyPath(dir)
 	ok := true
-	ok = c.initStep(*force, hostKeyPath, "SSH host key", func() ([]byte, error) {
+	ok = c.initStep(*force, hostKeyPath, "SSH host key", true, func() ([]byte, error) {
 		return generateHostKey()
 	}) && ok
 	encKeyPath := config.DefaultEncryptionKeyPath(dir)
-	ok = c.initStep(*force, encKeyPath, "credential encryption key", func() ([]byte, error) {
+	ok = c.initStep(*force, encKeyPath, "credential encryption key", true, func() ([]byte, error) {
 		key := make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
 			return nil, err
@@ -74,7 +74,7 @@ func (c *cli) cmdInit(args []string) int {
 		return key, nil
 	}) && ok
 	configPath := config.DefaultConfigPath(dir)
-	ok = c.initStep(*force, configPath, "starter config", func() ([]byte, error) {
+	ok = c.initStep(*force, configPath, "starter config", false, func() ([]byte, error) {
 		return []byte(starterConfig(coderURL)), nil
 	}) && ok
 	if !ok {
@@ -173,7 +173,7 @@ func validDNSDomain(domain string) bool {
 
 // initStep writes one init artifact, keeping existing files unless --force
 // plus an explicit "overwrite" confirmation (§30.1: never silently replace).
-func (c *cli) initStep(force bool, path, what string, gen func() ([]byte, error)) bool {
+func (c *cli) initStep(force bool, path, what string, secret bool, gen func() ([]byte, error)) bool {
 	_, statErr := os.Stat(path)
 	switch {
 	case errors.Is(statErr, fs.ErrNotExist):
@@ -192,6 +192,17 @@ func (c *cli) initStep(force bool, path, what string, gen func() ([]byte, error)
 		fmt.Fprintf(c.stderr, "error: checking %s: %v\n", path, statErr)
 		return false
 	case !force:
+		// Kubernetes fsGroup volumes make existing files group-writable on
+		// every pod start; secret files must stay 0600 or serve refuses to
+		// boot. Normalizing here is idempotent and runs every boot.
+		if secret {
+			if err := os.Chmod(path, 0o600); err != nil {
+				fmt.Fprintf(c.stderr, "error: normalizing %s permissions: %v\n", what, err)
+				return false
+			}
+			fmt.Fprintf(c.stdout, "kept existing %s: %s (permissions normalized to 0600; use --force to overwrite)\n", what, path)
+			return true
+		}
 		fmt.Fprintf(c.stdout, "kept existing %s: %s (use --force to overwrite)\n", what, path)
 		return true
 	default:

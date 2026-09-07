@@ -373,6 +373,14 @@ unit goes to `failed`, or the Kubernetes pod stays in
      holder with `fuser <state-dir>/lock` (or `lsof <state-dir>/lock`)
      and stop it; do NOT reboot just to clear a lock you have not
      investigated.
+3. **Kubernetes fsGroup permission drift.** With `fsGroup` set (the chart
+   sets it), the kubelet makes existing volume files group-writable on
+   every pod start, so secret files can read `0660` after an upgrade and
+   the gateway refuses to boot (`is group/world-writable (mode 0660);
+   chmod 0600`). Fixed for chart installs in 0.3.2: the `init` container
+   runs before `serve` on every boot and normalizes secret-file
+   permissions. On older versions, exec in and repair by hand:
+   `chmod 600 /var/lib/coder-ssh-gateway/secrets/*`.
 3. **Container-specific.** The image is distroless plus a static
    busybox: start with `docker logs` (or `kubectl logs`), then
    `docker exec` / `kubectl exec ... -- sh` for in-container

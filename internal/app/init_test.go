@@ -244,6 +244,45 @@ func TestInitIdempotent(t *testing.T) {
 	}
 }
 
+// fsGroup volumes make existing secret files group-writable on every pod
+// start; init must normalize them back to 0600 or serve refuses to boot.
+func TestInitNormalizesSecretFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	if code, out, errOut := runCLI(t, "", "--state-dir", dir, "init", "coder.example.com"); code != 0 {
+		t.Fatalf("first init: %d %s %s", code, out, errOut)
+	}
+
+	hostKey := config.DefaultHostKeyPath(dir)
+	encKey := config.DefaultEncryptionKeyPath(dir)
+	cfg := config.DefaultConfigPath(dir)
+	if err := os.Chmod(hostKey, 0o660); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(encKey, 0o660); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cfg, 0o664); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errOut := runCLI(t, "", "--state-dir", dir, "init", "coder.example.com")
+	if code != 0 {
+		t.Fatalf("second init: %d %s %s", code, out, errOut)
+	}
+	for path, want := range map[string]os.FileMode{hostKey: 0o600, encKey: 0o600, cfg: 0o664} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %o, want %o", path, got, want)
+		}
+	}
+	if !strings.Contains(out, "permissions normalized to 0600") {
+		t.Errorf("init output missing permission normalization note: %q", out)
+	}
+}
+
 func TestInitNoOverwriteWithoutForce(t *testing.T) {
 	dir := t.TempDir()
 	if code, _, _ := runCLI(t, "", "--state-dir", dir, "init", "coder.example.com"); code != 0 {
