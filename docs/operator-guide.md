@@ -328,7 +328,7 @@ chart there):
 ```bash
 helm install coder-ssh-gateway \
   oci://ghcr.io/hamstudy/charts/coder-ssh-gateway \
-  --version 0.2.0 \
+  --version 0.2.1 \
   --namespace coder-ssh-gateway --create-namespace \
   --set coder.domain=coder.example.com
 ```
