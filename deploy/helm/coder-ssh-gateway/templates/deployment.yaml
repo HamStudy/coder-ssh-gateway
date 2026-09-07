@@ -5,11 +5,12 @@ metadata:
   labels:
     {{- include "csgw.labels" . | nindent 4 }}
 spec:
-  # Single replica: the store takes an exclusive flock on the state dir and
-  # a second replica fails fast. Recreate prevents overlap during rollout.
-  replicas: 1
+  # HA: the store supports concurrent instances on a shared POSIX volume
+  # (coordination via atomic rename + credential generation CAS). Scale to
+  # replicaCount (default 1); RollingUpdate overlaps old and new pods safely.
+  replicas: {{ .Values.replicaCount | default 1 }}
   strategy:
-    type: Recreate
+    type: RollingUpdate
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "csgw.name" . }}
@@ -47,6 +48,8 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["--state-dir", "/var/lib/coder-ssh-gateway", "init", {{ .Values.coder.domain | quote }}]
           env:
+            - name: CSGW_STATE_DIR
+              value: /var/lib/coder-ssh-gateway
             - name: CSGW_ENCRYPTION_KEY_V1
               valueFrom:
                 secretKeyRef:
@@ -87,6 +90,8 @@ spec:
             capabilities:
               drop: ["ALL"]
           env:
+            - name: CSGW_STATE_DIR
+              value: /var/lib/coder-ssh-gateway
             - name: CSGW_ENCRYPTION_KEY_V1
               valueFrom:
                 secretKeyRef:

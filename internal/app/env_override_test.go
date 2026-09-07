@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -127,6 +128,35 @@ func TestServeFlagAddressOverrides(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("serve did not exit within 30s of cancellation")
+	}
+}
+
+// CSGW_STATE_DIR resolves the state directory for every command when
+// --state-dir is absent, so exec'd commands need no flag.
+func TestEnvStateDirResolvesWithoutFlag(t *testing.T) {
+	envDir := t.TempDir()
+	t.Setenv(config.EnvStateDir, envDir)
+
+	if code, _, errOut := runCLI(t, "", "init", "coder.example.com"); code != 0 {
+		t.Fatalf("init via env state dir: %d %s", code, errOut)
+	}
+	if _, err := os.Stat(filepath.Join(envDir, "config.yaml")); err != nil {
+		t.Fatalf("env state dir was not initialized: %v", err)
+	}
+
+	// The flag wins over the env: point the env at a fresh dir and verify
+	// only the flagged dir gets initialized.
+	untouched := t.TempDir()
+	t.Setenv(config.EnvStateDir, untouched)
+	flagDir := t.TempDir()
+	if code, _, _ := runCLI(t, "", "--state-dir", flagDir, "init", "coder.example.com"); code != 0 {
+		t.Fatal("init with explicit --state-dir failed")
+	}
+	if _, err := os.Stat(filepath.Join(flagDir, "config.yaml")); err != nil {
+		t.Fatalf("flag dir not initialized: %v", err)
+	}
+	if entries, err := os.ReadDir(untouched); err != nil || len(entries) != 0 {
+		t.Fatalf("env dir touched despite explicit --state-dir: %v", err)
 	}
 }
 

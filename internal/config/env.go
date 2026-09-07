@@ -10,6 +10,10 @@ import (
 // Environment-variable overrides for the bind addresses (12-factor / k8s).
 // Precedence everywhere is: CLI flag > env var > config file > default.
 const (
+	// EnvStateDir resolves the state directory when --state-dir is absent.
+	// Precedence: --state-dir flag > CSGW_STATE_DIR > config state.dir.
+	EnvStateDir = "CSGW_STATE_DIR"
+
 	EnvListenAddress  = "CSGW_LISTEN_ADDRESS"  // overrides listen.address
 	EnvMetricsAddress = "CSGW_METRICS_ADDRESS" // overrides observability.metrics_address
 	EnvHealthAddress  = "CSGW_HEALTH_ADDRESS"  // overrides observability.health_address

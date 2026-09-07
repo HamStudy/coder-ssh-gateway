@@ -17,9 +17,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/HamStudy/coder-ssh-gateway/internal/config"
 	"github.com/HamStudy/coder-ssh-gateway/internal/version"
 )
 
@@ -62,6 +64,17 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if len(rest) == 0 {
 		usage(stderr)
 		return exitUsage
+	}
+	if c.stateDir == "" {
+		// Precedence: --state-dir flag > CSGW_STATE_DIR > config state.dir.
+		if envDir := os.Getenv(config.EnvStateDir); envDir != "" {
+			dir, err := filepath.Abs(envDir)
+			if err != nil {
+				fmt.Fprintf(stderr, "error: resolve %s %q: %v\n", config.EnvStateDir, envDir, err)
+				return exitUsage
+			}
+			c.stateDir = dir
+		}
 	}
 	switch rest[0] {
 	case "serve":
@@ -161,7 +174,8 @@ Commands:
   version    Print version information
 
 Global flags:
-  --state-dir DIR          State directory; wins over state.dir in the config file
+  --state-dir DIR          State directory; wins over CSGW_STATE_DIR, which wins
+                           over state.dir in the config file
   --config FILE            Config file (default: <state-dir>/config.yaml)
   --listen-address ADDR    SSH bind address; serve only, wins over CSGW_LISTEN_ADDRESS
   --metrics-address ADDR   Metrics bind address; serve only, wins over CSGW_METRICS_ADDRESS
