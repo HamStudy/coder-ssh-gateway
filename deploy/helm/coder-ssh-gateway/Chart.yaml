@@ -4,8 +4,8 @@ description: >
   SSH gateway in front of a Coder deployment: any SSH client reaches a
   workspace by hostname with no client-side software.
 type: application
-version: 0.3.3
-appVersion: "0.3.3"
+version: 0.3.4
+appVersion: "0.3.4"
 kubeVersion: ">=1.25.0"
 home: https://github.com/HamStudy/coder-ssh-gateway
 license: Apache-2.0
