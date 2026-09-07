@@ -132,9 +132,19 @@ func TestServeFlagAddressOverrides(t *testing.T) {
 
 func assertRefused(t *testing.T, port int) {
 	t.Helper()
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
-	if err == nil {
+	// Shutdown releases the listeners asynchronously; allow a grace window
+	// before declaring a leak.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
+		if err != nil {
+			return
+		}
 		conn.Close()
-		t.Errorf("overridden port %d is listening", port)
+		if time.Now().After(deadline) {
+			t.Errorf("overridden port %d is listening after shutdown", port)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
