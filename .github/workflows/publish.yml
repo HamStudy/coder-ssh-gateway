@@ -2,15 +2,20 @@ name: Publish
 
 # Builds multi-arch container images and pushes them to ghcr.io.
 # Tag pushes (v*) produce a versioned image + :latest, a GitHub Release
-# with the packaged Helm chart, and chart version == image version enforced;
-# workflow_dispatch produces a dev build tagged 0.0.0-<sha8> only (it never
-# touches :latest or creates releases).
+# with release notes, and a Helm chart pushed to the ghcr.io OCI registry
+# at oci://ghcr.io/<org>/charts/coder-ssh-gateway, with chart version ==
+# image version enforced; workflow_dispatch produces a dev build tagged
+# 0.0.0-<sha8> only (it never touches :latest, the registry's chart, or
+# creates releases).
 #
 # The image name derives from github.repository (lowercased: ghcr requires
-# lowercase), so it follows the repo wherever it lives.
+# lowercase), so it follows the repo wherever it lives; the chart lives
+# under the same registry at <org>/charts/ to stay out of the image's
+# namespace.
 #
-# First-push note: GitHub creates the package as PRIVATE. Flip it to
-# public once under Package settings, or pulls fail for anonymous users.
+# First-push note: GitHub creates each package (image and chart) as
+# PRIVATE. Flip both to public once under Package settings, or pulls
+# fail for anonymous users.
 
 on:
   push:
@@ -94,10 +99,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Helm chart release: package the chart at the tag's version and attach it
-  # to a GitHub Release, so `helm install <release-asset-url>` works without
-  # cloning the repo. Runs only for release tags, after the image exists —
-  # the chart's default image tag is guaranteed to be pullable.
+  # Helm chart release: package the chart at the tag version and push it
+  # to the ghcr.io OCI registry, then attach the tarball to a GitHub
+  # Release as a fallback. Runs only for release tags, after the image
+  # exists — the chart's default image tag is guaranteed to be pullable.
   chart:
     name: chart-release
     needs: image
@@ -105,6 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,6 +126,18 @@ jobs:
           helm package deploy/helm/coder-ssh-gateway \
             --version "$version" --app-version "$version" \
             --destination dist/
+
+      - name: Log in to ghcr.io
+        env:
+          HELM_USER: ${{ github.actor }}
+          HELM_PASS: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$HELM_PASS" | helm registry login "$REGISTRY" --username "$HELM_USER" --password-stdin
+
+      - name: Push chart to the OCI registry
+        run: |
+          set -eu
+          owner="$(echo "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
+          helm push dist/coder-ssh-gateway-*.tgz "oci://${REGISTRY}/${owner}/charts"
 
       - name: Create GitHub release with the chart
         uses: softprops/action-gh-release@v2

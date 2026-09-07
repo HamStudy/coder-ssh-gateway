@@ -322,18 +322,26 @@ helm install coder-ssh-gateway deploy/helm/coder-ssh-gateway \
 kubectl -n coder-ssh-gateway rollout status deploy/coder-ssh-gateway
 ```
 
-Or without cloning, from the published release asset:
+Or without cloning, from the OCI registry (every release publishes the
+chart there):
 
 ```bash
 helm install coder-ssh-gateway \
-  https://github.com/HamStudy/coder-ssh-gateway/releases/download/v0.1.0/coder-ssh-gateway-0.1.0.tgz \
+  oci://ghcr.io/hamstudy/charts/coder-ssh-gateway \
+  --version 0.2.0 \
   --namespace coder-ssh-gateway --create-namespace \
   --set coder.domain=coder.example.com
 ```
 
-Each release tags the chart at its version; check the
-[releases page](https://github.com/HamStudy/coder-ssh-gateway/releases)
-for the current one.
+`--version` pins the chart version and is recommended for repeatable
+installs; without it Helm installs the latest chart it has cached or
+pulls the latest published one. Each release tags the chart at its
+version; list what's published with
+`helm show chart oci://ghcr.io/hamstudy/charts/coder-ssh-gateway` or
+check the
+[releases page](https://github.com/HamStudy/coder-ssh-gateway/releases).
+The release tarball is also attached to each release as a fallback, but
+the registry is the supported path.
 
 `coder.domain` is the hostname of your Coder deployment; the default,
 `coder.com`, is Coder's public service. The chart renders `config.yaml`

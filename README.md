@@ -93,11 +93,12 @@ Full walkthrough including config edits:
 The chart self-provisions — it generates the encryption key (injected
 via the environment, never written to disk next to your data), and the
 host key is generated into the state volume on first boot. No cloning
-required; install straight from the release asset:
+required; install straight from the OCI registry:
 
 ```bash
 helm install csgw \
-  https://github.com/HamStudy/coder-ssh-gateway/releases/download/v0.1.0/coder-ssh-gateway-0.1.0.tgz \
+  oci://ghcr.io/hamstudy/charts/coder-ssh-gateway \
+  --version 0.2.0 \
   -n csgw --create-namespace --set coder.domain=coder.example.com
 ```
 
