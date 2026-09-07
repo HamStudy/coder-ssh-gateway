@@ -152,6 +152,11 @@ The shipped image is multi-stage, distroless, non-root. The Coder CLI
 version and sha256 are baked in; both are overridable via `--build-arg`
 when you bump versions (pin both together).
 
+A static busybox is included for exec-in maintenance: `docker exec`
+/ `kubectl exec ... -- sh` gives you a shell, and other busybox applets
+run as `busybox <applet>` (`ls`, `tar`, `vi`, ...). Nothing else is
+added — no package manager, no glibc.
+
 ### 1. Build the image
 
 ```bash
@@ -175,17 +180,16 @@ which is the right value for container port mapping.
 
 ### 3. Edit config.yaml
 
-The image is distroless (no shell inside). Use `docker cp` to copy the
-file out, edit, and copy it back:
+Exec into a one-shot container on the volume and edit with busybox
+`vi`:
 
 ```bash
-c=$(docker create -v csgw-state:/var/lib/coder-ssh-gateway \
-  coder-ssh-gateway:dev version)
-docker cp "$c:/var/lib/coder-ssh-gateway/config.yaml" ./config.yaml
-# edit ./config.yaml, then:
-docker cp ./config.yaml "$c:/var/lib/coder-ssh-gateway/config.yaml"
-docker rm "$c"
+docker run -it --rm -v csgw-state:/var/lib/coder-ssh-gateway \
+  --entrypoint /bin/sh coder-ssh-gateway:dev
+# ... edit /var/lib/coder-ssh-gateway/config.yaml, then exit
 ```
+
+`docker cp` out/in also works if you prefer editing on the host.
 
 Set at minimum:
 
@@ -400,8 +404,10 @@ kubectl -n coder-ssh-gateway wait --for=delete pod \
   -l app=coder-ssh-gateway --timeout=120s
 ```
 
-Edit `config.yaml` through a helper pod (the gateway image is distroless,
-so `kubectl cp` has nothing to exec against):
+Edit `config.yaml` through a helper pod — at this point `serve` is
+scaled to zero, so there is no gateway pod to exec into. (While the
+gateway is up, its image carries a busybox shell: `kubectl exec ... --
+sh` works for inspection.)
 
 ```bash
 kubectl -n coder-ssh-gateway apply -f - <<'EOF'
@@ -940,15 +946,21 @@ The same split-archive principle holds, with paths adjusted:
   halves out to separate destinations. Restore the other way: stop the
   serve container, run a one-shot helper with the volume mounted,
   extract the two archives to the right paths inside the volume, then
-  start the serve container. The distroless gateway image itself has
-  no shell or `tar`, so it cannot serve as the helper.
-- **Kubernetes:** PVC snapshot or `kubectl cp` for ordinary state. The
-  distroless gateway image has no `tar`, so the extraction side of a
-  restore needs a sidecar pod (for example the same busybox or alpine
-  image) running with the PVC mounted read-write. Back up the two
-  archives separately (for example a Velero schedule on the PVC plus
-  an out-of-band copy of the encryption key Secret if you used a split
-  mount).
+  start the serve container. The gateway image itself can serve as the
+  helper — `docker run --rm -v csgw-state:/var/lib/coder-ssh-gateway
+  --entrypoint /bin/sh coder-ssh-gateway:dev` (its `tar` runs as
+  `busybox tar`).
+- **Kubernetes:** PVC snapshot or `kubectl cp` for ordinary state.
+  `kubectl cp` still needs a `tar` binary on the container's `PATH`,
+  which the gateway image does not have — `kubectl cp` targets need a
+  helper (for example the same busybox or alpine image) or a sidecar
+  with the PVC mounted read-write. For extraction without a helper, the
+  gateway container can restore from an archive piped over stdin:
+  `kubectl exec -i <pod> -c gateway -- sh -c
+  'busybox tar -xzf - -C /var/lib/coder-ssh-gateway' < state.tar.gz`.
+  Back up the two archives separately (for example a Velero schedule on
+  the PVC plus an out-of-band copy of the encryption key Secret if you
+  used a split mount).
 
 ## Encryption-key rotation
 

@@ -373,8 +373,10 @@ unit goes to `failed`, or the Kubernetes pod stays in
      holder with `fuser <state-dir>/lock` (or `lsof <state-dir>/lock`)
      and stop it; do NOT reboot just to clear a lock you have not
      investigated.
-3. **Container-specific.** Distroless images have no shell, so all
-   debugging goes through `docker logs` (or `kubectl logs`). Confirm
+3. **Container-specific.** The image is distroless plus a static
+   busybox: start with `docker logs` (or `kubectl logs`), then
+   `docker exec` / `kubectl exec ... -- sh` for in-container
+   inspection (`ls`, `cat`, etc. run as `busybox <applet>`). Confirm
    the named volume was created and the `csgw-state` volume is
    attached.
 4. **Kubernetes-specific.** Confirm `pvc.yaml` was applied and the PVC

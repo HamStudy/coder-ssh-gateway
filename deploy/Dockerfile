@@ -1,8 +1,10 @@
 # coder-ssh-gateway container image.
 #
 # Multi-stage: build the gateway from source, fetch a checksummed Coder CLI,
-# assemble a minimal non-root runtime image (distroless: no shell, no package
-# manager, no compiler).
+# assemble a minimal non-root runtime image (distroless + a static busybox
+# shell: no package manager, no compiler, no glibc). The busybox exists so
+# `docker exec` / `kubectl exec ... -- sh` works for incident maintenance;
+# other busybox applets run as `busybox <applet>` (ls, tar, vi, netstat, ...).
 #
 # Build:
 #   docker build -f deploy/Dockerfile -t coder-ssh-gateway:dev .
@@ -74,12 +76,30 @@ RUN set -eu; \
     tar -xzf /tmp/coder.tar.gz -C /usr/local/bin ./coder; \
     chmod 0755 /usr/local/bin/coder
 
+# ---------- busybox shell ----------
+# Static busybox for exec-in maintenance (docker exec / kubectl exec -- sh):
+# the distroless runtime ships no shell, which made in-container debugging
+# impossible. Applets run as `busybox <applet>` (ls, tar, vi, netstat, ...).
+# The binary is staged twice (busybox + a copy named sh): BuildKit's COPY
+# follows symlinks, so a prepared sh symlink cannot survive the copy into
+# the runtime stage; busybox dispatches on argv[0], so the copy IS the
+# shell. musl build = fully static, no libc needed by the distroless base.
+FROM busybox:1.38.0-musl AS busybox
+RUN mkdir -p /out && cp /bin/busybox /out/busybox && cp /bin/busybox /out/sh
+
 # ---------- runtime ----------
-# static-debian12:nonroot: uid/gid 65532, CA certificates included, no shell.
+# static-debian12:nonroot: uid/gid 65532, CA certificates included, no shell
+# (busybox added below), no package manager.
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /out/coder-ssh-gateway /usr/local/bin/coder-ssh-gateway
 COPY --from=codercli /usr/local/bin/coder /usr/local/bin/coder
+
+# Exec-in maintenance: static busybox + sh (see busybox stage above). The
+# /usr/bin copy covers PATH lookup; the /bin/sh copy covers the literal
+# /bin/sh reflex. Root ownership on purpose; nonroot only needs read+execute.
+COPY --from=busybox /out/ /usr/bin/
+COPY --from=busybox /out/sh /bin/sh
 
 # Pre-create the state dir owned by the runtime user so a mounted named
 # volume inherits usable ownership on first boot. The dir is staged empty

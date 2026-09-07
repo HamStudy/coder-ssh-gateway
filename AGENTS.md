@@ -71,7 +71,7 @@ Centrality unmeasured (no codegraph index); roles from LSP + reads.
 - Do not add top-level password/keyboard-interactive SSH auth — KI exists only as an auth-time continuation (renewal/enrollment) after verified public key auth.
 
 ## UNIQUE STYLES
-- Distroless runtime image (no shell, no tar) — cannot debug inside the container; use `doctor` and logs.
+- Distroless runtime image plus a static busybox: `sh` on PATH (and `/bin/sh`) for exec-in maintenance; applets run as `busybox <applet>` (`busybox tar`, `busybox vi`, ...). No package manager. `doctor` and logs remain the first tools.
 - Pinned toolchain: staticcheck v0.8.1, govulncheck v1.7.0, x/crypto floor v0.52.0 (scripts/check-xcrypto-version.sh).
 - CI extras beyond Go defaults: Dockerfile smoke build, fuzz smoke on route parsing.
 
