@@ -188,7 +188,7 @@ func (t *SessionTransport) start(ctx context.Context) error {
 		default:
 		}
 		t.recheckAfterFailure(ctx, code)
-		t.log.Debug("workspace inner SSH handshake failed", slog.String("code", code), slog.String("stderr_tail", string(ring.Tail())))
+		t.log.Warn("workspace inner SSH handshake failed", slog.String("code", code), slog.String("stderr_tail", string(ring.Tail())))
 		inner := &StartError{Code: code, Err: err}
 		proc.StdoutDrained()
 		stdoutDrained = true

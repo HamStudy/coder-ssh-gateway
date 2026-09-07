@@ -48,23 +48,28 @@ type logCapture struct {
 
 func (h *logCapture) Enabled(context.Context, slog.Level) bool { return true }
 func (h *logCapture) Handle(_ context.Context, r slog.Record) error {
+	var b strings.Builder
+	b.WriteString(r.Message)
+	r.Attrs(func(a slog.Attr) bool {
+		b.WriteString(" " + a.Key + "=" + a.Value.String())
+		return true
+	})
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.records = append(h.records, r.Message)
+	h.records = append(h.records, b.String())
 	return nil
 }
 func (h *logCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *logCapture) WithGroup(string) slog.Handler      { return h }
 
 func (h *logCapture) contains(sub string) bool {
+	return strings.Contains(h.dump(), sub)
+}
+
+func (h *logCapture) dump() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, r := range h.records {
-		if strings.Contains(r, sub) {
-			return true
-		}
-	}
-	return false
+	return strings.Join(h.records, "\n")
 }
 
 type memKeyProvider struct {
@@ -696,6 +701,84 @@ func TestWireExpiredCredentialPartialSuccess(t *testing.T) {
 	}
 	if got := f.auditEvents(sshauth.EventTypeKeyVerified); len(got) != 1 {
 		t.Errorf("verified events = %d, want 1 (key possession proven before renewal)", len(got))
+	}
+}
+
+// Operator-visibility contract (k8s console): every auth failure surface
+// logs at WARN with peer/user/fingerprint/detail_code, and no token material
+// ever appears in any log line.
+func TestWireAuthFailuresAreOperatorVisible(t *testing.T) {
+	defer leakCheck(t)
+
+	// Unenrolled key: candidate rejection names the user, fingerprint, and
+	// the stable detail code.
+	f := newFixture(t, coderOKHandler(uuid.New()))
+	defer f.close(t)
+	unknownSigner, err := func() (ssh.Signer, error) {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, err
+		}
+		return ssh.NewSignerFromKey(priv)
+	}()
+	if err != nil {
+		t.Fatalf("unknown signer: %v", err)
+	}
+	ws := startWireServer(t, f.authConfig())
+	client, err := dialGateway(ws.addr(), "coder", &clientProbe{}, allAuthMethods(unknownSigner)...)
+	if client != nil {
+		client.Close()
+	}
+	if err == nil {
+		t.Fatal("expected auth failure")
+	}
+	ws.shutdown()
+	if !f.logs.contains("public key candidate rejected") {
+		t.Error("unenrolled key did not produce a candidate-rejection log")
+	}
+	if !f.logs.contains(ssh.FingerprintSHA256(unknownSigner.PublicKey())) {
+		t.Error("rejection log missing the key fingerprint")
+	}
+	if !f.logs.contains("user=coder") || !f.logs.contains("detail_code="+core.AUTH_UNKNOWN_KEY) {
+		t.Error("rejection log missing user or detail_code")
+	}
+
+	// Expired credential + bogus renewal token: the coder-rejection WARN
+	// fires, and neither the stored token nor the pasted candidate ever
+	// reaches a log line.
+	f2 := newFixture(t, statusHandler(http.StatusUnauthorized))
+	defer f2.close(t)
+	f2.installCredential(t, "wire-token-expired-0123456789ab")
+	cfg := f2.authConfig()
+	cfg.RenewalAuthTimeout = 5 * time.Minute
+	ws2 := startWireServer(t, cfg)
+	// A real client pastes the fresh token at the keyboard-interactive
+	// prompt; answer it with a bogus candidate (the password method carries
+	// the same value for the parallel path).
+	renewalMethods := []ssh.AuthMethod{
+		ssh.PublicKeys(f2.signer),
+		ssh.KeyboardInteractive(func(_ string, _ string, _ []string, _ []bool) ([]string, error) {
+			return []string{"placeholder-token"}, nil
+		}),
+		ssh.Password("placeholder-token"),
+	}
+	client2, err := dialGateway(ws2.addr(), "coder", &clientProbe{}, renewalMethods...)
+	if client2 != nil {
+		client2.Close()
+	}
+	if err == nil {
+		t.Fatal("expected overall auth failure")
+	}
+	ws2.shutdown()
+	if !f2.logs.contains("renewal candidate rejected by Coder") {
+		t.Errorf("bogus renewal token did not produce a coder-rejection log\nlogs:\n%s", f2.logs.dump())
+	}
+	dump := f2.logs.dump()
+	if strings.Contains(dump, "placeholder-token") {
+		t.Error("pasted renewal candidate leaked into logs")
+	}
+	if strings.Contains(dump, "wire-token-expired-0123456789ab") {
+		t.Error("stored credential token leaked into logs")
 	}
 }
 

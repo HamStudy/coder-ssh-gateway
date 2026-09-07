@@ -226,17 +226,22 @@ func (s *Server) admitWorkspaceSession(ctx context.Context, wc *workspaceContext
 		}
 		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, "", false, route.CodeOf(err))
+		s.log.Warn("session target rejected",
+			slog.String("connection_id", state.ID()),
+			slog.String("user", target),
+			slog.String("detail_code", route.CodeOf(err)),
+		)
 		return
 	}
 	relChan, ok := s.cfg.Counters.AcquireChannel(state.ID())
 	if !ok {
-		s.rejectChannelLimit(state, perms, newCh)
+		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonChannelConn))
 		return
 	}
 	defer relChan()
 	relAcct, ok := s.cfg.Counters.AcquireChannelAccount(perms.AccountID)
 	if !ok {
-		s.rejectChannelLimit(state, perms, newCh)
+		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonChannelAccount))
 		return
 	}
 	defer relAcct()
@@ -245,6 +250,11 @@ func (s *Server) admitWorkspaceSession(ctx context.Context, wc *workspaceContext
 	if err != nil {
 		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, rt.DisplayTarget, false, core.STORE_UNAVAILABLE)
+		s.log.Warn("credential store unavailable at session open",
+			slog.String("connection_id", state.ID()),
+			slog.String("account_id", perms.AccountID.String()),
+			slog.String("detail", err.Error()),
+		)
 		_ = newCh.Reject(ssh.ConnectionFailed, "credential store unavailable")
 		return
 	}
@@ -288,7 +298,7 @@ func (s *Server) admitWorkspaceSession(ctx context.Context, wc *workspaceContext
 		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 255}))
 		_ = ch.CloseWrite()
 		_ = ch.Close()
-		s.log.Debug("workspace transport creation failed", slog.String("code", code), slog.String("detail", err.Error()))
+		s.log.Warn("workspace transport creation failed", slog.String("code", code), slog.String("detail", err.Error()))
 		return
 	}
 	// Blocks until the session ends; the transport outlives it so -L/-R
@@ -358,14 +368,14 @@ func (s *Server) startJumpTunnel(ctx context.Context, wc *workspaceContext, newC
 	relChan, ok := s.cfg.Counters.AcquireChannel(state.ID())
 	if !ok {
 		s.rec.LimitRejection(string(limits.ReasonChannelConn))
-		s.rejectChannelLimit(state, perms, newCh)
+		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonChannelConn))
 		return
 	}
 	relAcct, ok := s.cfg.Counters.AcquireChannelAccount(perms.AccountID)
 	if !ok {
 		s.rec.LimitRejection(string(limits.ReasonChannelAccount))
 		relChan()
-		s.rejectChannelLimit(state, perms, newCh)
+		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonChannelAccount))
 		return
 	}
 	relProc, ok := s.cfg.Counters.AcquireCoderProcess()
@@ -373,7 +383,7 @@ func (s *Server) startJumpTunnel(ctx context.Context, wc *workspaceContext, newC
 		s.rec.LimitRejection(string(limits.ReasonCoderProcess))
 		relAcct()
 		relChan()
-		s.rejectChannelLimit(state, perms, newCh)
+		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonCoderProcess))
 		return
 	}
 	defer relProc()
@@ -384,7 +394,7 @@ func (s *Server) startJumpTunnel(ctx context.Context, wc *workspaceContext, newC
 	// permissions snapshot taken at auth time may be stale.
 	snap, err := s.cfg.Auth.Store.LoadCredential(ctx, perms.AccountID)
 	if err != nil {
-		log.Debug("credential load failed at channel open", slog.String("detail", err.Error()))
+		log.Warn("credential store unavailable at channel open", slog.String("detail", err.Error()))
 		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, rt.DisplayTarget, false, core.STORE_UNAVAILABLE)
 		_ = newCh.Reject(ssh.ConnectionFailed, "credential store unavailable")
@@ -462,20 +472,21 @@ func (s *Server) relayDirectTCPIP(ctx context.Context, wc *workspaceContext, new
 	if s.cfg.WorkspaceTransports == nil {
 		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, "", false, core.TUNNEL_PROCESS_START_FAILED)
+		log.Warn("relay rejected: no transport factory configured")
 		_ = newCh.Reject(ssh.Prohibited, "port forwarding unavailable")
 		return
 	}
 	relChan, ok := s.cfg.Counters.AcquireChannel(state.ID())
 	if !ok {
 		s.rec.LimitRejection(string(limits.ReasonChannelConn))
-		s.rejectChannelLimit(state, perms, newCh)
+		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonChannelConn))
 		return
 	}
 	defer relChan()
 	relAcct, ok := s.cfg.Counters.AcquireChannelAccount(perms.AccountID)
 	if !ok {
 		s.rec.LimitRejection(string(limits.ReasonChannelAccount))
-		s.rejectChannelLimit(state, perms, newCh)
+		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonChannelAccount))
 		return
 	}
 	defer relAcct()
@@ -499,21 +510,26 @@ func (s *Server) rejectTransportFailure(ctx context.Context, state *sshauth.Conn
 	var te *transportError
 	if !errors.As(err, &te) {
 		s.rec.ChannelRejected()
+		s.log.Warn("relay rejected: workspace is unavailable", slog.String("connection_id", state.ID()), slog.String("detail", err.Error()))
 		_ = newCh.Reject(ssh.ConnectionFailed, "workspace is unavailable")
 		return
 	}
+	log := s.log.With(slog.String("connection_id", state.ID()), slog.String("account_id", perms.AccountID.String()), slog.String("detail_code", te.detail))
 	switch {
 	case te.detail == core.STORE_UNAVAILABLE:
 		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, "", false, core.STORE_UNAVAILABLE)
+		log.Warn("relay rejected: credential store unavailable")
 		_ = newCh.Reject(ssh.ConnectionFailed, "credential store unavailable")
 	case te.detail == core.AUTH_CODER_UNAVAILABLE:
 		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, "", false, core.AUTH_CODER_UNAVAILABLE)
+		log.Warn("relay rejected: coder control plane unavailable")
 		_ = newCh.Reject(ssh.ConnectionFailed, "coder control plane unavailable")
 	default:
 		s.rec.ChannelRejected()
 		s.auditChannelOpen(state, perms, "", false, te.detail)
+		log.Warn("relay rejected: credential no longer valid")
 		_ = newCh.Reject(ssh.Prohibited, "credential no longer valid; reconnect")
 		_ = state.Close()
 	}
@@ -522,8 +538,9 @@ func (s *Server) rejectTransportFailure(ctx context.Context, state *sshauth.Conn
 // rejectOnRevalidationFailure maps a failed channel-open revalidation to
 // §8.5 reasons and the §19.9/§11.4 transport-level consequences.
 func (s *Server) rejectOnRevalidationFailure(ctx context.Context, state *sshauth.ConnState, perms sshauth.FinalPerms, rt core.Route, newCh ssh.NewChannel, err error) {
-	s.log.Debug("channel-open revalidation failed",
+	s.log.Warn("channel-open revalidation failed",
 		slog.String("connection_id", state.ID()),
+		slog.String("account_id", perms.AccountID.String()),
 		slog.String("detail", err.Error()))
 	detail := core.AUTH_CREDENTIAL_UNAUTHORIZED
 	var ce *core.CredentialError
@@ -549,9 +566,14 @@ func (s *Server) rejectOnRevalidationFailure(ctx context.Context, state *sshauth
 	_ = state.Close()
 }
 
-func (s *Server) rejectChannelLimit(state *sshauth.ConnState, perms sshauth.FinalPerms, newCh ssh.NewChannel) {
+func (s *Server) rejectChannelLimit(state *sshauth.ConnState, perms sshauth.FinalPerms, newCh ssh.NewChannel, reason string) {
 	s.rec.ChannelRejected()
 	s.auditChannelOpen(state, perms, "", false, core.TUNNEL_LIMIT_REACHED)
+	s.log.Warn("channel rejected at limit",
+		slog.String("connection_id", state.ID()),
+		slog.String("account_id", perms.AccountID.String()),
+		slog.String("reason", reason),
+	)
 	_ = newCh.Reject(ssh.ResourceShortage, "channel limit reached")
 }
 

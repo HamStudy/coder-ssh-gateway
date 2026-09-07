@@ -43,15 +43,19 @@ func (c AuthConfig) publicKeyCallback(state *ConnState, cfgErr error, meta ssh.C
 		slog.String("connection_id", state.ID()),
 		slog.String("peer", state.PeerAddr()),
 	)
+	user := meta.User()
+	fingerprint := ssh.FingerprintSHA256(key)
 	reject := func(reason, detailCode string, attrs ...slog.Attr) error {
 		args := []any{
+			slog.String("user", user),
+			slog.String("fingerprint", fingerprint),
 			slog.String("reason", reason),
 			slog.String("detail_code", detailCode),
 		}
 		for _, a := range attrs {
 			args = append(args, a)
 		}
-		log.Debug("public key candidate rejected", args...)
+		log.Warn("public key candidate rejected", args...)
 		// §34.3 audits public-key rejections. The detail code is a generic,
 		// stable reason — never user input — and the outward error stays
 		// identical for every cause (§35).
@@ -63,7 +67,6 @@ func (c AuthConfig) publicKeyCallback(state *ConnState, cfgErr error, meta ssh.C
 		return nil, reject("config_invalid", core.STORE_UNAVAILABLE, slog.String("detail", cfgErr.Error()))
 	}
 
-	user := meta.User()
 	{
 		// CD-2: the enrollment user is the only other recognized username,
 		// and only while enrollment is armed; otherwise it rejects
@@ -108,7 +111,9 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 		slog.String("peer", state.PeerAddr()),
 	)
 	reject := func(reason, detailCode string, accountID, keyID uuid.UUID) error {
-		log.Debug("verified public key rejected",
+		log.Warn("verified public key rejected",
+			slog.String("user", meta.User()),
+			slog.String("fingerprint", ssh.FingerprintSHA256(key)),
 			slog.String("reason", reason),
 			slog.String("detail_code", detailCode),
 		)
@@ -198,7 +203,7 @@ func (c AuthConfig) startRenewal(state *ConnState, log *slog.Logger, account cor
 	}
 	state.SetRenewalAttempt(account, keyRecord, generation)
 	state.SendBanner(c.renewalInstructions())
-	log.Debug("entering credential renewal",
+	log.Info("entering credential renewal",
 		slog.String("account_id", account.ID.String()),
 		slog.String("credential_kind", string(kind)),
 	)

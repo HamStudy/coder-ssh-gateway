@@ -39,7 +39,7 @@ func (s *Server) handleConn(raw net.Conn) {
 
 	ip := peerIP(raw.RemoteAddr())
 	if s.cfg.PreAuthGate != nil && !s.cfg.PreAuthGate(ip) {
-		s.log.Debug("pre-auth rate gate refused connection", slog.String("peer", ip))
+		s.log.Warn("pre-auth rate gate refused connection", slog.String("peer", ip))
 		s.rec.LimitRejection(string(limits.ReasonPreAuthIP))
 		s.rec.ConnectionOpened()
 		s.rec.ConnectionClosed(metrics.ResultRejected)
@@ -156,7 +156,7 @@ func (s *Server) handleConn(raw net.Conn) {
 	handshakeDur := time.Since(handshakeStart)
 	if err != nil {
 		s.rec.AuthDuration(metrics.ResultFailure, handshakeDur)
-		log.Debug("handshake failed", slog.String("detail", err.Error()))
+		log.Warn("connection handshake failed", slog.String("detail", err.Error()))
 		s.auditHandshakeFailure(state)
 		return
 	}

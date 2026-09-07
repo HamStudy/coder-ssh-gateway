@@ -190,7 +190,7 @@ func (c AuthConfig) enrollmentCandidate(state *ConnState, key ssh.PublicKey) (*s
 		slog.String("peer", state.PeerAddr()),
 	)
 	if _, isCert := key.(*ssh.Certificate); isCert {
-		log.Debug("enrollment candidate rejected: certificate")
+		log.Warn("enrollment candidate rejected: certificate")
 		c.recordAuthRejected(state.Context(), state, core.AUTH_UNKNOWN_KEY, uuid.Nil, uuid.Nil)
 		return nil, ErrPublicKeyRejected
 	}
@@ -214,7 +214,7 @@ func (c AuthConfig) verifiedEnrollment(state *ConnState, key ssh.PublicKey, cand
 		slog.String("peer", state.PeerAddr()),
 	)
 	reject := func(reason string) (*ssh.Permissions, error) {
-		log.Debug("enrollment verified stage rejected", slog.String("reason", reason))
+		log.Warn("enrollment verified stage rejected", slog.String("reason", reason))
 		c.recordAuthRejected(ctx, state, core.AUTH_UNKNOWN_KEY, uuid.Nil, uuid.Nil)
 		return nil, ErrPublicKeyRejected
 	}
@@ -245,7 +245,7 @@ func (c AuthConfig) verifiedEnrollment(state *ConnState, key ssh.PublicKey, cand
 	}
 	if timeout > 0 {
 		if err := state.SetDeadline(time.Now().Add(timeout)); err != nil {
-			log.Debug("cannot extend deadline for enrollment", slog.String("detail", err.Error()))
+			log.Warn("cannot extend deadline for enrollment", slog.String("detail", err.Error()))
 			c.recordAuthRejected(ctx, state, core.STORE_UNAVAILABLE, uuid.Nil, uuid.Nil)
 			return nil, ErrPublicKeyRejected
 		}
@@ -254,7 +254,7 @@ func (c AuthConfig) verifiedEnrollment(state *ConnState, key ssh.PublicKey, cand
 	// §20: bound pre-resolution token guessing per peer IP before the
 	// first prompt is offered.
 	if ec.PreTokenGate != nil && !ec.PreTokenGate(peerIPFromState(state)) {
-		log.Debug("enrollment pre-token gate refused")
+		log.Warn("enrollment pre-token gate refused")
 		ec.auditEnrollment(scopeFromState(state), nil, nil, ResultFailure, DetailEnrollmentRateLimited)
 		return nil, ErrPublicKeyRejected
 	}
@@ -297,7 +297,7 @@ func (s *enrollmentSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ss
 		"this connection will close; reconnect with your workspace connection."
 	for {
 		if s.state.RenewalAttempts() >= s.ec.maxAttempts() {
-			s.log.Debug("enrollment attempts exhausted",
+			s.log.Warn("enrollment attempts exhausted",
 				slog.Int("attempts", s.state.RenewalAttempts()))
 			s.ec.auditEnrollment(scopeFromState(s.state), nil, nil, ResultFailure, DetailEnrollmentAttemptsExhausted)
 			return nil, ErrRenewalAttemptsExhausted
@@ -319,7 +319,7 @@ func (s *enrollmentSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ss
 			return nil, err
 		}
 		if s.ec.PreTokenGate != nil && !s.ec.PreTokenGate(peerIPFromState(s.state)) {
-			s.log.Debug("enrollment re-challenge rate-limited")
+			s.log.Warn("enrollment re-challenge rate-limited")
 			s.ec.auditEnrollment(scopeFromState(s.state), nil, nil, ResultFailure, DetailEnrollmentRateLimited)
 			return nil, ErrRenewalRateLimited
 		}
@@ -336,12 +336,12 @@ func (s *enrollmentSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ss
 func (s *enrollmentSession) password(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 	defer wipeBytes(password)
 	if s.ec.PreTokenGate != nil && !s.ec.PreTokenGate(peerIPFromState(s.state)) {
-		s.log.Debug("enrollment password attempt rate-limited")
+		s.log.Warn("enrollment password attempt rate-limited")
 		s.ec.auditEnrollment(scopeFromState(s.state), nil, nil, ResultFailure, DetailEnrollmentRateLimited)
 		return nil, ErrRenewalRateLimited
 	}
 	if s.state.RenewalAttempts() >= s.ec.maxAttempts() {
-		s.log.Debug("enrollment attempts exhausted",
+		s.log.Warn("enrollment attempts exhausted",
 			slog.Int("attempts", s.state.RenewalAttempts()))
 		s.ec.auditEnrollment(scopeFromState(s.state), nil, nil, ResultFailure, DetailEnrollmentAttemptsExhausted)
 		return nil, ErrRenewalAttemptsExhausted
@@ -362,14 +362,14 @@ func (ec *EnrollmentConfig) validateAndLink(state *ConnState, key ssh.PublicKey,
 
 	candidate, err := SanitizeToken(rawCandidate)
 	if err != nil {
-		log.Debug("enrollment candidate failed sanitization", slog.String("detail", err.Error()))
+		log.Warn("enrollment candidate failed sanitization", slog.String("detail", err.Error()))
 		ec.auditEnrollment(scope, nil, nil, ResultFailure, core.AUTH_CREDENTIAL_UNAUTHORIZED)
 		return nil, ErrTokenRejected
 	}
 	defer wipeBytes(candidate)
 
 	if ec.Rate != nil && !ec.Rate.AllowRenewalAttempt(uuid.Nil) {
-		log.Debug("enrollment attempt rate-limited")
+		log.Warn("enrollment attempt rate-limited")
 		ec.auditEnrollment(scope, nil, nil, ResultFailure, DetailEnrollmentRateLimited)
 		return nil, ErrRenewalRateLimited
 	}
@@ -380,16 +380,16 @@ func (ec *EnrollmentConfig) validateAndLink(state *ConnState, key ssh.PublicKey,
 		detail := detailCodeFor(err, kind)
 		switch kind {
 		case core.CredentialInvalid:
-			log.Debug("enrollment candidate rejected by Coder", slog.String("detail_code", detail))
+			log.Warn("enrollment candidate rejected by Coder", slog.String("detail_code", detail))
 			ec.auditEnrollment(scope, nil, nil, ResultFailure, detail)
 			return nil, ErrTokenRejected
 		case core.ControlPlaneUnavailable:
 			// Clean failure, NO retry prompt, nothing stored (§13.2 parity).
-			log.Debug("coder unavailable during enrollment", slog.String("detail_code", detail))
+			log.Warn("coder unavailable during enrollment", slog.String("detail_code", detail))
 			ec.auditEnrollment(scope, nil, nil, ResultFailure, core.AUTH_CODER_UNAVAILABLE)
 			return nil, ErrCoderUnavailable
 		default:
-			log.Debug("enrollment candidate failed non-renewably",
+			log.Warn("enrollment candidate failed non-renewably",
 				slog.String("kind", string(kind)),
 				slog.String("detail_code", detail),
 			)
@@ -428,7 +428,7 @@ func (ec *EnrollmentConfig) validateAndLink(state *ConnState, key ssh.PublicKey,
 	if ec.Rate != nil {
 		ec.Rate.GrantReconnectAllowance(account.ID)
 	}
-	log.Debug("device enrolled; forcing reconnect",
+	log.Info("device enrolled; forcing reconnect",
 		slog.String("account_id", account.ID.String()),
 		slog.Int64("generation", generation),
 	)
@@ -461,13 +461,13 @@ func (ec *EnrollmentConfig) linkEnrollment(
 
 	linkedAccountID, keyExists, err := ec.Store.KeyDigestExists(digest)
 	if err != nil {
-		log.Debug("enrollment key digest lookup failed", slog.String("detail_code", store.CodeOf(err)))
+		log.Warn("enrollment key digest lookup failed", slog.String("detail_code", store.CodeOf(err)))
 		return fail(store.CodeOf(err), ErrEnrollmentFailed)
 	}
 	if keyExists {
 		linked, err := ec.Store.GetAccount(linkedAccountID)
 		if err != nil {
-			log.Debug("enrollment linked-account lookup failed", slog.String("detail_code", store.CodeOf(err)))
+			log.Warn("enrollment linked-account lookup failed", slog.String("detail_code", store.CodeOf(err)))
 			return fail(store.CodeOf(err), ErrEnrollmentFailed)
 		}
 		if linked.CoderUserID == nil || *linked.CoderUserID != identity.ID {
@@ -482,7 +482,7 @@ func (ec *EnrollmentConfig) linkEnrollment(
 
 	account, created, err := ec.Store.LookupOrCreateAccountByCoderID(scope.ctx, ec.DeploymentID, identity.ID, identity.Username)
 	if err != nil {
-		log.Debug("enrollment account resolution failed", slog.String("detail_code", store.CodeOf(err)))
+		log.Warn("enrollment account resolution failed", slog.String("detail_code", store.CodeOf(err)))
 		return fail(store.CodeOf(err), ErrEnrollmentFailed)
 	}
 	log = log.With(slog.String("account_id", account.ID.String()))
@@ -494,7 +494,7 @@ func (ec *EnrollmentConfig) linkEnrollment(
 	if !created {
 		snap, err := ec.Store.LoadCredential(scope.ctx, account.ID)
 		if err != nil {
-			log.Debug("enrollment credential load failed", slog.String("detail_code", store.CodeOf(err)))
+			log.Warn("enrollment credential load failed", slog.String("detail_code", store.CodeOf(err)))
 			return fail(store.CodeOf(err), ErrEnrollmentFailed)
 		}
 		// The current token is not needed — only its generation — so the
@@ -542,7 +542,7 @@ func (ec *EnrollmentConfig) linkEnrollment(
 	if keyExists {
 		_, keyRecord, err = ec.Store.LookupByPublicKey(scope.ctx, ec.DeploymentID, key)
 		if err != nil {
-			log.Debug("enrollment linked-key lookup failed", slog.String("detail_code", store.CodeOf(err)))
+			log.Warn("enrollment linked-key lookup failed", slog.String("detail_code", store.CodeOf(err)))
 			return fail(store.CodeOf(err), ErrEnrollmentFailed)
 		}
 		if keyRecord.AccountID != account.ID {

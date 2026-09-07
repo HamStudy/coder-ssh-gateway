@@ -244,7 +244,7 @@ func (s *renewalSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ssh.K
 		"After the token is verified this connection continues straight into your workspace."
 	for {
 		if s.state.RenewalAttempts() >= s.rc.maxAttempts() {
-			s.log.Debug("renewal attempts exhausted",
+			s.log.Warn("renewal attempts exhausted",
 				slog.Int("attempts", s.state.RenewalAttempts()))
 			s.rc.auditRenewal(scopeFromState(s.state), s.account, s.keyRecord, ResultFailure, DetailRenewalAttemptsExhausted)
 			return nil, ErrRenewalAttemptsExhausted
@@ -274,7 +274,7 @@ func (s *renewalSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ssh.K
 		if !errors.Is(err, ErrTokenRejected) {
 			return nil, err
 		}
-		s.log.Debug("renewal candidate rejected; re-challenging",
+		s.log.Warn("renewal candidate rejected; re-challenging",
 			slog.String("account_id", s.account.ID.String()))
 		instruction = "Token not accepted. Verify you copied the current token from\n" +
 			s.rc.cliAuthURL() + " and try again.\n" +
@@ -289,7 +289,7 @@ func (s *renewalSession) keyboardInteractive(_ ssh.ConnMetadata, challenge ssh.K
 func (s *renewalSession) password(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 	defer wipeBytes(password)
 	if s.state.RenewalAttempts() >= s.rc.maxAttempts() {
-		s.log.Debug("renewal attempts exhausted",
+		s.log.Warn("renewal attempts exhausted",
 			slog.Int("attempts", s.state.RenewalAttempts()))
 		s.rc.auditRenewal(scopeFromState(s.state), s.account, s.keyRecord, ResultFailure, DetailRenewalAttemptsExhausted)
 		return nil, ErrRenewalAttemptsExhausted
@@ -367,14 +367,14 @@ func (rc *RenewalConfig) replaceCredential(
 	if err != nil {
 		// Sanitize errors are static sentinels; the detail never contains
 		// token bytes or lengths (§13.2).
-		log.Debug("renewal candidate failed sanitization", slog.String("detail", err.Error()))
+		log.Warn("renewal candidate failed sanitization", slog.String("detail", err.Error()))
 		rc.auditRenewal(scope, account, keyRecord, ResultFailure, core.AUTH_CREDENTIAL_UNAUTHORIZED)
 		return core.CredentialSnapshot{}, false, ErrTokenRejected
 	}
 	defer wipeBytes(candidate)
 
 	if rc.Rate != nil && !rc.Rate.AllowRenewalAttempt(account.ID) {
-		log.Debug("renewal attempt rate-limited")
+		log.Warn("renewal attempt rate-limited")
 		rc.auditRenewal(scope, account, keyRecord, ResultFailure, DetailRenewalRateLimited)
 		return core.CredentialSnapshot{}, false, ErrRenewalRateLimited
 	}
@@ -387,17 +387,17 @@ func (rc *RenewalConfig) replaceCredential(
 		case core.CredentialInvalid:
 			// Retryable: the user can paste a fresh token (§35 row
 			// "replacement token returns 401").
-			log.Debug("renewal candidate rejected by Coder", slog.String("detail_code", detail))
+			log.Warn("renewal candidate rejected by Coder", slog.String("detail_code", detail))
 			rc.auditRenewal(scope, account, keyRecord, ResultFailure, detail)
 			return core.CredentialSnapshot{}, false, ErrTokenRejected
 		case core.ControlPlaneUnavailable:
 			// §13.2/§35: clean failure, NO retry prompt, store untouched.
-			log.Debug("coder unavailable during renewal", slog.String("detail_code", detail))
+			log.Warn("coder unavailable during renewal", slog.String("detail_code", detail))
 			rc.auditRenewal(scope, account, keyRecord, ResultFailure, core.AUTH_CODER_UNAVAILABLE)
 			return core.CredentialSnapshot{}, false, ErrCoderUnavailable
 		default:
 			// 403 / incompatible / malformed (§11.4): non-renewable.
-			log.Debug("renewal candidate failed non-renewably",
+			log.Warn("renewal candidate failed non-renewably",
 				slog.String("kind", string(kind)),
 				slog.String("detail_code", detail),
 			)

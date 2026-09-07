@@ -1012,3 +1012,54 @@ Client behavior during overlap varies; test Moshi specifically before
 relying on seamless rotation. The gateway never auto-generates a host
 key at startup: with no configured keys the gateway fails to boot,
 deliberately.
+
+## Console logging
+
+The gateway logs structured JSON to stdout — under Kubernetes, `kubectl
+logs` is the first diagnostic. The default `info` level is tuned so that
+**every failed connection attempt explains itself** and successful
+traffic stays quiet.
+
+A rejected connection looks like this:
+
+```json
+{"level":"WARN","msg":"public key candidate rejected",
+ "connection_id":"…","peer":"203.0.113.7:51022","user":"general",
+ "fingerprint":"SHA256:3nIPhhXCP54ETGXAAakA9Myxp13NNtONA/ZFgiThTvQ",
+ "reason":"key_lookup_failed","detail_code":"AUTH_UNKNOWN_KEY"}
+```
+
+Read it as: *this key* (`fingerprint`) claiming *this username* (`user`)
+from *this address* (`peer`) failed *this stage* (`msg`) for *this
+reason* (`detail_code`). `fingerprint` is the public-key fingerprint —
+compare it against a user's enrolled key to answer "is this even the
+right key?"
+
+Common `detail_code` values at auth time:
+
+| Code | Meaning |
+|------|---------|
+| `AUTH_UNKNOWN_KEY` | key not enrolled (or a certificate was offered) |
+| `AUTH_CREDENTIAL_MISSING` | enrolled key with no stored token yet → renewal prompt |
+| `AUTH_CREDENTIAL_UNAUTHORIZED` | stored token rejected by Coder → renewal prompt |
+| `AUTH_WRONG_CODER_IDENTITY` | token resolves to a different Coder user than the binding |
+| `AUTH_CODER_UNAVAILABLE` | Coder control plane unreachable (transport stays up) |
+| `TUNNEL_LIMIT_REACHED` | per-connection/per-account channel or process limit |
+
+Renewal and enrollment failures (bad pasted tokens, exhausted attempts,
+rate limits) log the same way with `renewal …` / `enrollment …` messages.
+Channel rejections — wrong workspace target, relay without a factory,
+credential gone invalid mid-connection — each carry one WARN line with
+the connection and account.
+
+Other levels:
+
+- `debug` (`observability.log_level: debug`): per-request progress,
+  candidate acceptances, banner text, spawn details. Use it when you
+  need the play-by-play; it is noisy by design.
+- Successful enrollments and renewals log at `info` (`device enrolled`,
+  `credential renewal …`) — rare and worth seeing.
+- Successful connections log nothing above `debug`; the audit log under the state directory remains the record of successes.
+
+Never worries about secrets: token material is excluded from logs by
+construction, and tests assert it.
