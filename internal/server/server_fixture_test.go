@@ -105,15 +105,15 @@ var testCoderUserID = uuid.MustParse("44444444-4444-4444-4444-444444444444")
 // verifier + audit) that the server under test consumes. No fakes on the
 // auth path (task requirement).
 type gwFixture struct {
-	store    *store.Store
-	dep      core.Deployment
-	acct     core.Account
-	keyRec   core.SSHKeyRecord
-	signer   ssh.Signer
-	audit    *audit.InMemoryLogger
-	logs     *logCapture
-	coder    *httptest.Server
-	verifier *coderapi.CachedVerifier
+	store      *store.Store
+	dep        core.Deployment
+	acct       core.Account
+	keyRec     core.SSHKeyRecord
+	signer     ssh.Signer
+	audit      *audit.InMemoryLogger
+	logs       *logCapture
+	coder      *httptest.Server
+	verifier   *coderapi.CachedVerifier
 	codec      *route.Codec
 	starter    *fakeTunnelStarter
 	transports *fakeTransportFactory
