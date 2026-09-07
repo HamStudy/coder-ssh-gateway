@@ -1,5 +1,8 @@
-# Sisyphus state (do not commit)
+# Agent/AI state (do not commit)
 .sisyphus/
+.codegraph/
+.omo/
+.opencode/
 
 # Gateway state
 state/
@@ -29,3 +32,4 @@ testdata/local/
 # Local agent-skill infrastructure (must never be committed)
 .agents/
 skills-lock.json
+.codegraph
