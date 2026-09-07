@@ -237,6 +237,7 @@ func TestDirectTCPIPFullPath(t *testing.T) {
 		t.Errorf("marker = %q, want TUNNEL-OK", marker)
 	}
 
+	waitFor(t, 5*time.Second, func() bool { return f.starter.count() == 1 })
 	calls := f.starter.recorded()
 	if len(calls) != 1 {
 		t.Fatalf("starter calls = %d, want 1", len(calls))
@@ -505,6 +506,7 @@ func TestStaleCredentialNewerValidGenerationProceeds(t *testing.T) {
 	}
 	defer ch.Close()
 
+	waitFor(t, 5*time.Second, func() bool { return f.starter.count() == 1 })
 	calls := f.starter.recorded()
 	if len(calls) != 1 {
 		t.Fatalf("starter calls = %d, want 1", len(calls))
