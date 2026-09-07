@@ -537,8 +537,11 @@ coordination rides on atomic file replacement plus credential-generation
 CAS, and the per-instance lock is advisory. Requirements:
 
 - The state volume must be a POSIX-atomic shared filesystem (NFSv4,
-  Gluster, CephFS all qualify) mounted by every replica.
-- Set `replicaCount` (Helm) above 1; rollouts are `RollingUpdate`.
+  Gluster, CephFS all qualify) mounted by every replica, which means
+  **ReadWriteMany** access: the chart fails to render `replicaCount > 1`
+  against RWO volumes rather than deadlocking a pod at mount time.
+- Set `replicaCount` (Helm) above 1; rollouts are `RollingUpdate` (a
+  single replica keeps `Recreate`).
 - Each replica appends to its own audit file
   (`audit-<date>.<instance>.jsonl`); retention prunes all of them.
 - Rate limits are per replica: a `limits.connections_per_account` of 10

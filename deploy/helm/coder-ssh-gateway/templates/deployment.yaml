@@ -4,13 +4,24 @@ metadata:
   name: {{ include "csgw.fullname" . }}
   labels:
     {{- include "csgw.labels" . | nindent 4 }}
+{{- $replicas := int (.Values.replicaCount | default 1) }}
+{{- if gt $replicas 1 }}
+{{- $rwx := false }}
+{{- range .Values.persistence.accessModes }}
+{{- if eq . "ReadWriteMany" }}{{- $rwx = true }}{{- end }}
+{{- end }}
+{{- if not $rwx }}
+{{- fail (printf "replicaCount > 1 requires persistence.accessModes to include ReadWriteMany: every replica must mount the shared state volume, and a ReadWriteOnce volume cannot attach to two pods (got %v)" .Values.persistence.accessModes) }}
+{{- end }}
+{{- end }}
 spec:
   # HA: the store supports concurrent instances on a shared POSIX volume
-  # (coordination via atomic rename + credential generation CAS). Scale to
-  # replicaCount (default 1); RollingUpdate overlaps old and new pods safely.
-  replicas: {{ .Values.replicaCount | default 1 }}
+  # (coordination via atomic rename + credential generation CAS). With more
+  # than one replica the rollout is RollingUpdate; a single replica keeps
+  # Recreate so upgrades never overlap two pods.
+  replicas: {{ $replicas }}
   strategy:
-    type: RollingUpdate
+    type: {{ if gt $replicas 1 }}RollingUpdate{{ else }}Recreate{{ end }}
   selector:
     matchLabels:
       app.kubernetes.io/name: {{ include "csgw.name" . }}

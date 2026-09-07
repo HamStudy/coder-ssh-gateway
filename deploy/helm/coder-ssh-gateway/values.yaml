@@ -57,6 +57,10 @@ metrics:
 persistence:
   size: 1Gi
   storageClass: ""
+  # ReadWriteMany is REQUIRED when replicaCount > 1: every replica mounts
+  # the same shared state volume.
+  accessModes:
+    - ReadWriteOnce
 
 resources: {}
 nodeSelector: {}
