@@ -144,7 +144,7 @@ func (r *doctorReport) checkStateDir(cfg *config.Config) {
 		r.emit(name, statusWarn, "closing store: %v", err)
 		return
 	}
-	r.emit(name, statusPass, "%s accessible, VERSION=1, lock acquirable", dir)
+	r.emit(name, statusPass, "%s accessible, VERSION=1", dir)
 }
 
 // checkEncryptionKey covers §29.1 "encryption key availability" plus the

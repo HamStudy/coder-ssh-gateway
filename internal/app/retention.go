@@ -39,6 +39,11 @@ func PruneAuditFiles(dir string, retentionDays int, now time.Time, log *slog.Log
 			continue
 		}
 		dateStr := strings.TrimSuffix(strings.TrimPrefix(name, auditFilePrefix), auditFileExt)
+		// HA instances append ".<instance>" before the extension; the file
+		// date is everything before the first dot.
+		if i := strings.Index(dateStr, "."); i >= 0 {
+			dateStr = dateStr[:i]
+		}
 		day, err := time.Parse("2006-01-02", dateStr)
 		if err != nil {
 			// Not a dated audit file (e.g. a stray note); leave it alone.

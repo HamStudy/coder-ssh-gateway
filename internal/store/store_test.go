@@ -16,7 +16,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
@@ -250,36 +252,75 @@ func TestVersionAcceptedOnReopen(t *testing.T) {
 	openStore(t, dir) // must not fail on existing VERSION=1
 }
 
-// --- single-instance lock ----------------------------------------------------
+// --- multi-instance shared lock ----------------------------------------------
 
-func TestSecondOpenFailsFast(t *testing.T) {
+// Any number of instances may hold the state directory open at once; each
+// sees the other's committed writes (atomic rename), and a stale-generation
+// credential write from one instance conflicts against the other's newer
+// write (generation CAS).
+func TestConcurrentInstancesShareState(t *testing.T) {
 	defer testleaks.Verify(t)
 	dir := t.TempDir()
-	s := openStore(t, dir)
+	s1 := openStore(t, dir)
+	s2 := openStore(t, dir)
 
-	_, err := store.Open(dir)
-	if err == nil {
-		t.Fatal("second Open succeeded while lock held")
+	_, acct := seedAccount(t, s1)
+	accounts, err := s2.ListAccounts()
+	if err != nil {
+		t.Fatalf("instance 2 ListAccounts: %v", err)
 	}
+	if len(accounts) != 1 || accounts[0].ID != acct.ID {
+		t.Fatalf("instance 2 accounts = %v, want [%s]", accounts, acct.ID)
+	}
+
+	// Instance 2 replaces the credential; instance 1 must observe the new
+	// generation on its next load.
+	// Both instances share the encryption key, as deployments do via env.
+	sharedKeys := newMemoryKeyProvider(t, "v1")
+	s1.SetKeyProvider(sharedKeys)
+	s2.SetKeyProvider(sharedKeys)
+	mustReplace(t, s2, acct.ID, 0, "token-inst2-fresh-012345678")
+	snap, err := s1.LoadCredential(context.Background(), acct.ID)
+	if err != nil {
+		t.Fatalf("instance 1 LoadCredential: %v", err)
+	}
+	if snap.Generation != 1 {
+		t.Fatalf("instance 1 sees generation = %d, want 1", snap.Generation)
+	}
+
+	// Cross-instance CAS: instance 1 with a stale expectation conflicts.
+	_, err = s1.ReplaceCredential(context.Background(), replaceReq(acct.ID, 0, []byte("token-inst1-stale-01234567")))
+	if !errors.Is(err, store.ErrGenerationConflict) {
+		t.Fatalf("cross-instance stale write: errors.Is(ErrGenerationConflict) = false for %v", err)
+	}
+}
+
+// An exclusive holder (an older offline build taking LOCK_EX) still blocks
+// Open with ErrStoreLocked.
+func TestExclusiveHolderBlocksOpen(t *testing.T) {
+	defer testleaks.Verify(t)
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatalf("open lock file: %v", err)
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("acquire exclusive lock: %v", err)
+	}
+	_, err = store.Open(dir)
 	if !errors.Is(err, store.ErrStoreLocked) {
-		t.Errorf("errors.Is(ErrStoreLocked) = false for %v", err)
+		t.Fatalf("errors.Is(ErrStoreLocked) = false for %v", err)
 	}
-	if got := store.CodeOf(err); got != core.STORE_UNAVAILABLE {
-		t.Errorf("CodeOf = %q, want %q", got, core.STORE_UNAVAILABLE)
-	}
-
-	// After close the lock is released and Open succeeds again.
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	openStore(t, dir)
 }
 
 // --- atomic-write crash simulation -------------------------------------------
 
 // Simulates a crash between temp-write and rename: a stray *.tmp artifact sits
 // next to the intact original record. Reopen must clean the stray file and
-// leave the original record readable and byte-identical.
+// leave the original record readable and byte-identical. The artifacts are
+// backdated past strayTempMinAge: fresh temps may belong to a live peer.
 func TestCrashBetweenTempWriteAndRename(t *testing.T) {
 	defer testleaks.Verify(t)
 	dir := t.TempDir()
@@ -318,6 +359,13 @@ func TestCrashBetweenTempWriteAndRename(t *testing.T) {
 	}
 	if err := os.WriteFile(stray2, []byte("garbage"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	// Backdate past strayTempMinAge so Open reaps them as crash leftovers.
+	stale := time.Now().Add(-11 * time.Minute)
+	for _, stray := range []string{stray1, stray2} {
+		if err := os.Chtimes(stray, stale, stale); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	s := openStore(t, dir)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -94,13 +95,44 @@ type JSONLFileLogger struct {
 	now     func() time.Time
 }
 
+// instanceSuffix disambiguates audit files when several gateway instances
+// share one state directory (HA on NFS/Gluster/CephFS): explicit
+// CSGW_AUDIT_INSTANCE, else the pod/machine HOSTNAME, else empty for the
+// classic single-instance name.
+func instanceSuffix() string {
+	if v := os.Getenv("CSGW_AUDIT_INSTANCE"); v != "" {
+		return sanitizeInstance(v)
+	}
+	if h := os.Getenv("HOSTNAME"); h != "" {
+		return sanitizeInstance(h)
+	}
+	return ""
+}
+
+func sanitizeInstance(v string) string {
+	var b strings.Builder
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := b.String()
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return out
+}
+
 func NewJSONLFileLogger(dir string, fsync bool) (*JSONLFileLogger, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
 
 	dateStr := time.Now().Format("2006-01-02")
-	filename := "audit-" + dateStr + ".jsonl"
+	filename := auditFileName(dateStr)
 	path := filepath.Join(dir, filename)
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
@@ -124,7 +156,7 @@ func (l *JSONLFileLogger) rollIfDayChangedLocked() error {
 	if today == l.dateStr {
 		return nil
 	}
-	path := filepath.Join(l.dir, "audit-"+today+".jsonl")
+	path := filepath.Join(l.dir, auditFileName(today))
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
@@ -136,6 +168,16 @@ func (l *JSONLFileLogger) rollIfDayChangedLocked() error {
 	l.f = f
 	l.dateStr = today
 	return nil
+}
+
+// auditFileName builds the per-day audit file name, including the instance
+// suffix when one is configured.
+func auditFileName(date string) string {
+	name := "audit-" + date
+	if suffix := instanceSuffix(); suffix != "" {
+		name += "." + suffix
+	}
+	return name + ".jsonl"
 }
 
 func (l *JSONLFileLogger) Record(ctx context.Context, event Event) error {

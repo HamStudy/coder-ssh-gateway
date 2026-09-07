@@ -530,6 +530,25 @@ the boot:
   or the cross-user forms `alice/dev` and `alice/dev/main`
   (`owner/workspace[/agent]`).
 
+## High availability (multiple replicas)
+
+Since 0.3.3 the state directory supports concurrent gateway instances:
+coordination rides on atomic file replacement plus credential-generation
+CAS, and the per-instance lock is advisory. Requirements:
+
+- The state volume must be a POSIX-atomic shared filesystem (NFSv4,
+  Gluster, CephFS all qualify) mounted by every replica.
+- Set `replicaCount` (Helm) above 1; rollouts are `RollingUpdate`.
+- Each replica appends to its own audit file
+  (`audit-<date>.<instance>.jsonl`); retention prunes all of them.
+- Rate limits are per replica: a `limits.connections_per_account` of 10
+  means 10 per pod, not 10 cluster-wide.
+
+A second instance on the same host is also legal for zero-downtime
+maintenance; the old "locked by another process" error only appears
+when an exclusive holder (an older offline admin build) owns the
+directory.
+
 ## Self-enrollment (`login@`)
 
 With `enrollment.enabled: true` (the default), users onboard

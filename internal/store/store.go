@@ -5,7 +5,7 @@
 //
 //	<state-dir>/
 //	  VERSION                            # "1"
-//	  lock                               # flock(2) LOCK_EX|LOCK_NB, process lifetime
+//	  lock                               # flock(2) LOCK_SH, process lifetime (advisory)
 //	  deployments/<deployment-uuid>.json
 //	  accounts/<account-uuid>.json
 //	  keys/<sha256-hex-of-canonical-key-blob>.json
@@ -14,10 +14,15 @@
 //
 // Durability: every mutation is write-temp-file -> fsync(file) -> rename(2)
 // -> fsync(dir). Files are mode 0600, directories 0700 (explicit chmod after
-// create; umask-independent). Single instance: an flock on <state-dir>/lock is
-// held for the Store lifetime; a second Open fails fast with ErrStoreLocked.
-// The flock is Linux-only by design (no cross-platform lock shims). Inside the
-// process a sync.RWMutex serializes all record mutations.
+// create; umask-independent). Multiple instances: any number of processes may
+// hold the state directory open simultaneously (each holds a shared flock on
+// <state-dir>/lock for its lifetime). Correctness under concurrency comes
+// from atomic rename (readers always see one whole record) plus
+// generation-based compare-and-swap on credentials; the flock is advisory —
+// it detects liveness, and on filesystems with unreliable locks (many NFS,
+// some Gluster) deployments simply run without it. The flock is Linux-only by
+// design (no cross-platform lock shims). Inside the process a sync.RWMutex
+// serializes all record mutations.
 //
 // config.yaml and secrets/ live in the same directory but are NOT managed by
 // this package.
@@ -119,8 +124,9 @@ type Store struct {
 // Open creates (if absent) and exclusively locks the state directory.
 //
 // The VERSION marker must contain "1"; anything else fails with
-// ErrVersionMismatch. Stray *.tmp files from a crash between temp-write and
-// rename are removed. Linux flock only.
+// ErrVersionMismatch. Stray *.tmp files older than strayTempMinAge (crash
+// leftovers between temp-write and rename) are removed; younger ones may
+// belong to a live peer instance. Linux flock only.
 func Open(dir string) (s *Store, err error) {
 	if dir == "" {
 		return nil, storeUnavailable("state directory path is empty", nil)
@@ -146,9 +152,13 @@ func Open(dir string) (s *Store, err error) {
 		lockFile.Close()
 		return nil, storeUnavailable("chmod lock file", err)
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	// Shared lock: any number of instances may hold the directory open at
+	// once. Only an exclusive holder (an older offline admin build) blocks
+	// this — with a broken-lock filesystem the call simply succeeds and the
+	// deployment runs on atomic-rename + CAS coordination alone.
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
 		lockFile.Close()
-		return nil, storeUnavailable("state directory is locked by another process: "+dir, ErrStoreLocked)
+		return nil, storeUnavailable("state directory is exclusively locked by another process: "+dir, ErrStoreLocked)
 	}
 
 	st := &Store{dir: dir, lockFile: lockFile}
@@ -197,6 +207,10 @@ func (s *Store) Dir() string { return s.dir }
 // the writer with audit.NewJSONLFileLogger(store.AuditDir(), fsync).
 func (s *Store) AuditDir() string { return filepath.Join(s.dir, dirAudit) }
 
+// strayTempMinAge bounds how old a *.tmp file must be before Open reaps it;
+// younger files may belong to a live peer instance's in-flight write.
+const strayTempMinAge = 10 * time.Minute
+
 func (s *Store) checkOpen() error {
 	if s.closed {
 		return storeUnavailable("operation on closed store", ErrStoreClosed)
@@ -234,6 +248,11 @@ func (s *Store) cleanStrayTemps() error {
 		}
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), tmpSuffix) {
+				continue
+			}
+			// Another live instance may hold an in-flight temp file right
+			// now; only reap crash leftovers old enough to be certainly dead.
+			if info, err := e.Info(); err == nil && time.Since(info.ModTime()) < strayTempMinAge {
 				continue
 			}
 			if err := os.Remove(filepath.Join(d, e.Name())); err != nil {

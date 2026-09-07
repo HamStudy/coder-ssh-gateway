@@ -61,3 +61,28 @@ func TestPruneAuditFilesDisabledAndCancel(t *testing.T) {
 		t.Errorf("startup sweep did not prune old file, stat err = %v", err)
 	}
 }
+
+// HA instance-suffixed audit files (audit-<date>.<instance>.jsonl) prune on
+// the same schedule as plain ones.
+func TestPruneAuditFilesInstanceSuffix(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().AddDate(0, 0, -30).Format("2006-01-02")
+	fresh := time.Now().Format("2006-01-02")
+	for _, name := range []string{"audit-" + old + ".gw-pod-1.jsonl", "audit-" + old + ".jsonl", "audit-" + fresh + ".gw-pod-1.jsonl"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := PruneAuditFiles(dir, 7, time.Now(), nil)
+	if err != nil {
+		t.Fatalf("PruneAuditFiles: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("deleted = %v, want both stale files", deleted)
+	}
+	for _, name := range []string{"audit-" + fresh + ".gw-pod-1.jsonl"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("fresh file pruned: %v", err)
+		}
+	}
+}

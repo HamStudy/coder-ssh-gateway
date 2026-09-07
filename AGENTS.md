@@ -53,7 +53,7 @@ Centrality unmeasured (no codegraph index); roles from LSP + reads.
 | `WorkspaceSessionStarter` | type | internal/tunnel/workspace_session.go | outer session → inner SSH bridge |
 | `TunnelStarter` | type | internal/tunnel/tunnel_starter.go | direct-tcpip raw byte pipe + supervision |
 | `Launcher.Launch` | meth | internal/tunnel/starter.go | builds argv/env, process group, token wipe |
-| `store.Open` | fn | internal/store/store.go | exclusive-lock state store |
+| `store.Open` | fn | internal/store/store.go | shared-lock state store (multi-instance safe; ADR-0004) |
 | `verifier` + cache | type | internal/coderapi/ | token verification; cache keyed incl. credential generation |
 
 ## CONVENTIONS
@@ -67,7 +67,7 @@ Centrality unmeasured (no codegraph index); roles from LSP + reads.
 - NEVER put a Coder token in argv, CLI flags, logs, audit events, error text, or persisted files. Token path: stdin/prompt/env-to-child only. Tests assert this.
 - NEVER co-locate the encryption key with the state directory.
 - NEVER reintroduce reserved usernames (`auth@`, `coder@`, `transportUser`, `maintenanceUser`). Removed by design: renewal is inline on any workspace connection; direct-tcpip is available on every authenticated connection; the inner username is agent-determined (Coder hardcodes it — never send `user@target` to the CLI).
-- Single replica only: the store takes an exclusive lock; no HA parallel paths.
+- Multi-instance: instances share the state dir via shared flock + atomic rename + credential-generation CAS; the flock is advisory (NFS/Gluster locks may be unreliable — never rely on it for correctness). Audit files are per-instance suffixed; retention parses the date before the suffix. Limits are per instance.
 - Do not add top-level password/keyboard-interactive SSH auth — KI exists only as an auth-time continuation (renewal/enrollment) after verified public key auth.
 
 ## UNIQUE STYLES

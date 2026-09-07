@@ -402,3 +402,42 @@ func TestJSONLFileLoggerDayRollover(t *testing.T) {
 		t.Errorf("day2 file has %d after-midnight events, want 2", got)
 	}
 }
+
+func TestJSONLFileLoggerInstanceSuffix(t *testing.T) {
+	t.Setenv("CSGW_AUDIT_INSTANCE", "gw-pod-7")
+	dir := t.TempDir()
+	logger, err := NewJSONLFileLogger(dir, false)
+	if err != nil {
+		t.Fatalf("NewJSONLFileLogger: %v", err)
+	}
+	if err := logger.Record(context.Background(), Event{ID: "e1", EventType: "t"}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "audit-" + time.Now().Format("2006-01-02") + ".gw-pod-7.jsonl"
+	if len(entries) != 1 || entries[0].Name() != want {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("audit files = %v, want [%s]", names, want)
+	}
+
+	// Hostname fallback when the explicit instance is unset.
+	t.Setenv("CSGW_AUDIT_INSTANCE", "")
+	t.Setenv("HOSTNAME", "host-42")
+	logger2, err := NewJSONLFileLogger(dir, false)
+	if err != nil {
+		t.Fatalf("NewJSONLFileLogger: %v", err)
+	}
+	if err := logger2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	want2 := "audit-" + time.Now().Format("2006-01-02") + ".host-42.jsonl"
+	if _, err := os.Stat(filepath.Join(dir, want2)); err != nil {
+		t.Fatalf("hostname-suffixed audit file missing: %v", err)
+	}
+}
