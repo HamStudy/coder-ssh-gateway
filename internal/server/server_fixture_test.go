@@ -114,6 +114,7 @@ type gwFixture struct {
 	logs       *logCapture
 	coder      *httptest.Server
 	verifier   *coderapi.CachedVerifier
+	rawVerif   *coderapi.Verifier
 	codec      *route.Codec
 	starter    *fakeTunnelStarter
 	transports *fakeTransportFactory
@@ -198,6 +199,7 @@ func newFixture(t *testing.T, handler http.Handler) *gwFixture {
 	if err != nil {
 		t.Fatalf("coderapi.New: %v", err)
 	}
+	f.rawVerif = v
 	f.verifier = coderapi.NewCachedVerifier(f.dep.ID, v, time.Minute)
 
 	f.codec = route.NewCodec()
@@ -253,6 +255,15 @@ func (f *gwFixture) authConfig() sshauth.AuthConfig {
 		Verifier:     f.verifier,
 		Audit:        f.audit,
 		Logger:       slog.New(f.logs),
+		Enrollment: &sshauth.EnrollmentConfig{
+			// Raw verifier, mirroring serve.go: enrollment token checks are
+			// best-effort and must not contend for the auth semaphore or
+			// pollute validation metrics. User matches the config default.
+			Enabled:  true,
+			User:     "login",
+			Verifier: f.rawVerif,
+			Store:    f.store,
+		},
 	}
 }
 

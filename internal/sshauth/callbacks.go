@@ -270,7 +270,7 @@ func (c AuthConfig) renewalInstructions() string {
 	return "Your registered SSH key is valid, but the saved Coder credential is missing or expired.\n" +
 		"Generate a new token at " + cliAuth + ".\n" +
 		"At the following password/token prompt, paste that token.\n" +
-		"This connection continues straight into your workspace after validation."
+		"This connection continues straight into your workspace after validation.\n\n"
 }
 
 // nonRenewableBanner maps §11.4 non-renewable kinds to safe §35-matrix user

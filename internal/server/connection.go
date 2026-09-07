@@ -203,8 +203,12 @@ func (s *Server) handleConn(raw net.Conn) {
 	connResult = metrics.ResultSuccess
 
 	if perms.MustReconnect {
-		// §13.6: renewal completed — close immediately, no dispatcher.
-		log.Info("closing connection for forced reconnect after renewal")
+		// §13.6: enrollment completed — this connection must never open a
+		// workspace. Close it gracefully: clients open a session right
+		// after auth, and a raw TCP close reads as "connection error: end
+		// of file" on clients like Moshi.
+		log.Info("enrollment complete; closing connection for reconnect")
+		s.enrollmentGoodbye(serverConn, channels, log)
 		return
 	}
 
@@ -226,7 +230,54 @@ func (s *Server) handleConn(raw net.Conn) {
 		s.dispatchWorkspaceChannels(connCtx, wc, channels)
 	default:
 		log.Warn("unknown permission mode; closing", slog.String("mode", perms.Mode))
-		rejectChannelAll(channels)
+		rejectChannelAll(log, channels)
+	}
+}
+
+// enrollmentGoodbye ends an enrollment connection politely. The first
+// session channel a client opens receives the reconnect confirmation on its
+// stderr and exit-status 0 before the transport closes, so the client sees a
+// clean "connection closed" instead of an EOF error. Clients that never open
+// a session (or open other channel types) are handled within a short bound.
+func (s *Server) enrollmentGoodbye(conn ssh.Conn, channels <-chan ssh.NewChannel, log *slog.Logger) {
+	const goodbye = "Device enrolled.\r\n" +
+		"This connection cannot open workspaces.\r\n" +
+		"Reconnect with your workspace connection (<workspace>@<this-host>).\r\n"
+	// 3s bound: a real client either opens its session immediately (goodbye
+	// delivered) or disconnects (channels stream closes, early return). The
+	// deadline only bounds silent clients.
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case newCh, ok := <-channels:
+			if !ok {
+				return
+			}
+			if newCh.ChannelType() != "session" {
+				log.Warn("rejecting non-session channel on enrollment connection",
+					slog.String("channel_type", newCh.ChannelType()),
+				)
+				_ = newCh.Reject(ssh.Prohibited, "enrollment connections cannot open channels")
+				continue
+			}
+			ch, requests, err := newCh.Accept()
+			if err != nil {
+				return
+			}
+			go drainChannelRequests(log, requests)
+			_, _ = ch.Stderr().Write([]byte(goodbye))
+			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+			_ = ch.CloseWrite()
+			_ = ch.Close()
+			return
+		case <-deadline.C:
+			// The client never opened a session channel: the goodbye is
+			// undeliverable and the client sees a raw close. Termius (iOS)
+			// behaves this way; OpenSSH and Moshi open a session immediately.
+			log.Info("enrollment client opened no session; closing without goodbye")
+			return
+		}
 	}
 }
 
@@ -234,8 +285,12 @@ func (s *Server) handleConn(raw net.Conn) {
 // per open so ssh.NewServerConn bookkeeping unwinds cleanly on close.
 // Used by maintenance mode when no MaintenanceHandler is wired and by the
 // unknown-mode guard.
-func rejectChannelAll(channels <-chan ssh.NewChannel) {
+func rejectChannelAll(log *slog.Logger, channels <-chan ssh.NewChannel) {
 	for ch := range channels {
+		log.Debug("rejecting channel",
+			slog.String("channel_type", ch.ChannelType()),
+			slog.String("reason", "channel type not permitted"),
+		)
 		_ = ch.Reject(ssh.Prohibited, "channel type not permitted")
 	}
 }

@@ -55,7 +55,9 @@ type directTCPIPRequest struct {
 func (s *Server) rejectUnsupportedChannel(log *slog.Logger, newCh ssh.NewChannel) {
 	s.rec.ChannelRejected()
 	chType := newCh.ChannelType()
-	log.Debug("rejecting unsupported channel type", slog.String("channel_type", chType))
+	// Reaching dispatch requires authentication, so an unknown channel type
+	// is a client/gateway incompatibility signal, not scanner noise.
+	log.Warn("rejecting unsupported channel type", slog.String("channel_type", chType))
 	_ = newCh.Reject(ssh.UnknownChannelType, "unsupported channel type")
 }
 
@@ -173,6 +175,12 @@ func (s *Server) dispatchWorkspaceChannels(ctx context.Context, wc *workspaceCon
 	defer wc.close()
 	var wg sync.WaitGroup
 	for newCh := range channels {
+		// Debug-log every open: a client that closes pre-session (or never
+		// opens) is invisible otherwise, and the missing open is the datum.
+		s.log.Debug("channel open request",
+			slog.String("connection_id", wc.state.ID()),
+			slog.String("channel_type", newCh.ChannelType()),
+		)
 		switch newCh.ChannelType() {
 		case "session":
 			if served || s.cfg.WorkspaceTransports == nil {
@@ -218,7 +226,7 @@ func (s *Server) admitWorkspaceSession(ctx context.Context, wc *workspaceContext
 	if err != nil {
 		ch, requests, acceptErr := newCh.Accept()
 		if acceptErr == nil {
-			go drainChannelRequests(requests)
+			go drainChannelRequests(s.log, requests)
 			_, _ = ch.Stderr().Write([]byte("workspace target is invalid or unavailable\r\n"))
 			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 255}))
 			_ = ch.CloseWrite()
@@ -287,23 +295,20 @@ func (s *Server) admitWorkspaceSession(ctx context.Context, wc *workspaceContext
 	defer s.rec.ChannelClosed()
 	s.auditChannelOpen(state, perms, rt.DisplayTarget, true, "")
 
-	tr, err := wc.bindTransport(ctx, snap)
-	if err != nil {
-		message, code := "workspace is unavailable", core.TUNNEL_PROCESS_START_FAILED
+	// §19.9: the transport starts concurrently while BridgePendingSession
+	// answers the client's early session requests — mobile clients time out
+	// on replies that wait for the child spawn + inner handshake, and the
+	// deferred bridge acknowledges and replays those requests instead.
+	pending := make(chan tunnel.PendingTransport, 1)
+	go func() {
+		tr, err := wc.bindTransport(ctx, snap)
+		pending <- tunnel.PendingTransport{Tr: tr, Err: err}
+	}()
+	if err := tunnel.BridgePendingSession(ctx, ch, requests, pending, s.log); err != nil {
 		var te *transportError
 		if errors.As(err, &te) {
-			message, code = "workspace is unavailable", te.detail
+			s.log.Warn("workspace transport creation failed", slog.String("code", te.detail), slog.String("detail", err.Error()))
 		}
-		_, _ = ch.Stderr().Write([]byte(message + "\r\n"))
-		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: 255}))
-		_ = ch.CloseWrite()
-		_ = ch.Close()
-		s.log.Warn("workspace transport creation failed", slog.String("code", code), slog.String("detail", err.Error()))
-		return
-	}
-	// Blocks until the session ends; the transport outlives it so -L/-R
-	// relays keep working.
-	if err := tr.BridgeSession(ctx, ch, requests); err != nil {
 		_ = ch.Close()
 	}
 }
@@ -451,7 +456,7 @@ func (s *Server) startJumpTunnel(ctx context.Context, wc *workspaceContext, newC
 
 	// §19.10: a direct-tcpip channel ordinarily carries no requests, but
 	// the request channel must still be drained.
-	go drainChannelRequests(requests)
+	go drainChannelRequests(log, requests)
 
 	s.auditChannelOpen(state, perms, rt.DisplayTarget, true, "")
 
@@ -578,9 +583,18 @@ func (s *Server) rejectChannelLimit(state *sshauth.ConnState, perms sshauth.Fina
 }
 
 // drainChannelRequests answers every channel request false until the
-// channel closes (§19.10). Never leaves the request channel unread.
-func drainChannelRequests(requests <-chan *ssh.Request) {
+// channel closes (§19.10). Never leaves the request channel unread, and
+// never refuses silently: relays deliberately carry no session requests,
+// so any request here is a client/gateway mismatch worth seeing.
+func drainChannelRequests(log *slog.Logger, requests <-chan *ssh.Request) {
 	for req := range requests {
+		if req == nil {
+			continue
+		}
+		log.Debug("relay channel request refused",
+			slog.String("request_type", req.Type),
+			slog.Bool("want_reply", req.WantReply),
+		)
 		if req.WantReply {
 			_ = req.Reply(false, nil)
 		}

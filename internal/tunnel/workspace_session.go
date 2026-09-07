@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -78,9 +79,26 @@ type sessionPipes struct {
 	stderrDone <-chan struct{}
 }
 
-func forwardSessionRequests(ctx context.Context, channel ssh.Channel, session *ssh.Session, requests <-chan *ssh.Request, pipes *sessionPipes) error {
+func forwardSessionRequests(ctx context.Context, channel ssh.Channel, session *ssh.Session, requests <-chan *ssh.Request, pipes *sessionPipes, queued []QueuedSessionRequest) error {
 	started := false
 	var waitCh <-chan error
+	// Requests accepted while the transport was still starting (§19.9
+	// optimistic acks) replay here, in arrival order, before live traffic.
+	for _, q := range queued {
+		ok, done, wait, reason := applySessionRequest(session, q.Type, q.Payload, &started, pipes)
+		if !ok || done {
+			slog.Warn("queued session request failed on replay",
+				slog.String("request_type", q.Type),
+				slog.String("reason", reason),
+			)
+			return fmt.Errorf("queued %s request failed on inner session", q.Type)
+		}
+		if wait != nil && waitCh == nil {
+			result := make(chan error, 1)
+			go func() { result <- wait() }()
+			waitCh = result
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -95,9 +113,20 @@ func forwardSessionRequests(ctx context.Context, channel ssh.Channel, session *s
 				return abortSession(session, waitCh, errors.New("outer workspace session closed"))
 			}
 			if req == nil {
+				slog.Debug("nil request on session channel; ignored")
 				continue
 			}
-			ok, done, wait := handleSessionRequest(session, req, &started, pipes)
+			ok, done, wait, reason := applySessionRequest(session, req.Type, req.Payload, &started, pipes)
+			if !ok {
+				// A false reply here is client-visible and may be fatal to
+				// the client's session (§19.9 lesson): rejections are never
+				// silent, and validation failures warn at operator level.
+				slog.Warn("session request rejected",
+					slog.String("request_type", req.Type),
+					slog.String("reason", reason),
+					slog.Bool("started", started),
+				)
+			}
 			if req.WantReply {
 				_ = req.Reply(ok, nil)
 			}
@@ -125,53 +154,60 @@ func abortSession(session *ssh.Session, waitCh <-chan error, cause error) error 
 	return cause
 }
 
-func handleSessionRequest(session *ssh.Session, req *ssh.Request, started *bool, pipes *sessionPipes) (ok, done bool, wait func() error) {
+// applySessionRequest validates and applies one outer session request to
+// the inner session. ok=false means the request is refused (client-visible
+// false reply; reason says why — rejections are never silent); done=true
+// means the session start failed terminally.
+func applySessionRequest(session *ssh.Session, typ string, payload []byte, started *bool, pipes *sessionPipes) (ok, done bool, wait func() error, reason string) {
 	if *started {
-		switch req.Type {
+		switch typ {
 		case "window-change":
 			var r windowChangeRequest
-			if ssh.Unmarshal(req.Payload, &r) != nil || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
-				return false, false, nil
+			if ssh.Unmarshal(payload, &r) != nil || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
+				return false, false, nil, "malformed window-change"
 			}
-			return session.WindowChange(int(r.Rows), int(r.Columns)) == nil, false, nil
+			return session.WindowChange(int(r.Rows), int(r.Columns)) == nil, false, nil, ""
 		case "signal":
 			var r signalRequest
-			if ssh.Unmarshal(req.Payload, &r) != nil || !validSignal(r.Signal) {
-				return false, false, nil
+			if ssh.Unmarshal(payload, &r) != nil || !validSignal(r.Signal) {
+				return false, false, nil, "malformed or unsupported signal"
 			}
-			return session.Signal(ssh.Signal(r.Signal)) == nil, false, nil
+			return session.Signal(ssh.Signal(r.Signal)) == nil, false, nil, ""
 		default:
-			return false, false, nil
+			return false, false, nil, "request not applicable after session start"
 		}
 	}
 
-	switch req.Type {
+	switch typ {
 	case "env":
 		var r envRequest
-		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Name, 256) || !validSessionString(r.Value, 32*1024) {
-			return false, false, nil
+		if ssh.Unmarshal(payload, &r) != nil || !validSessionString(r.Name, 256) || !validSessionString(r.Value, 32*1024) {
+			return false, false, nil, "malformed or invalid env request"
 		}
-		return session.Setenv(r.Name, r.Value) == nil, false, nil
+		if session.Setenv(r.Name, r.Value) != nil {
+			return false, false, nil, "inner refused env"
+		}
+		return true, false, nil, ""
 	case "auth-agent-req@openssh.com":
 		// ssh -A: mirror the request; the workspace then opens auth-agent
 		// channels, relayed to the client's agent by the transport.
-		innerOK, err := session.SendRequest("auth-agent-req@openssh.com", req.WantReply, req.Payload)
-		if err != nil {
-			return false, false, nil
+		innerOK, err := session.SendRequest("auth-agent-req@openssh.com", true, payload)
+		if err != nil || !innerOK {
+			return false, false, nil, "inner refused agent forwarding"
 		}
-		return innerOK, false, nil
+		return innerOK, false, nil, ""
 	case "subsystem":
 		// SFTP/scp: a start request like exec; the inner server owns the
 		// subsystem name allowlist. RequestSubsystem skips x/crypto's pipe
 		// setup, so the wait function tracks the manual copies instead of
 		// session.Wait.
 		var r subsystemRequest
-		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Name, 64) {
-			return false, false, nil
+		if ssh.Unmarshal(payload, &r) != nil || !validSessionString(r.Name, 64) {
+			return false, false, nil, "malformed or invalid subsystem request"
 		}
 		innerOK, err := session.SendRequest("subsystem", true, ssh.Marshal(struct{ Subsystem string }{r.Name}))
 		if err != nil || !innerOK {
-			return false, true, nil
+			return false, true, nil, "inner refused subsystem"
 		}
 		*started = true
 		return true, false, func() error {
@@ -179,50 +215,43 @@ func handleSessionRequest(session *ssh.Session, req *ssh.Request, started *bool,
 			<-pipes.stderrDone
 			_ = session.Close()
 			return nil
-		}
+		}, ""
 	case "pty-req":
-		var r ptyRequest
-		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Term, 256) || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
-			slog.Debug("pty rejected at parse/validation", "payload_len", len(req.Payload), "term_len", len(r.Term))
-			return false, false, nil
-		}
-		modes, err := parseTerminalModes([]byte(r.Modes))
+		r, modes, err := parsePtyRequest(payload)
 		if err != nil {
-			slog.Debug("pty rejected at modes parse", "modes_err", err.Error())
-			return false, false, nil
+			return false, false, nil, "invalid pty-req: " + err.Error()
 		}
 		if err := session.RequestPty(r.Term, int(r.Rows), int(r.Columns), modes); err != nil {
-			slog.Debug("pty rejected by inner", "inner_err", err.Error())
-			return false, false, nil
+			return false, false, nil, "inner refused pty: " + err.Error()
 		}
-		return true, false, nil
+		return true, false, nil, ""
 	case "window-change":
 		var r windowChangeRequest
-		if ssh.Unmarshal(req.Payload, &r) != nil || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
-			return false, false, nil
+		if ssh.Unmarshal(payload, &r) != nil || !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
+			return false, false, nil, "malformed window-change"
 		}
-		return session.WindowChange(int(r.Rows), int(r.Columns)) == nil, false, nil
+		return session.WindowChange(int(r.Rows), int(r.Columns)) == nil, false, nil, ""
 	case "shell":
-		if len(req.Payload) != 0 {
-			return false, false, nil
+		if len(payload) != 0 {
+			return false, false, nil, "shell request carries unexpected payload"
 		}
 		if err := session.Shell(); err != nil {
-			return false, true, nil
+			return false, true, nil, "inner refused shell"
 		}
 		*started = true
-		return true, false, waitDrained(session, pipes)
+		return true, false, waitDrained(session, pipes), ""
 	case "exec":
 		var r execRequest
-		if ssh.Unmarshal(req.Payload, &r) != nil || !validSessionString(r.Command, 4096) {
-			return false, false, nil
+		if ssh.Unmarshal(payload, &r) != nil || !validSessionString(r.Command, 4096) {
+			return false, false, nil, "malformed or invalid exec request"
 		}
 		if err := session.Start(r.Command); err != nil {
-			return false, true, nil
+			return false, true, nil, "inner refused exec"
 		}
 		*started = true
-		return true, false, waitDrained(session, pipes)
+		return true, false, waitDrained(session, pipes), ""
 	default:
-		return false, false, nil
+		return false, false, nil, "unsupported request type"
 	}
 }
 
@@ -275,6 +304,32 @@ func finishSession(channel ssh.Channel, err error) error {
 	_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{Status: status}))
 	_ = channel.CloseWrite()
 	return err
+}
+
+// parsePtyRequest validates an RFC 4254 pty-req payload for relay to the
+// inner session. Term may be empty (mobile clients omit it); an empty modes
+// string means "no modes". Shared by the live bridge and the deferred
+// bridge's queueDecision so both accept identically.
+func parsePtyRequest(payload []byte) (ptyRequest, ssh.TerminalModes, error) {
+	var r ptyRequest
+	if ssh.Unmarshal(payload, &r) != nil {
+		return r, nil, errors.New("malformed pty-req payload")
+	}
+	if len(r.Term) > 256 || strings.ContainsRune(r.Term, 0) {
+		return r, nil, errors.New("invalid terminal name")
+	}
+	if !validDimensions(r.Columns, r.Rows, r.Width, r.Height) {
+		return r, nil, errors.New("invalid pty dimensions")
+	}
+	modes, err := parseTerminalModes([]byte(r.Modes))
+	if err != nil {
+		if len(r.Modes) == 0 {
+			modes = ssh.TerminalModes{}
+		} else {
+			return r, nil, err
+		}
+	}
+	return r, modes, nil
 }
 
 func parseTerminalModes(raw []byte) (ssh.TerminalModes, error) {

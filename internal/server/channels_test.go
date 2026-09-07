@@ -88,7 +88,7 @@ func (t *fakeTransport) counts() (channels, globals int) {
 	return len(t.channels), len(t.globals)
 }
 
-func (t *fakeTransport) BridgeSession(ctx context.Context, ch ssh.Channel, requests <-chan *ssh.Request) error {
+func (t *fakeTransport) BridgeSession(ctx context.Context, ch ssh.Channel, requests <-chan *ssh.Request, queued []tunnel.QueuedSessionRequest) error {
 	for req := range requests {
 		accepted := req.Type == "shell" || req.Type == "exec" || req.Type == "pty-req"
 		if req.WantReply {

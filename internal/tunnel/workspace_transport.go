@@ -34,12 +34,21 @@ type TransportFactory struct {
 	NewStartupTimer func(time.Duration) (<-chan time.Time, func())
 }
 
+// QueuedSessionRequest is an outer session request that was optimistically
+// accepted before the transport existed (§19.9) and replays into the inner
+// session once it is ready.
+type QueuedSessionRequest struct {
+	Type    string
+	Payload []byte
+}
+
 // WorkspaceTransport is the server-facing surface of one started transport.
 // The server fakes this in unit tests; SessionTransport is the real one.
 type WorkspaceTransport interface {
 	// BridgeSession bridges one outer session channel to a fresh inner
-	// session until the session ends. Blocks.
-	BridgeSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) error
+	// session until the session ends, replaying any queued pre-transport
+	// requests first. Blocks.
+	BridgeSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, queued []QueuedSessionRequest) error
 	// RelayChannel accepts one already-admitted outer direct-tcpip channel
 	// and pumps it through the inner client. Blocks until the channel ends.
 	// Dial failures reject the open with SSH_OPEN_CONNECT_FAILED so ssh -L
@@ -240,7 +249,7 @@ func (t *SessionTransport) relayIncoming(incoming <-chan ssh.NewChannel) {
 // session. It does NOT own the transport lifecycle: the transport survives
 // the session so concurrent -L/-R relays keep working (they die with the
 // outer connection instead).
-func (t *SessionTransport) BridgeSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request) error {
+func (t *SessionTransport) BridgeSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, queued []QueuedSessionRequest) error {
 	session, err := t.client.NewSession()
 	if err != nil {
 		_ = t.fail(channel, "workspace target is invalid or unavailable", core.TUNNEL_CODER_EXITED, err)
@@ -285,7 +294,7 @@ func (t *SessionTransport) BridgeSession(ctx context.Context, channel ssh.Channe
 	}()
 	pipes := &sessionPipes{stdoutDone: stdoutDone, stderrDone: stderrDone}
 
-	err = forwardSessionRequests(ctx, channel, session, requests, pipes)
+	err = forwardSessionRequests(ctx, channel, session, requests, pipes, queued)
 	var exitErr *ssh.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
 		_ = t.fail(channel, "workspace session failed", core.TUNNEL_STREAM_FAILED, err)

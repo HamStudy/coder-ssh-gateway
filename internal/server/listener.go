@@ -177,13 +177,18 @@ func New(cfg ServerConfig) (*Server, error) {
 }
 
 // buildBaseSSHConfig implements §25.1 exactly: safe supported-algorithm sets
-// (defensively copied), MaxAuthTries 6, configured server version, host
+// (defensively copied), MaxAuthTries 24, configured server version, host
 // signers, and NO top-level password/keyboard-interactive callbacks (§8.2).
 func buildBaseSSHConfig(serverVersion string, signers []ssh.Signer) *ssh.ServerConfig {
 	algorithms := ssh.SupportedAlgorithms()
 
 	cfg := &ssh.ServerConfig{
-		MaxAuthTries:  6,
+		// Enrollment and renewal flows ask the user to paste a fresh Coder
+		// token at a password/keyboard-interactive prompt; a fumbled paste
+		// or a client that retries (Moshi) must not get the connection
+		// killed mid-flow. Token guessing is bounded by the renewal and
+		// enrollment rate limiters, not by this cap.
+		MaxAuthTries:  24,
 		ServerVersion: serverVersion,
 	}
 	cfg.Config.KeyExchanges = append([]string(nil), algorithms.KeyExchanges...)

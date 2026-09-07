@@ -61,6 +61,7 @@ Centrality unmeasured (no codegraph index); roles from LSP + reads.
 - Config YAML decodes with `KnownFields(true)` — unknown fields are errors. Every new field needs struct + validation.
 - `env:VARNAME` indirection accepted for encryption-key paths (see internal/secretbox); resolution must exempt the `env:` prefix before path logic.
 - Errors wrap with `%w`; user-facing errors must never contain tokens or response bodies.
+- Never silently drop or reject client protocol traffic: every refusal logs the type and reason — WARN when something failed our expectations (invalid/malformed/incompatible), DEBUG for deliberate policy refusals. Client incompatibilities (e.g. mobile clients' pty-req quirks) must be diagnosable from logs alone.
 - Docs live in docs/ (operator-guide, client-setup, troubleshooting) + docs/adr/ numbered records. Keep docs current with behavior.
 
 ## ANTI-PATTERNS (THIS PROJECT)

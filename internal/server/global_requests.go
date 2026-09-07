@@ -72,6 +72,10 @@ func (s *Server) handleGlobalRequests(ctx context.Context, state *sshauth.ConnSt
 		slog.String("peer", state.PeerAddr()),
 	)
 	for req := range requests {
+		log.Debug("global request",
+			slog.String("request_type", req.Type),
+			slog.Bool("want_reply", req.WantReply),
+		)
 		switch {
 		case req.Type == "keepalive@openssh.com":
 			if req.WantReply {

@@ -219,7 +219,7 @@ func startWorkspaceSession(t *testing.T, transport ssh.Channel, reader, writer *
 			return
 		}
 		trDone <- tr
-		done <- tr.BridgeSession(context.Background(), channel, requests)
+		done <- tr.BridgeSession(context.Background(), channel, requests, nil)
 	}()
 	return workspaceTestClient(t, reader, writer), done, trDone
 }
