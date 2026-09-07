@@ -54,6 +54,8 @@ metrics:
     enabled: false    # ClusterIP on 9090 for Prometheus scraping
     annotations: {}
 
+replicaCount: 1
+
 persistence:
   size: 1Gi
   storageClass: ""
