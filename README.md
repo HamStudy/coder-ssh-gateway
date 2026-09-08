@@ -60,6 +60,26 @@ coder@alicia-general ~/code % exit
 Connection to gateway.example.com closed.
 ```
 
+Managing your enrolled keys works the same way: a second special
+username, default `login-admin`, opens a line-based UI on the session
+channel. Authenticate with one of your enrolled keys, list the keys on
+your account, remove the ones you no longer trust behind a two-step
+confirmation, or delete the account (every key plus the stored Coder
+token) behind a typed `DELETE`. Workspaces and tunnels are impossible
+in this mode; the audit log captures every removal and every
+deletion.
+
+```console
+$ ssh login-admin@gateway.example.com
+Coder SSH Gateway -- key management for alicia
+1 SHA256:3nIPhhXCP54ETGXAAakA9Myxp13NNtONA/ZFgiThTvQ ssh-ed25519 "ada-laptop" added 2026-08-12
+2 SHA256:9aBcdEF... ssh-ed25519 "ada-phone" added 2026-08-13
+
+Enter a key number to remove it, d to delete your account, r to refresh, q to quit:
+q
+Bye.
+```
+
 It's your workspace — your shell, your dotfiles, your files. When a
 stored token eventually expires, your next connection simply prompts
 for a fresh one and continues on through

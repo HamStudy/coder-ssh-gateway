@@ -20,6 +20,14 @@ you're seeing against the table for the exact failure path.
   [Token expired](#token-expired)
 - **`login@` rejected even though you typed a valid token** —
   [Self-enrollment rejected](#self-enrollment-rejected)
+- **`login-admin@` rejected with the generic key/username rejection** —
+  [Key management username rejected](#key-management-username-rejected)
+- **A removed key stopped working on the next connection** —
+  [Removed key stopped working](#removed-key-stopped-working)
+- **"This key authenticates your current session and cannot be removed."**
+  — [Cannot remove this key](#cannot-remove-this-key)
+- **Account deletion happened; everything is gone** —
+  [Deleted my account](#deleted-my-account)
 - **`doctor` reports FAIL** — [`doctor` FAIL](#doctor-fail)
 - **`doctor` reports WARN, not FAIL** — [`doctor` WARN](#doctor-warn)
 - **Container or Kubernetes pod won't start** —
@@ -311,6 +319,160 @@ Possible causes and what to try:
 
 Audit event types: `enrollment_success`, `enrollment_rejected`, plus
 detail codes from [AUTH_*](#auth_unknown_key).
+
+---
+
+## Key management username rejected
+
+What you're seeing: `ssh login-admin@gateway.example.com` (using the
+configured key-management username) rejects your key with the same
+generic `Permission denied (publickey)` you would see for any unknown
+username, or the gateway refuses to boot with a configuration error
+naming the special usernames.
+
+The generic rejection is intentional. By design, a disabled key-
+management feature is **byte-identical** to an unknown username: the
+gateway will not tell the client whether the feature exists, is
+disabled, or simply had a different username configured. That is the
+right outcome — a feature-disabled username is an unprivileged surface
+that must not leak existence.
+
+Possible causes:
+
+1. **Feature disabled on this deployment.** Your operator may have set
+   `key_management.enabled: false`. The configured username behaves
+   exactly like any unknown username; no UI opens. Ask your operator
+   to re-enable it (`key_management.enabled: true`) or rename the
+   username to match their config.
+2. **Your key is not enrolled.** The same generic rejection covers an
+   unregistered key: enroll it first via the normal `login@` flow
+   ([Client Setup → Initial enrollment](./client-setup.md#initial-enrollment-the-one-time-step)).
+3. **Username renamed.** Your operator may have set
+   `key_management.user` to something other than `login-admin`. Ask
+   them for the configured username; the CLI override
+   `CSGW_KEY_MANAGEMENT_USER` and the Helm value `keyManagement.user`
+   are the two paths operators use to change it.
+4. **Configuration error at boot.** A collision
+   (`enrollment.user` equal to `key_management.user` while both are
+   enabled) or an invalid username (uppercase letters, spaces, an
+   underscore, leading or trailing hyphen — anything outside the DNS-
+   label grammar) makes the gateway refuse to boot. The error names
+   the offending field. Rename the field or set one of the features
+   to `enabled: false`. Pre-existing configs with names like `Login`
+   in `enrollment.user` fail this check on upgrade — rename to `login`.
+
+Audit codes: `AUTH_UNKNOWN_KEY` for the generic rejection, the boot
+errors are emitted on stderr before the SSH listener binds.
+
+---
+
+## Removed key stopped working
+
+What you're seeing: a key that previously opened a workspace or the
+key-management UI now fails with the generic rejection — `Permission
+denied (publickey)` or `no supported methods remain`.
+
+Most likely cause: the key was removed from the account, either by
+you through the key-management UI or by an operator. This is the
+expected outcome: removed keys reject uniformly at the next connection,
+by design (no existence oracle — the rejection tells the client
+nothing about whether the key was known, removed, or never existed).
+
+1. **Did you remove it via the key-management UI?** Re-enroll that
+   device with `login@` and a fresh Coder token: connect with the
+   removed key, walk through the prompt, and the new binding
+   associates this device's key with the same Coder account (assuming
+   the token was for the same Coder user).
+2. **Did an operator disable or remove it?** Ask your operator. They
+   can re-add it via `admin key add` or re-enable via
+   `admin key enable --key UUID`.
+3. **Did the account get deleted?** If you deleted the account from
+   the key-management UI, every key on that account now rejects. See
+   [Deleted my account](#deleted-my-account) for the recovery path.
+
+Live sessions opened with a key that was subsequently removed are
+**not** killed: they continue until the client disconnects or the
+spawned `coder` process exits. Only fresh connections are blocked.
+
+Audit code: `ssh_key_removed` with `result=success` is the moment of
+removal; the next connection logs `AUTH_UNKNOWN_KEY` (the same code as
+any other unknown key).
+
+---
+
+## Cannot remove this key
+
+What you're seeing: in the key-management UI, you selected a key from
+the listing and saw:
+
+```text
+This key authenticates your current session and cannot be removed.
+```
+
+Most likely cause: by design, the key that authenticated this
+key-management session can never be removed through the key-removal
+flow, no matter how many other keys the account has. The UI refuses at
+selection — before any store call — and emits an audit failure with
+detail `current_session_key`. Note there is deliberately no last-key
+guard: removing keys down to the last non-session key is allowed, and
+the account-deletion flow below intentionally removes the session's own
+key too. Recovery in every case is `login@` with a fresh Coder token,
+which works from any device with any key, even a brand-new one.
+
+How to remove the session's own key:
+
+1. **Connect from a different device** whose key is also enrolled on
+   the account, and remove this device's key from that session.
+2. **Delete the entire account** with the `d` command and typed
+   `DELETE` confirmation; that flow intentionally removes the session's
+   own key along with every other enrolled key and the stored Coder
+   token. Reconnect with `login@` and a fresh Coder token to re-enroll
+   from scratch as the same Coder user.
+
+If neither option is acceptable (for example, the device with the
+other key is gone), your operator can help out-of-band: `admin key
+disable --key UUID` blocks the key at once (reversible with `admin key
+enable`), or with the gateway stopped they can delete the key's record
+file from the state directory's `keys/` directory (the file name is the
+SHA-256 hex of the public key blob; `admin key list` identifies the
+key's UUID and label).
+
+Audit code: `ssh_key_removed` with `result=failure` and
+`detail_code=current_session_key`.
+
+---
+
+## Deleted my account
+
+What you're seeing: a key-management UI session typed `d`, then
+`DELETE`, printed `Account deleted. Reconnect with login@ to enroll
+again.` and `Bye.`, and the connection closed. Now every key that
+used to work on the account rejects uniformly at the next connection
+attempt.
+
+Most likely cause: this is the expected outcome. Account deletion is a
+typed-`DELETE` destructive operation that removes every enrolled key
+and the stored Coder token in one cascade. The audit log captures the
+moment with `account_deleted` plus one `ssh_key_removed` per cascaded
+key, IDs only.
+
+1. **Re-enroll from scratch.** Open `https://coder.example.com/cli-auth`
+   in a browser while signed in as the Coder user the account was
+   bound to, copy a session token, then run the normal `login@` flow:
+   `ssh coder-gateway-login`. Paste the fresh token at the prompt.
+   The new binding associates this device's key with the same Coder
+   account (the token's `/api/v2/users/me` is the binding anchor).
+2. **Live sessions continue, not killed.** Workspaces already opened
+   by deleted-account keys are not terminated: they continue until the
+   client disconnects or the spawned `coder` process exits. Only
+   operations that need to consult the store at the boundary (a fresh
+   child spawn, a revalidation) fail at that boundary.
+3. **If you no longer want the account back**, do nothing. The records
+   are gone; no scheduled deletion runs.
+
+Audit event types: `account_deleted` (success or `store_error` failure)
+plus one `ssh_key_removed` (success) per cascaded key. The detail
+codes table covers the underlying failure paths.
 
 ---
 

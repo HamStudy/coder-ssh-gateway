@@ -11,6 +11,7 @@ deployment.
 - [First boot: init and doctor](#first-boot-init-and-doctor)
 - [Migrating from earlier releases](#migrating-from-earlier-releases)
 - [Self-enrollment (`login@`)](#self-enrollment-login)
+- [Key management UI (`login-admin@`)](#key-management-ui-login-admin)
 - [Enrolling a user out-of-band](#enrolling-a-user-out-of-band)
 - [Configuration reference](#configuration-reference)
 - [State directory layout](#state-directory-layout)
@@ -368,6 +369,26 @@ helm upgrade coder-ssh-gateway deploy/helm/coder-ssh-gateway \
   --set configOverride.deployment.autostart=false
 ```
 
+First-class values for the configurable special usernames are also
+exposed directly in `values.yaml`:
+
+```bash
+# Rename the special usernames or disable one of the features
+helm upgrade coder-ssh-gateway deploy/helm/coder-ssh-gateway \
+  --namespace coder-ssh-gateway --reuse-values \
+  --set keyManagement.user=ops \
+  --set enrollment.user=signin
+
+# Disable the key-management UI; the username reverts to unknown
+helm upgrade coder-ssh-gateway deploy/helm/coder-ssh-gateway \
+  --namespace coder-ssh-gateway --reuse-values \
+  --set keyManagement.enabled=false
+```
+
+`enrollment.enabled`, `enrollment.user`, `keyManagement.enabled`, and
+`keyManagement.user` are top-level chart values; `configOverride`
+remains the escape hatch for anything the chart does not expose.
+
 Key rotation: `helm upgrade` with the new key values, then
 `kubectl -n coder-ssh-gateway rollout restart deploy/coder-ssh-gateway` —
 key files reach the pod through subPath mounts, which do not update in
@@ -513,6 +534,56 @@ Two reserved usernames and their config keys are gone:
 - `coder@gateway` is no longer special. ProxyJump works with any
   username: `ssh -J you@gateway dev@workspace`.
 
+### Configurable special usernames
+
+The two usernames still routed specially are **configurable, not
+hardcoded**:
+
+- `login` (or whatever `enrollment.user` names) — token-anchored
+  self-enrollment.
+- `login-admin` (or whatever `key_management.user` names) — account-
+  scoped key-management UI over SSH.
+
+They are not the same kind of reserved username as the removed `auth@`
+or `coder@`: those were hardcoded in the auth state machine and could
+not be renamed. The two special usernames now live under `enrollment.`
+and `key_management.` in `config.yaml`, with first-class
+`enrollment.user` / `key_management.user` / `key_management.enabled`
+keys and matching env vars (`CSGW_ENROLLMENT_USER`,
+`CSGW_KEY_MANAGEMENT_USER`) and Helm values (`enrollment.{enabled,user}`,
+`keyManagement.{enabled,user}`).
+
+Validation, run after env overrides and before `serve` accepts traffic,
+catches three classes of mistake:
+
+- A name that isn't a DNS label (lowercase letters, digits, and hyphens;
+  start and end with a letter or digit) is rejected. Existing configs
+  with names like `Login` or `keys_admin` fail startup; rename them.
+- The two names must differ when both features are enabled. Equal
+  names produce a single, field-qualified validation error — the
+  collision is not silently resolved by precedence.
+- Disabling `key_management` (`key_management.enabled: false`) makes the
+  configured username behave byte-identically to an unknown username:
+  the rejection on connection tells the client nothing about whether
+  the feature exists.
+
+A special username shadows an equal workspace route — the username is
+matched pre-auth, before route grammar runs (channels.go:217). A
+workspace literally named `login-admin` is therefore unreachable by
+username while key management is enabled; pick a different workspace
+name or rename the special username (most deployments keep the special
+names short and the workspace names human-meaningful, so this rarely
+collides in practice).
+
+Helm installs see one more change: the generated ConfigMap now renders
+`enrollment:` and `key_management:` sections from the first-class
+values. The gateway parses config strictly (unknown keys fail boot), so
+an upgraded chart paired with a pre-feature gateway image fails at
+startup naming the unknown field — upgrade the image and the chart
+together, and roll a chart rollback back to a matching image. As with
+every generated-config shape change, `configOverride` still wins over
+the value-driven sections.
+
 ### From a pre-`target_suffix` release
 
 
@@ -597,6 +668,171 @@ username and the out-of-band flow below is the only enrollment path.
 
 Security model: see [SECURITY.md](../SECURITY.md) for the threat model,
 what the gateway protects, and what it cannot.
+
+## Key management UI (`login-admin@`)
+
+A second special username, default `login-admin`, opens an
+account-scoped, line-based SSH UI for managing the keys enrolled on
+your own account. It is enabled by default and configurable under
+`key_management.user` / `key_management.enabled`.
+
+### Connecting
+
+Open a session exactly like a workspace connection — the gateway
+authenticates the key, then serves the UI on the session channel:
+
+```bash
+ssh login-admin@gateway.example.com
+```
+
+The same enrolled key that opens a workspace authenticates the
+management session. The UI needs no Coder token and never touches
+Coder; an expired or missing stored credential does not stop you from
+removing or listing keys.
+
+The UI is line-based and works with or without a PTY. Without one
+(stdin/stdout pipes, most mobile clients, scripts), you type a line and
+press Enter; the gateway echoes nothing. With a PTY, the gateway echoes
+printable keystrokes as you type and handles Backspace. Both modes
+reach the same UI behavior; menu commands are exact lowercase (`d`,
+`r`, `q`) and the deletion confirmation is exact uppercase `DELETE`.
+
+What the UI lists for each enrolled key:
+
+- fingerprint (the standard `SHA256:...` form)
+- algorithm (`ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-...`)
+- the stored label (control characters stripped; never anything secret)
+- the added date (UTC calendar day)
+- whether the key is currently enabled (`[disabled]` marker)
+
+Nothing secret is shown: no private key material, no stored token, no
+raw public-key blob. A last-used column is **not** rendered — the
+underlying timestamp is reserved for a future auth-time stamp, and a
+constant "never" column would mislead more than it would inform.
+
+### Removing a key
+
+Enter the menu number shown in the listing, then enter the same number
+again to confirm:
+
+```text
+1 SHA256:3nIPhhXCP54ETGXAAakA9Myxp13NNtONA/ZFgiThTvQ ssh-ed25519 "ada-laptop" added 2026-08-12
+2 SHA256:9aBcdEF... ssh-ed25519 "ada-phone" added 2026-08-13
+
+Enter a key number to remove it, d to delete your account, r to refresh, q to quit:
+1
+You selected key 1: SHA256:3nIPhhXCP54ETGXAAakA9Myxp13NNtONA/ZFgiThTvQ ssh-ed25519 "ada-laptop"
+Type 1 again to permanently remove it, anything else to cancel:
+1
+Key 1 removed.
+```
+
+The session's **own** key is refused at selection time with the exact
+message:
+
+```text
+This key authenticates your current session and cannot be removed.
+```
+
+Selecting your own key logs a `ssh_key_removed` failure with detail
+`current_session_key` and never reaches the store. Any other input at
+the confirm prompt is a cancellation (`Cancelled.`).
+
+Menu input is strict: a non-number, an out-of-range number, or an
+overlong line prints `Invalid input.` and re-renders the listing. An
+account with no keys shows `No keys enrolled.`. Store failures never
+leak detail to the UI — a failed listing prints
+`Failed to load keys. Try again or contact your administrator.` and the
+loop continues; a failed single-key removal prints
+`Removal failed. The key was not changed; try again or contact your administrator.`
+and the loop continues; a failed account deletion prints
+`Account deletion failed. Your account was not changed; try again or contact your administrator.`
+and the connection ends cleanly. The real cause is only in the gateway
+log (WARN).
+
+There is no last-key guard: keys can be removed down to the last
+non-session key, and the typed-`DELETE` account deletion drops the rest
+including the session's own key. Recovery is always re-enrollment with
+`login@` and a fresh Coder token, which works from any device with any
+key. The session key cannot be removed through the removal flow — see
+[Delete my account](#delete-my-account) for the path that intentionally
+also drops the session's own key.
+
+### Disabled / removed keys
+
+A removed key fails authentication at its **next** connection attempt
+with the same generic rejection as an unknown username — there is no
+existence oracle and no "this key was removed" message. Live sessions
+opened with that key are **not** terminated: they continue until the
+client disconnects or the spawned child exits, by design (no live
+session revocation surface, no half-disconnect). Audit captures the
+moment of removal with `ssh_key_removed` success.
+
+If `key_management.enabled` is `false`, the configured username
+behaves exactly like an unknown username. The connection is rejected;
+the UI never opens.
+
+### Delete my account
+
+The `d` command on the menu opens a destructive flow that removes every
+enrolled key **and** the stored Coder token for the session's account:
+
+```text
+d
+This will permanently delete your account: 2 key(s) and your stored Coder token will be removed. You can re-enroll any time with login@ and a fresh Coder token.
+Type DELETE to permanently delete your account, anything else to cancel:
+DELETE
+Account deleted. Reconnect with login@ to enroll again.
+Bye.
+```
+
+The typed `DELETE` confirmation is the only thing standing between an
+operator and a total account reset — including the session's own key.
+A failed `DeleteAccount` ends the connection cleanly after a generic
+message; a failed single-key removal keeps the loop alive.
+
+After deletion:
+
+- Every key belonging to the account rejects uniformly at its next
+  connection attempt.
+- Live sessions on those keys continue until the client disconnects or
+  the spawned child process exits; only operations that need to consult
+  the store (a fresh child spawn, a new channel that requires workspace
+  revalidation) fail at the store boundary.
+- `login@` with a fresh Coder token re-enrolls from scratch as the same
+  Coder user (assuming the Coder identity still owns a valid token).
+  Audit captures `account_deleted` plus one `ssh_key_removed` per
+  cascaded key, IDs only.
+
+### Tunnel / port-forward impossibility
+
+This mode admits exactly **one** session channel and refuses every
+other channel type and every forwarding request with a logged reason:
+
+- a second `session` channel, `direct-tcpip`, `forwarded-tcpip`, `x11`
+  — `ssh.Prohibited`, reason `key management connections cannot open
+  workspace channels` (DEBUG)
+- `tcpip-forward` (and every other global request except
+  `keepalive@openssh.com`) — refused with reason `no workspace
+  transport on key management connections` (DEBUG)
+- `exec` on the UI session — refused; `exit-status 1`; stderr
+  `exec is not available on key management connections\r\n` (WARN)
+- `subsystem` and unknown request types — refused (DEBUG)
+
+A `coder ssh` child is **never** spawned in this mode: no credential
+load, no Coder API call, no `coder ssh --stdio`. Renewal diversion
+through the keys path is impossible by construction.
+
+### Disabling the UI
+
+```yaml
+key_management:
+  enabled: false
+```
+
+With it off, the configured username behaves exactly like an unknown
+username — no UI, no auth shortcut, and the username can be reused for
+a workspace without collision risk.
 
 ## Enrolling a user out-of-band
 
@@ -768,6 +1004,14 @@ at startup with their field, source, and non-secret address value.
 | `--listen-address` | `CSGW_LISTEN_ADDRESS` | `listen.address` | `0.0.0.0:2222` |
 | `--metrics-address` | `CSGW_METRICS_ADDRESS` | `observability.metrics_address` | `0.0.0.0:9090` |
 | `--health-address` | `CSGW_HEALTH_ADDRESS` | `observability.health_address` | `0.0.0.0:9091` |
+| (no flag) | `CSGW_ENROLLMENT_USER` | `enrollment.user` | `login` |
+| (no flag) | `CSGW_KEY_MANAGEMENT_USER` | `key_management.user` | `login-admin` |
+
+Username env vars carry the same charset as their YAML field (DNS-label)
+and must differ from each other when both features are enabled — startup
+validation rejects a colliding config. Precedence is **env var > YAML >
+default** for these two values; the three bind-address values above also
+accept CLI flags (highest precedence).
 
 Global flags must precede the subcommand. For example:
 
@@ -830,9 +1074,11 @@ wins over both `state.dir` in YAML and any default.
 | `limits.process_shutdown_grace` | `5s` | Grace between SIGTERM and SIGKILL for child processes. |
 | `limits.stderr_buffer_bytes` | `65536` | Bounded ring for child stderr diagnostics. |
 | `enrollment.enabled` | `true` | Enable the login@ token-anchored self-enrollment flow. |
-| `enrollment.user` | `login` | SSH username that triggers enrollment. |
+| `enrollment.user` | `login` | SSH username that triggers enrollment. DNS-label charset (lowercase letters, digits, hyphens; start and end with a letter or digit). Startup fails if invalid. |
 | `enrollment.max_attempts` | `3` | Token submissions allowed per enrollment connection. |
 | `enrollment.timeout` | `5m` | Handshake deadline extension while an enrollment token prompt is open. |
+| `key_management.enabled` | `true` | Arm the key-management username. `false` makes the username behave exactly like any unknown username. |
+| `key_management.user` | `login-admin` | SSH username that opens the key-management UI. Same DNS-label charset as `enrollment.user`; must differ from `enrollment.user` when both features are enabled (startup rejects equal names). Runtime override: `CSGW_KEY_MANAGEMENT_USER`. |
 | `observability.log_format` | `json` | `json` or `text`. |
 | `observability.log_level` | `info` | `debug`, `info`, `warn`, `error`. |
 | `observability.metrics_address` | `127.0.0.1:9090` | Prometheus metrics listen address. |

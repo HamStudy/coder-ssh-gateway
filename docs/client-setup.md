@@ -280,6 +280,116 @@ token from the `/cli-auth` page; the connection continues straight into
 your workspace. The token is never echoed and never touches your
 command line or shell history.
 
+## Managing your keys (`login-admin@`)
+
+A second special username, default `login-admin`, opens an account-
+scoped SSH UI for managing the keys enrolled on your own account.
+Authenticating with one of your enrolled keys proves the connection,
+and the gateway serves a plain line-based menu — fingerprint,
+algorithm, label, added date, enabled state, nothing secret.
+
+It is enabled by default. Your operator can rename or disable it; ask
+them for the configured username if `login-admin` does not work, and
+check with them if you want to disable it on a deployment that should
+never expose key management over SSH.
+
+### OpenSSH (desktop/laptop)
+
+Add a small block to `~/.ssh/config`:
+
+```sshconfig
+Host coder-gateway-keys
+    HostName gateway.example.com
+    Port 2222
+    User login-admin
+    IdentitiesOnly yes
+    IdentityFile ~/.ssh/coder-gateway
+```
+
+Then:
+
+```bash
+ssh coder-gateway-keys
+```
+
+Your key authenticates; the gateway opens the UI on the session
+channel. The UI is line-based, so it works the same with or without a
+PTY allocated:
+
+- **No PTY (terminal piping stdin/stdout):** type a command followed by
+  Enter; each line is one action. This is what mobile clients without
+  PTY support, or scripted use, look like.
+- **With a PTY (default for an interactive shell):** your keystrokes
+  are echoed as you type, and Backspace erases. Press Enter to submit
+  the line.
+
+Either way the UI runs the same way. The session authenticates with
+the same public key you would use to open a workspace; the gateway
+never touches Coder in this mode, so an expired token does not stop
+you from listing or removing keys.
+
+### Mobile clients
+
+The UI needs no terminal escape sequences, no PTY, no TUI library —
+plain line entry over SSH is enough. Configure a saved SSH connection
+with the configured special username (default `login-admin`) and the
+device's enrolled key, the same shape as your workspace connection.
+
+```text
+Name:             Coder Gateway Keys
+Connection type:  SSH
+Host:             gateway.example.com
+Port:             2222
+Username:         login-admin
+Authentication:   this device's SSH key
+Jump host:        none
+```
+
+Open it. The UI lists your enrolled keys. Type the number of the key
+to remove, then the same number again to confirm. `d` followed by the
+typed `DELETE` removes every key on your account plus the stored Coder
+token; `q` quits cleanly.
+
+Mobile clients that do not allocate a PTY are first-class — line entry
+just works. Clients that DO allocate a PTY will echo your keystrokes
+back to you; either mode reaches the same UI behavior.
+
+### What the UI can and cannot do
+
+- **List keys on your account.** Fingerprint, algorithm, label, added
+  date, enabled marker. The label has control characters stripped
+  before display; never anything secret is shown.
+- **Remove a key on your account**, behind a two-step confirmation
+  (`Type <n> again to permanently remove it, anything else to cancel:`).
+  The session's own key is refused at selection with the message
+  `This key authenticates your current session and cannot be removed.`
+  Removing the **last** remaining key is allowed — re-enrollment with
+  `login@` and a fresh Coder token restores any account from scratch.
+- **Delete your entire account** (every enrolled key plus the stored
+  Coder token) behind a typed `DELETE` confirmation. This intentionally
+  removes the session's own key too. Reconnect with `login@` and a
+  fresh Coder token to re-enroll from scratch as the same Coder user.
+
+The UI cannot add a new key, change a label, enable or disable a key,
+or touch other accounts — those remain out-of-band (operator) paths or
+the `login@` enrollment flow.
+
+### What the UI cannot reach
+
+Workspaces, tunnels, port forwarding, and `exec` are impossible in this
+mode. The gateway opens exactly one session channel and refuses every
+other channel type and every forwarding request:
+
+- a second `session` channel, `direct-tcpip`, `forwarded-tcpip`, `x11`
+- `tcpip-forward` (`ssh -R`); `keepalive@openssh.com` is answered
+  true so clients do not drop the connection
+- `exec` on the UI session
+- `subsystem` and unknown request types
+
+If you need a workspace, reconnect with a workspace username
+(`ssh dev@gateway.example.com`). The key-management session cannot
+become a workspace session, even on the same connection.
+
 ## Host keys: what you are trusting
 
 Each connection authenticates TWO different SSH servers:
