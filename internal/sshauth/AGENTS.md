@@ -23,7 +23,7 @@ Auth state machine for the outer SSH connection: key proof → credential verifi
 - Candidate token bytes: never logged, audited, or returned in errors (renewal.go asserts this).
 - Never widen `Final*Permissions` beyond what the account/key state supports.
 - The Coder verify cache is keyed by (deployment, account, credential generation) — anything that changes stored credentials must bump the generation or the cache serves stale results.
-- Key-management mode MUST NOT call `LoadCredential`, `VerifyCached`, or `startRenewal` (callbacks.go:174-179). The path that rejects with `current_session_key` lives in `internal/keymgmt` and is downstream of these finals.
+- Key-management mode MUST NOT call `LoadCredential`, `VerifyCached`, or `startRenewal` (callbacks.go:180-192). The path that rejects with `current_session_key` lives in `internal/keymgmt` and is downstream of these finals.
 - Disabled key-management (`KeyManagement == nil || !Enabled` or `KeyManagementUser == ""`) MUST reject byte-identically to any unknown username — see internal/sshauth/enrollment.go enrollment_wire_test.go:523-560 for the byte-equality pattern (`internal/sshauth/enrollment_wire_test.go:633-686` covers certificate rejection).
 - Do not import `internal/keymgmt` from this package — the auth state and the UI are deliberately separate (auth decides the mode, server keymanagement.go runs the UI).
 

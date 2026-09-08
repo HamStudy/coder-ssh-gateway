@@ -8,6 +8,7 @@ End-to-end tests: real gateway binary + real OpenSSH client vs a fake HTTPS Code
 | harness_test.go | gateway fixtures, fakeCoderAPI (httptest TLS), config generation, OpenSSH helpers |
 | e2e_fake_test.go | ProxyJump, `-W` stdio, direct sessions, renewal PTY, child cleanup |
 | e2e_live_test.go | `live` build tag; needs CODER_LIVE_URL/TOKEN/CODER_BINARY env |
+| keymanagement_test.go | real-OpenSSH e2e for the key-management UI (PTY + no-pty flows, guard, refusals, audit, account-deletion recovery) |
 
 ## FIXTURE FLOW
 `gatewayFixture`: run binary `init` → rewrite config → enroll account → register key → set credential → `serve`. Gateway env is minimal (PATH/HOME/TMPDIR) — anything else must be added deliberately.
