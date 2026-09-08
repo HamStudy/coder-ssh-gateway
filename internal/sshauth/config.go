@@ -56,12 +56,30 @@ type AuthConfig struct {
 	// exactly like any unknown username (§35).
 	Enrollment *EnrollmentConfig
 
+	// KeyManagementUser is the outer username that triggers the
+	// account-scoped key-management UI (default "login-admin"). It is
+	// active only when KeyManagement is non-nil and Enabled; unlike
+	// enrollment there is no nested override — the app layer resolves the
+	// effective username (YAML/env precedence) into this field.
+	KeyManagementUser string
+	// KeyManagement arms the key-management username. Nil or Disabled
+	// makes the username behave exactly like any unknown username (§35).
+	KeyManagement *KeyManagementEnabled
+
 	Store    KeyLookupStore
 	Verifier CachedTokenVerifier
 	Audit    audit.Logger
 	// Logger receives debug-level internal diagnostics (candidate-seen,
 	// rejection reasons). Nil selects slog.Default().
 	Logger *slog.Logger
+}
+
+// KeyManagementEnabled arms the key-management username on AuthConfig. It
+// deliberately carries no dependencies: the key-management path authenticates
+// an already-enrolled key and consults neither the stored credential nor the
+// Coder control plane.
+type KeyManagementEnabled struct {
+	Enabled bool
 }
 
 // validate enforces fail-closed construction: any missing dependency makes
@@ -82,6 +100,17 @@ func (c AuthConfig) validate() error {
 			return errors.New("sshauth: enabled enrollment requires verifier and store")
 		}
 	}
+	if c.KeyManagement != nil && c.KeyManagement.Enabled {
+		if c.keysUser() == "" {
+			return errors.New("sshauth: enabled key management requires a username")
+		}
+		// Defense-in-depth on top of config.Validate: two armed special
+		// usernames must never collide (the candidate-stage branches route
+		// on the username alone).
+		if c.enrollmentEnabled() && c.keysUser() == c.enrollmentUser() {
+			return errors.New("sshauth: enrollment and key management usernames must differ when both are enabled")
+		}
+	}
 	return nil
 }
 
@@ -97,6 +126,18 @@ func (c AuthConfig) enrollmentUser() string {
 // enrollmentEnabled reports whether the enrollment user is armed.
 func (c AuthConfig) enrollmentEnabled() bool {
 	return c.Enrollment != nil && c.Enrollment.Enabled && c.enrollmentUser() != ""
+}
+
+// keysUser resolves the key-management trigger username. Unlike enrollment
+// there is no nested override: the app layer resolves the effective username
+// into KeyManagementUser.
+func (c AuthConfig) keysUser() string {
+	return c.KeyManagementUser
+}
+
+// keysEnabled reports whether the key-management user is armed.
+func (c AuthConfig) keysEnabled() bool {
+	return c.KeyManagement != nil && c.KeyManagement.Enabled && c.keysUser() != ""
 }
 
 func (c AuthConfig) logger() *slog.Logger {

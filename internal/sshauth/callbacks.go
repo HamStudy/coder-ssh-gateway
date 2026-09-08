@@ -74,6 +74,13 @@ func (c AuthConfig) publicKeyCallback(state *ConnState, cfgErr error, meta ssh.C
 		if c.enrollmentEnabled() && user == c.enrollmentUser() {
 			return c.enrollmentCandidate(state, key)
 		}
+		// The key-management username routes to the account-scoped
+		// key-management UI, checked before any route parsing like
+		// enrollment. Unlike login@, only an already-enrolled key may
+		// proceed — unenrolled keys must never reach the UI.
+		if c.keysEnabled() && user == c.keysUser() {
+			return c.keysCandidate(state, key, reject)
+		}
 		// Every non-reserved username is a potential direct workspace route.
 		// Deliberately defer route parsing until after enrolled-key resolution
 		// and proof, so neither malformed routes nor workspace existence become
@@ -97,6 +104,24 @@ func (c AuthConfig) publicKeyCallback(state *ConnState, cfgErr error, meta ssh.C
 		slog.String("algorithm", key.Type()),
 	)
 	return CandidatePermissions(account.ID, keyRecord.ID), nil
+}
+
+// keysCandidate implements the candidate stage for the key-management
+// username: certificates follow the §10.3 policy, then the key MUST resolve
+// to an enrolled account key — unlike login@, an unenrolled key must never
+// reach the UI. Rejections flow through the caller's closure so the log,
+// audit, and outward error stay byte-identical to the workspace path. It
+// performs no Coder network call.
+func (c AuthConfig) keysCandidate(state *ConnState, key ssh.PublicKey, reject func(reason, detailCode string, attrs ...slog.Attr) error) (*ssh.Permissions, error) {
+	if _, isCert := key.(*ssh.Certificate); isCert {
+		return nil, reject("certificate_not_allowed", core.AUTH_UNKNOWN_KEY)
+	}
+	account, keyRecord, err := c.Store.LookupByPublicKey(state.Context(), c.DeploymentID, key)
+	if err != nil {
+		return nil, reject("key_lookup_failed", store.CodeOf(err))
+	}
+	state.setCandidate(account, keyRecord)
+	return KeyManagementCandidatePermissions(account.ID, keyRecord.ID), nil
 }
 
 // verifiedPublicKeyCallback implements the §9.3 verified stage (§25.3): it
@@ -129,6 +154,15 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 	// anchored self-enrollment flow before the store-identity parsing.
 	if candidate != nil && candidate.Extensions[PermissionMode] == ModeEnrollment {
 		return c.verifiedEnrollment(state, key, candidate)
+	}
+
+	// Key-management candidates take the credential-free path: an enrolled
+	// key proven is the whole authentication. No LoadCredential, no
+	// VerifyCached, no renewal — an expired or missing Coder token must not
+	// lock the owner out of managing their keys (and renewal success would
+	// return workspace permissions, mis-routing the connection).
+	if candidate != nil && candidate.Extensions[PermissionMode] == ModeKeyManagement {
+		return c.verifiedKeyManagement(state, candidate, sigAlg, reject)
 	}
 
 	perms, err := ParseCandidatePermissions(candidate)
@@ -181,6 +215,27 @@ func (c AuthConfig) verifiedPublicKeyCallback(state *ConnState, cfgErr error, me
 
 	state.SendBanner(nonRenewableBanner(kind))
 	return nil, reject("credential_not_usable", detailCodeFor(err, kind), account.ID, keyRecord.ID)
+}
+
+// verifiedKeyManagement completes key-management authentication: parse the
+// candidate permissions, tie them to the connection's candidate identity,
+// record proof of possession, and return key-management finals. The stored
+// credential is never consulted on this path. It receives the caller's
+// rejection closure so rejection logs and audits stay byte-identical with
+// the workspace path.
+func (c AuthConfig) verifiedKeyManagement(state *ConnState, candidate *ssh.Permissions, sigAlg string, reject func(reason, detailCode string, accountID, keyID uuid.UUID) error) (*ssh.Permissions, error) {
+	perms, err := ParseCandidatePermissions(candidate)
+	if err != nil {
+		return nil, reject("candidate_permissions_invalid", core.AUTH_UNKNOWN_KEY, uuid.Nil, uuid.Nil)
+	}
+	account, keyRecord, ok := state.candidateFor(perms.AccountID, perms.SSHKeyID)
+	if !ok {
+		return nil, reject("candidate_identity_mismatch", core.AUTH_UNKNOWN_KEY, uuid.Nil, uuid.Nil)
+	}
+
+	state.SetVerifiedIdentity(account, keyRecord, sigAlg)
+	c.recordVerifiedKey(state.Context(), state, account, keyRecord, sigAlg)
+	return FinalKeyManagementPermissions(account.ID, c.DeploymentID, keyRecord.ID), nil
 }
 
 // startRenewal enters the §13 renewal path: record the renewal attempt on
