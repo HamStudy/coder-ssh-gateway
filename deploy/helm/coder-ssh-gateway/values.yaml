@@ -18,6 +18,18 @@ gateway:
   wait: auto          # yes | no | auto
   auditRetentionDays: 90
 
+# Special usernames clients connect as. enrollment: link a device by
+# pasting a Coder token. keyManagement: account-scoped management of
+# enrolled keys over SSH. The two usernames must differ when both
+# features are enabled; the gateway rejects a colliding config at boot.
+enrollment:
+  enabled: true
+  user: login
+
+keyManagement:
+  enabled: true
+  user: login-admin
+
 # Deep-merged over the generated config. Any key accepted by the gateway's
 # config schema; see config.example.yaml for the full reference.
 #   helm upgrade --set configOverride.deployment.autostart=false

@@ -19,8 +19,12 @@
 
 4. Enroll a device:
 
-   ssh -p {{ .Values.service.port }} login@<hostname>
+   ssh -p {{ .Values.service.port }} {{ .Values.enrollment.user }}@<hostname>
    (paste a Coder token from {{ printf "https://%s/cli-auth" .Values.coder.domain }})
+
+   Manage enrolled keys from any enrolled device:
+
+   ssh -p {{ .Values.service.port }} {{ .Values.keyManagement.user }}@<hostname>
 
 Keys: the credential-encryption key was auto-generated and is injected
 via the environment only — it is not on the state volume. Both it and

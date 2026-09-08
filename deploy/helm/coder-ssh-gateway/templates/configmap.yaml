@@ -26,6 +26,12 @@ data:
           "ssh" (dict
             "host_keys" (list $hostKeyPath))
           "state" (dict "audit_retention_days" .Values.gateway.auditRetentionDays)
+          "enrollment" (dict
+            "enabled" .Values.enrollment.enabled
+            "user" .Values.enrollment.user)
+          "key_management" (dict
+            "enabled" .Values.keyManagement.enabled
+            "user" .Values.keyManagement.user)
           "encryption" (dict
             "provider" "file"
             "active_key_id" "v1"
