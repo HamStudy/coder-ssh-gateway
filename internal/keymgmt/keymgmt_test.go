@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/goleak"
@@ -517,8 +518,32 @@ func TestRunGoldenTranscript(t *testing.T) {
 			pty:          true,
 			store:        newSpyStore(fixtureKeys()),
 			input:        "3\x7f2\r2\rq\r",
-			want: headerAlicia + home(listingBoth) + "\b \b" + confirmOther +
-				"Key 2 removed.\r\n" + home(listingOne) + byeLine,
+			want: headerAlicia + home(listingBoth) + "3\b \b2" + confirmOther +
+				"2" + "Key 2 removed.\r\n" + home(listingOne) + "q" + byeLine,
+			wantDeleteKey: []deleteCall{{accountID: accountID, keyID: otherKeyID}},
+			wantEvents:    []wantEvent{{eventType: EventTypeSSHKeyRemoved, result: "success", sshKeyID: otherKeyID}},
+		},
+		{
+			name:         "pty bare CR drives removal flow with echo",
+			account:      fixtureAccount(),
+			sessionKeyID: sessionKeyID,
+			pty:          true,
+			store:        newSpyStore(fixtureKeys()),
+			input:        "2\r2\rq\r",
+			want: headerAlicia + home(listingBoth) + "2" + confirmOther +
+				"2" + "Key 2 removed.\r\n" + home(listingOne) + "q" + byeLine,
+			wantDeleteKey: []deleteCall{{accountID: accountID, keyID: otherKeyID}},
+			wantEvents:    []wantEvent{{eventType: EventTypeSSHKeyRemoved, result: "success", sshKeyID: otherKeyID}},
+		},
+		{
+			name:         "pty CRLF is one terminator per line",
+			account:      fixtureAccount(),
+			sessionKeyID: sessionKeyID,
+			pty:          true,
+			store:        newSpyStore(fixtureKeys()),
+			input:        "2\r\n2\r\nq\r\n",
+			want: headerAlicia + home(listingBoth) + "2" + confirmOther +
+				"2" + "Key 2 removed.\r\n" + home(listingOne) + "q" + byeLine,
 			wantDeleteKey: []deleteCall{{accountID: accountID, keyID: otherKeyID}},
 			wantEvents:    []wantEvent{{eventType: EventTypeSSHKeyRemoved, result: "success", sshKeyID: otherKeyID}},
 		},
@@ -563,11 +588,13 @@ func TestLineReader(t *testing.T) {
 		{name: "LF terminated", input: "hello\nrest", wantLine: "hello"},
 		{name: "CRLF terminated", input: "hello\r\nrest", wantLine: "hello"},
 		{name: "DEL byte kept without pty", input: "a\x7fb\nrest", wantLine: "a\x7fb"},
-		{name: "bare CR terminates in pty mode", pty: true, input: "hi\rrest", wantLine: "hi"},
-		{name: "CRLF collapses in pty mode", pty: true, input: "hi\r\nnext\r\n", wantLine: "hi"},
-		{name: "backspace erases with echo in pty mode", pty: true, input: "ab\x7fc\rrest", wantLine: "ac", wantEcho: "\b \b"},
-		{name: "backspace on empty line is silent", pty: true, input: "\x7fa\rrest", wantLine: "a", wantEcho: ""},
-		{name: "BS byte also erases in pty mode", pty: true, input: "ab\x08c\rrest", wantLine: "ac", wantEcho: "\b \b"},
+		{name: "bare CR terminates in pty mode", pty: true, input: "hi\rrest", wantLine: "hi", wantEcho: "hi"},
+		{name: "CRLF collapses in pty mode", pty: true, input: "hi\r\nnext\r\n", wantLine: "hi", wantEcho: "hi"},
+		{name: "backspace erases with echo in pty mode", pty: true, input: "ab\x7fc\rrest", wantLine: "ac", wantEcho: "ab\b \bc"},
+		{name: "backspace on empty line is silent", pty: true, input: "\x7fa\rrest", wantLine: "a", wantEcho: "a"},
+		{name: "BS byte also erases in pty mode", pty: true, input: "ab\x08c\rrest", wantLine: "ac", wantEcho: "ab\b \bc"},
+		{name: "printable bounds echoed in pty mode", pty: true, input: "a ~\rrest", wantLine: "a ~", wantEcho: "a ~"},
+		{name: "control byte appended but not echoed in pty mode", pty: true, input: "a\x01b\rrest", wantLine: "a\x01b", wantEcho: "ab"},
 		{name: "exactly 256 bytes accepted", input: strings.Repeat("x", 256) + "\nrest", wantLine: strings.Repeat("x", 256)},
 		{name: "257 bytes rejected", input: strings.Repeat("x", 257) + "\nrest", wantErr: errOverlong},
 		{name: "EOF with pending bytes returns final line", input: "abc", wantLine: "abc"},
@@ -620,6 +647,108 @@ func TestLineReaderPropagatesReadErrors(t *testing.T) {
 type errReader struct{ err error }
 
 func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// Terminator semantics that only show up across successive readLine calls:
+// the pending-LF flag set by a CR must swallow exactly one following LF,
+// never produce a phantom empty line, and never leak into later lines.
+func TestLineReaderTerminatorEdges(t *testing.T) {
+	t.Run("CRLF across readLine calls is one terminator", func(t *testing.T) {
+		r := newLineReader(strings.NewReader("q\r\n"), io.Discard, true)
+		line, err := r.readLine()
+		if err != nil || line != "q" {
+			t.Fatalf("first readLine = (%q, %v), want (%q, nil)", line, err, "q")
+		}
+		if line, err := r.readLine(); !errors.Is(err, io.EOF) {
+			t.Fatalf("second readLine = (%q, %v), want io.EOF (CRLF is one terminator)", line, err)
+		}
+	})
+	t.Run("EOF right after bare CR is EOF, not an empty line", func(t *testing.T) {
+		r := newLineReader(strings.NewReader("2\r"), io.Discard, true)
+		line, err := r.readLine()
+		if err != nil || line != "2" {
+			t.Fatalf("first readLine = (%q, %v), want (%q, nil)", line, err, "2")
+		}
+		if line, err := r.readLine(); !errors.Is(err, io.EOF) {
+			t.Fatalf("second readLine = (%q, %v), want io.EOF", line, err)
+		}
+	})
+	t.Run("pending LF swallowed after CR-terminated overlong line", func(t *testing.T) {
+		r := newLineReader(strings.NewReader(strings.Repeat("a", 300)+"\r\nok\n"), io.Discard, false)
+		if _, err := r.readLine(); !errors.Is(err, errOverlong) {
+			t.Fatalf("first readLine error = %v, want errOverlong", err)
+		}
+		line, err := r.readLine()
+		if err != nil || line != "ok" {
+			t.Fatalf("second readLine = (%q, %v), want (%q, nil) — the CRLF after the overlong line is one terminator", line, err, "ok")
+		}
+	})
+}
+
+// dripReader hands out one byte per Read call and then blocks until the test
+// releases it: a live wire where the byte after the CR has not arrived yet.
+type dripReader struct {
+	data    []byte
+	i       int
+	release <-chan struct{}
+}
+
+func (r *dripReader) Read(p []byte) (int, error) {
+	if r.i < len(r.data) {
+		p[0] = r.data[r.i]
+		r.i++
+		return 1, nil
+	}
+	<-r.release
+	return 0, io.EOF
+}
+
+// TestLineReaderBareCRDoesNotWaitForNextByte is the anti-stall proof: Enter
+// on a real pty arrives as a bare CR and nothing follows until the user
+// types again, yet readLine must return the line immediately. Against the
+// old Peek-based CRLF collapse this case blocks until the deadline.
+func TestLineReaderBareCRDoesNotWaitForNextByte(t *testing.T) {
+	for _, pty := range []bool{true, false} {
+		t.Run(fmt.Sprintf("pty=%v", pty), func(t *testing.T) {
+			release := make(chan struct{})
+			defer close(release) // unblock the reader goroutine when done
+			var out bytes.Buffer
+			r := newLineReader(&dripReader{data: []byte("2\r"), release: release}, &out, pty)
+
+			type result struct {
+				line string
+				err  error
+			}
+			ch := make(chan result, 1)
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				line, err := r.readLine()
+				ch <- result{line, err}
+			}()
+
+			select {
+			case res := <-ch:
+				if res.err != nil {
+					t.Fatalf("readLine() error = %v, want nil", res.err)
+				}
+				if res.line != "2" {
+					t.Errorf("line = %q, want %q", res.line, "2")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("readLine stalled after a bare CR; CR must terminate a line without waiting for the next byte")
+			}
+			<-finished // goroutine fully exited before the test returns (goleak)
+
+			if pty {
+				if got := out.String(); got != "2" {
+					t.Errorf("echo = %q, want %q", got, "2")
+				}
+			} else if got := out.String(); got != "" {
+				t.Errorf("echo = %q, want empty in no-pty mode", got)
+			}
+		})
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Label sanitization

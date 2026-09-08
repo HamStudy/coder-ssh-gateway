@@ -7,7 +7,7 @@ The account-scoped, line-based SSH key management UI served on the session chann
 |------|----------|
 | Run loop, removal + account-deletion flows | service.go |
 | Screen rendering, pinned UI strings | ui.go |
-| Input line reader (256-byte cap, pty backspace) | reader.go |
+| Input line reader (256-byte cap, bare-CR termination, pty echo + backspace) | reader.go |
 | Audit event authoring | audit.go |
 | Label control-char stripping | sanitize.go |
 
@@ -18,7 +18,7 @@ The account-scoped, line-based SSH key management UI served on the session chann
 - Audit: `ssh_key_removed` per removal attempt (success / failure `store_error` / failure `current_session_key`); account deletion emits `account_deleted` PLUS one `ssh_key_removed` success per cascaded key (the trail survives the account). IDs only — never fingerprints or labels.
 - Store errors never reach UI text: generic messages, real detail at WARN in the log. A failed key removal keeps the loop alive; a failed DeleteAccount ends the connection cleanly (transcript stops after the generic message).
 - `Run` always returns nil (quit / EOF / account deleted are all clean exits); write errors are ignored — a disconnecting client must not error-spam.
-- Terminators: LF always, CR too (pty clients send bare CR for Enter), CRLF collapses. Pty mode (via `WithPty`) additionally erases backspace bytes with a `\b \b` echo; there is no general input echo by design.
+- Terminators: LF always; CR terminates IMMEDIATELY (pty clients send bare CR for Enter — the reader never waits for a byte after CR; a drip-reader test in keymgmt_test.go is the anti-stall proof). CRLF is one terminator via a pending-LF flag: the CR sets it and the NEXT readLine discards one leading LF (applies on every subsequent read, never produces a phantom empty line, and is consumed even when the next byte is not an LF; CR-terminated overlong lines set it too). Pty mode (via `WithPty`) erases backspace bytes with a `\b \b` echo AND echoes printable ASCII (0x20–0x7e) as appended, so pty users see what they type; non-printable bytes stay unechoed; no-pty mode is byte-for-byte pass-through with no echo.
 - `EnrollmentUser` (default "login") renders the recovery hints; todo 7 wires it from config.
 
 ## ANTI-PATTERNS
