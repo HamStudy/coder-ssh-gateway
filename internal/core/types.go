@@ -19,11 +19,14 @@ type Account struct {
 }
 
 type SSHKeyRecord struct {
-	ID          uuid.UUID
-	AccountID   uuid.UUID
-	Fingerprint string
-	Algorithm   string
-	Enabled     bool
+	ID           uuid.UUID
+	AccountID    uuid.UUID
+	Fingerprint  string
+	Algorithm    string
+	Label        string
+	Enabled      bool
+	CreatedAtMs  int64
+	LastUsedAtMs *int64
 }
 
 type CredentialSnapshot struct {

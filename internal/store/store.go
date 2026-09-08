@@ -621,9 +621,12 @@ type keyRecord struct {
 
 func (r keyRecord) toCore() core.SSHKeyRecord {
 	rec := core.SSHKeyRecord{
-		Fingerprint: r.Fingerprint,
-		Algorithm:   r.Algorithm,
-		Enabled:     r.Enabled,
+		Fingerprint:  r.Fingerprint,
+		Algorithm:    r.Algorithm,
+		Label:        r.Label,
+		Enabled:      r.Enabled,
+		CreatedAtMs:  r.CreatedAtMs,
+		LastUsedAtMs: r.LastUsedAtMs,
 	}
 	if id, err := uuid.Parse(r.ID); err == nil {
 		rec.ID = id
@@ -745,6 +748,111 @@ func (s *Store) SetKeyEnabled(keyID uuid.UUID, enabled bool) error {
 	}
 	rec.Enabled = enabled
 	return s.writeRecord(dirKeys, name, rec)
+}
+
+// deleteRecordDurably removes a record file (os.Remove) and fsyncs the
+// containing directory so the unlink survives a power loss. Deletion cannot
+// use the temp+rename dance: unlink IS the atomic step (mirroring the
+// dir-fsync writeRecord performs after its rename). A missing file is an
+// error — callers decide what exists before calling.
+func (s *Store) deleteRecordDurably(subdir, name string) error {
+	if err := os.Remove(s.recordPath(subdir, name)); err != nil {
+		return storeUnavailable("remove record "+subdir+"/"+name, err)
+	}
+	d, err := os.Open(filepath.Join(s.dir, subdir))
+	if err != nil {
+		return storeUnavailable("open "+subdir+" for fsync", err)
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return storeUnavailable("fsync "+subdir, err)
+	}
+	return nil
+}
+
+// DeleteKey durably removes one key record, scoped to accountID: a keyID
+// that belongs to a different account yields the same ErrKeyNotFound as an
+// unknown keyID (account scoping is enforced here at the store layer, never
+// only in callers). There is deliberately NO last-key preservation guard —
+// deleting an account's only key is an owner decision, and `login@`
+// enrollment with a fresh Coder token restores any state.
+func (s *Store) DeleteKey(accountID, keyID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.checkOpen(); err != nil {
+		return err
+	}
+	name, rec, err := s.findKeyByIDLocked(keyID)
+	if err != nil {
+		return err
+	}
+	if rec.AccountID != accountID.String() {
+		return &Error{Code: core.STORE_UNAVAILABLE, Msg: "key " + keyID.String() + " not found", Err: ErrKeyNotFound}
+	}
+	// The record is resolved by ID scan; the file name is derived from the
+	// key material. Re-derive and confirm they agree before unlinking.
+	if derived := keyFileName(rec.PublicKeyBlob); derived != name {
+		return storeUnavailable("key "+keyID.String()+" file name "+name+" does not match digest "+derived, ErrStoreCorrupt)
+	}
+	return s.deleteRecordDurably(dirKeys, name)
+}
+
+// DeleteAccount durably removes an account and everything authenticating it:
+// every key record, then the credential record file, then the account
+// record — keys first, account last, all under ONE lock hold with a
+// directory fsync per removal.
+//
+// Ordering rationale: any crash mid-cascade fails closed. A crash before the
+// account record is removed leaves a partially- or fully-keyless account
+// (missing credential, missing keys) — authentication is impossible and
+// `login@` re-enrollment restores the account. Orphaned key records (key
+// file present, account file gone — possible only through crash AFTER this
+// cascade, backup-restore mismatches, or tampering) never authenticate:
+// LookupByPublicKey checks account existence and fails closed. No state lets
+// a key authenticate against a deleted account or a wiped credential.
+//
+// A missing credential file or zero keys are not errors (delete what
+// exists); an unknown account is ErrAccountNotFound.
+func (s *Store) DeleteAccount(accountID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.checkOpen(); err != nil {
+		return err
+	}
+	if _, err := s.getAccountLocked(accountID); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(filepath.Join(s.dir, dirKeys))
+	if err != nil {
+		return storeUnavailable("scan keys", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		var rec keyRecord
+		if err := s.readRecord(dirKeys, e.Name(), &rec); err != nil {
+			return err
+		}
+		if rec.AccountID != accountID.String() {
+			continue
+		}
+		if err := s.deleteRecordDurably(dirKeys, e.Name()); err != nil {
+			return err
+		}
+	}
+
+	credPath := filepath.Join(s.dir, dirCredentials, accountID.String()+".json")
+	if _, err := os.Stat(credPath); err == nil {
+		if err := s.deleteRecordDurably(dirCredentials, accountID.String()+".json"); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return storeUnavailable("stat credential", err)
+	}
+
+	return s.deleteRecordDurably(dirAccounts, accountID.String()+".json")
 }
 
 // TouchKeyLastUsed stamps last_used_at_ms with the current time.

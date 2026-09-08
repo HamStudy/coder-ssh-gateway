@@ -215,12 +215,17 @@ func TestSSHKeyRecord(t *testing.T) {
 	id := uuid.New()
 	accountID := uuid.New()
 
+	lastUsed := int64(1234567890)
+
 	key := core.SSHKeyRecord{
-		ID:          id,
-		AccountID:   accountID,
-		Fingerprint: "SHA256:abc123",
-		Algorithm:   "ssh-ed25519",
-		Enabled:     true,
+		ID:           id,
+		AccountID:    accountID,
+		Fingerprint:  "SHA256:abc123",
+		Algorithm:    "ssh-ed25519",
+		Label:        "laptop key",
+		Enabled:      true,
+		CreatedAtMs:  1234000000,
+		LastUsedAtMs: &lastUsed,
 	}
 
 	if key.ID != id {
@@ -237,6 +242,20 @@ func TestSSHKeyRecord(t *testing.T) {
 	}
 	if !key.Enabled {
 		t.Error("SSHKeyRecord.Enabled = false, want true")
+	}
+	if key.Label != "laptop key" {
+		t.Errorf("SSHKeyRecord.Label = %v, want %v", key.Label, "laptop key")
+	}
+	if key.CreatedAtMs != 1234000000 {
+		t.Errorf("SSHKeyRecord.CreatedAtMs = %v, want 1234000000", key.CreatedAtMs)
+	}
+	if key.LastUsedAtMs == nil || *key.LastUsedAtMs != lastUsed {
+		t.Errorf("SSHKeyRecord.LastUsedAtMs = %v, want %d", key.LastUsedAtMs, lastUsed)
+	}
+
+	var neverUsed core.SSHKeyRecord
+	if neverUsed.LastUsedAtMs != nil {
+		t.Error("zero-value SSHKeyRecord.LastUsedAtMs = non-nil, want nil (never used)")
 	}
 }
 
