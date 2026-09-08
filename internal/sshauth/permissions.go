@@ -33,6 +33,10 @@ const (
 	// ModeEnrollment marks candidate permissions for the login@ self-
 	// enrollment flow (CD-2): the key is not (yet) linked to any account.
 	ModeEnrollment = "enrollment"
+	// ModeKeyManagement marks connections authenticated for the account-
+	// scoped key-management UI (login-admin@ by default): no workspace
+	// target, no credential, restricted channel dispatch.
+	ModeKeyManagement = "keymanagement"
 )
 
 type CandidatePerms struct {
@@ -79,6 +83,20 @@ func EnrollmentCandidatePermissions(keyDigestHex string) *ssh.Permissions {
 	}
 }
 
+// KeyManagementCandidatePermissions builds candidate permissions for the
+// key-management username: the same extension keys as CandidatePermissions,
+// but mode=keymanagement so the verified stage routes to the key-management
+// branch instead of the credential path.
+func KeyManagementCandidatePermissions(accountID, keyID uuid.UUID) *ssh.Permissions {
+	return &ssh.Permissions{
+		Extensions: map[string]string{
+			PermissionMode:      ModeKeyManagement,
+			PermissionAccountID: accountID.String(),
+			PermissionSSHKeyID:  keyID.String(),
+		},
+	}
+}
+
 // FinalWorkspacePermissions records an authenticated workspace-session mode.
 // The route itself is intentionally not copied into Permissions: it remains
 // the SSH username and is parsed after authentication by the server.
@@ -92,6 +110,16 @@ func FinalWorkspacePermissions(accountID, deploymentID, keyID uuid.UUID, generat
 // of entering the channel dispatch.
 func FinalEnrollmentPermissions(accountID, deploymentID, keyID uuid.UUID, generation int64) *ssh.Permissions {
 	return finalWorkspacePermissions(ModeWorkspace, accountID, deploymentID, keyID, generation, true)
+}
+
+// FinalKeyManagementPermissions authenticates a key-management connection.
+// The connection serves the account-scoped key-management UI only; there is
+// no workspace target and no channel dispatch beyond one session. The
+// credential generation is pinned to 0 because no credential is consulted
+// on this path — 0 is the parse-legal "no credential" value, not a claim
+// about any stored credential's generation.
+func FinalKeyManagementPermissions(accountID, deploymentID, keyID uuid.UUID) *ssh.Permissions {
+	return finalWorkspacePermissions(ModeKeyManagement, accountID, deploymentID, keyID, 0, false)
 }
 
 func finalWorkspacePermissions(mode string, accountID, deploymentID, keyID uuid.UUID, generation int64, mustReconnect bool) *ssh.Permissions {
@@ -136,7 +164,7 @@ func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
 	ext := perms.Extensions
 
 	mode := ext[PermissionMode]
-	if mode != ModeWorkspace {
+	if mode != ModeWorkspace && mode != ModeKeyManagement {
 		return FinalPerms{}, fmt.Errorf("%w: %q", ErrInvalidMode, mode)
 	}
 
@@ -172,7 +200,9 @@ func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
 		if deploymentID == uuid.Nil {
 			return FinalPerms{}, ErrZeroDeploymentID
 		}
-	} else if mode == ModeWorkspace {
+	} else {
+		// A deployment is required for every accepted final mode: the
+		// gateway always knows its deployment ID at auth time.
 		return FinalPerms{}, ErrMissingDeploymentID
 	}
 
@@ -224,7 +254,7 @@ func ParseCandidatePermissions(perms *ssh.Permissions) (CandidatePerms, error) {
 	ext := perms.Extensions
 
 	mode := ext[PermissionMode]
-	if mode != ModeCandidate {
+	if mode != ModeCandidate && mode != ModeKeyManagement {
 		return CandidatePerms{}, fmt.Errorf("%w: %q", ErrInvalidMode, mode)
 	}
 
