@@ -146,6 +146,13 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 			Logger:         logger,
 		}
 	}
+	// CD-2 companion: key management disabled leaves a nil KeyManagement —
+	// the key-management username then rejects byte-identically to any
+	// unknown username (§35), exactly like disabled enrollment above.
+	var keyManagement *sshauth.KeyManagementEnabled
+	if cfg.KeyManagement.Enabled {
+		keyManagement = &sshauth.KeyManagementEnabled{Enabled: true}
+	}
 	authCfg := sshauth.AuthConfig{
 		DeploymentID:       dep.ID,
 		CoderURL:           dep.CoderURL,
@@ -157,6 +164,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		Renewal:            renewal,
 		EnrollmentUser:     cfg.Enrollment.User,
 		Enrollment:         enrollment,
+		KeyManagementUser:  cfg.KeyManagement.User,
+		KeyManagement:      keyManagement,
 	}
 
 	codec := route.NewCodec()
@@ -200,9 +209,10 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Built, error) {
 		// §32 step 4: the drain period reuses limits.process_shutdown_grace
 		// (documented choice): the same budget governs graceful channel
 		// finish and child-process TERM/KILL escalation.
-		DrainPeriod: cfg.Limits.ProcessShutdownGrace.Std(),
-		Logger:      logger,
-		Audit:       auditOut,
+		DrainPeriod:    cfg.Limits.ProcessShutdownGrace.Std(),
+		EnrollmentUser: cfg.Enrollment.User,
+		Logger:         logger,
+		Audit:          auditOut,
 	})
 	if err != nil {
 		st.Close()

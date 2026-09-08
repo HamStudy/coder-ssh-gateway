@@ -34,6 +34,7 @@ const (
 	statusPass = "PASS"
 	statusWarn = "WARN"
 	statusFail = "FAIL"
+	statusInfo = "INFO"
 )
 
 // doctorReport accumulates §29.1 check results. Local misconfiguration is a
@@ -76,6 +77,21 @@ func (c *cli) cmdDoctor(args []string) int {
 	config.ApplyStateDir(cfg, c.stateDir)
 	r.emit("config-parse", statusPass, "%s", path)
 
+	// Same ordering as cmdServe (parse → state-dir → env → validate) so
+	// env-induced values are judged here exactly as they are at boot.
+	envApplied, err := config.ApplyEnvOverrides(cfg)
+	if err != nil {
+		r.emit("config-env", statusFail, "%v", err)
+	} else if len(envApplied) > 0 {
+		r.emit("config-env", statusInfo, "applied: %s", strings.Join(envApplied, ", "))
+	}
+	if err := cfg.Validate(); err != nil {
+		r.emit("config-validate", statusFail, "%v", err)
+	} else {
+		r.emit("config-validate", statusPass, "configuration valid")
+		r.checkSpecialUsers(cfg)
+	}
+
 	r.checkStateDir(cfg)
 	r.checkEncryptionKey(cfg)
 	r.checkHostKeys(cfg)
@@ -98,6 +114,23 @@ func (c *cli) cmdDoctor(args []string) int {
 		return exitError
 	}
 	return exitOK
+}
+
+// checkSpecialUsers reports the effective special usernames (INFO only).
+// Config truth only — never serve runtime state (validation asymmetry:
+// doctor passing does not imply serve booted).
+func (r *doctorReport) checkSpecialUsers(cfg *config.Config) {
+	const name = "special-users"
+	enrollment := "disabled"
+	if cfg.Enrollment.Enabled {
+		enrollment = "armed"
+	}
+	keyManagement := "disabled"
+	if cfg.KeyManagement.Enabled {
+		keyManagement = "armed"
+	}
+	r.emit(name, statusInfo, "enrollment user: %s (%s); key management user: %s (%s)",
+		cfg.Enrollment.User, enrollment, cfg.KeyManagement.User, keyManagement)
 }
 
 // checkStateDir covers §29.1 "database access and migration state" adapted
