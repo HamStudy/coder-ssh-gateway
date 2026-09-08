@@ -1,7 +1,7 @@
 // Package server implements the outer SSH listener: accept loop, admission
 // control, per-connection SSH configuration, phase-aware deadlines, the §8.4
 // global-request policy, and §8.3 channel dispatch (transport-mode
-// direct-tcpip and maintenance-mode session in channels.go).
+// direct-tcpip relays in channels.go).
 package server
 
 import (
@@ -24,6 +24,7 @@ import (
 	"github.com/HamStudy/coder-ssh-gateway/internal/metrics"
 	"github.com/HamStudy/coder-ssh-gateway/internal/route"
 	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/version"
 )
 
 // ErrNilCounters is returned by New when no admission counters are provided;
@@ -40,7 +41,6 @@ var (
 
 const (
 	defaultHandshakeTimeout   = 30 * time.Second
-	defaultServerVersion      = "SSH-2.0-CoderSSHGW_0.1"
 	defaultProxyHeaderTimeout = 5 * time.Second
 
 	// defaultCacheTTL matches the §11.5 validation-cache default; after this
@@ -143,7 +143,7 @@ func New(cfg ServerConfig) (*Server, error) {
 		cfg.HandshakeTimeout = defaultHandshakeTimeout
 	}
 	if cfg.ServerVersion == "" {
-		cfg.ServerVersion = defaultServerVersion
+		cfg.ServerVersion = defaultServerVersion()
 	}
 	if cfg.ProxyHeaderTimeout <= 0 {
 		cfg.ProxyHeaderTimeout = defaultProxyHeaderTimeout
@@ -179,6 +179,25 @@ func New(cfg ServerConfig) (*Server, error) {
 // buildBaseSSHConfig implements §25.1 exactly: safe supported-algorithm sets
 // (defensively copied), MaxAuthTries 24, configured server version, host
 // signers, and NO top-level password/keyboard-interactive callbacks (§8.2).
+// defaultServerVersion reports the gateway's real version in the SSH
+// identification string (§25.1). version.Version is release metadata
+// ("0.4.0", "dev"); characters illegal in an RFC 4253 softwareversion
+// token are stripped defensively.
+func defaultServerVersion() string {
+	v := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '+':
+			return r
+		default:
+			return -1
+		}
+	}, version.Version)
+	if v == "" {
+		v = "unknown"
+	}
+	return "SSH-2.0-CoderSSHGW_" + v
+}
+
 func buildBaseSSHConfig(serverVersion string, signers []ssh.Signer) *ssh.ServerConfig {
 	algorithms := ssh.SupportedAlgorithms()
 

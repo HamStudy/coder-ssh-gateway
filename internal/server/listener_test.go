@@ -11,6 +11,7 @@ import (
 	"github.com/HamStudy/coder-ssh-gateway/internal/config"
 	"github.com/HamStudy/coder-ssh-gateway/internal/server"
 	"github.com/HamStudy/coder-ssh-gateway/internal/sshauth"
+	"github.com/HamStudy/coder-ssh-gateway/internal/version"
 )
 
 // A panicking per-connection code path (here the injected pre-auth gate)
@@ -322,6 +323,29 @@ func TestNewRequiresHostSignersAndCounters(t *testing.T) {
 		Auth:        f.authConfig(),
 	}); err == nil {
 		t.Fatal("New without counters must fail closed")
+	}
+}
+
+// The default ServerVersion tracks the running release version (§25.1).
+func TestDefaultServerVersionTracksAppVersion(t *testing.T) {
+	defer leakCheck(t)
+
+	f := newFixture(t, coderOKHandler(testCoderUserID))
+	defer f.close(t)
+	ts := startTestServer(t, f, nil)
+	defer ts.shutdown(t)
+
+	raw := dialRaw(t, ts.addr())
+	defer raw.Close()
+	_ = raw.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 64)
+	n, err := raw.Read(buf)
+	if err != nil {
+		t.Fatalf("read version banner: %v", err)
+	}
+	want := "SSH-2.0-CoderSSHGW_" + version.Version
+	if !strings.HasPrefix(string(buf[:n]), want) {
+		t.Errorf("server banner = %q, want prefix %q", string(buf[:n]), want)
 	}
 }
 

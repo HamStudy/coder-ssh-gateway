@@ -84,7 +84,7 @@ listen:
 
 # SSH server presentation.
 ssh:
-  server_version: "SSH-2.0-CoderSSHGW_0.1"  # [DEFAULT] banner clients see.
+  server_version: "SSH-2.0-CoderSSHGW_<version>"  # [DEFAULT] banner clients see; defaults to the running release version.
                                             # Not a security boundary.
   host_keys:
     # [SECURITY] relative to this file's directory; absolute paths
