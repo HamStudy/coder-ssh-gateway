@@ -102,7 +102,7 @@ func queueDecision(typ string, payload []byte) (queueable, valid bool, reason st
 	case "auth-agent-req@openssh.com":
 		return true, true, ""
 	case "pty-req":
-		if _, _, err := parsePtyRequest(payload); err != nil {
+		if _, _, err := ParsePtyRequest(payload); err != nil {
 			return false, false, "invalid pty-req: " + err.Error()
 		}
 		return true, true, ""

@@ -53,7 +53,7 @@ func TestBridgePendingSessionQueuesRequestsAndReplays(t *testing.T) {
 		defer close(feedDone)
 		// Rendezvous sends force the consumption order: both requests queue
 		// before the transport is delivered.
-		requests <- &ssh.Request{Type: "pty-req", WantReply: false, Payload: ssh.Marshal(ptyRequest{Term: "xterm", Columns: 80, Rows: 24, Modes: "\x00"})}
+		requests <- &ssh.Request{Type: "pty-req", WantReply: false, Payload: ssh.Marshal(PtyRequest{Term: "xterm", Columns: 80, Rows: 24, Modes: "\x00"})}
 		requests <- &ssh.Request{Type: "shell", WantReply: false}
 		pending <- PendingTransport{Tr: tr}
 	}()
@@ -123,7 +123,7 @@ func TestBridgePendingSessionRejectionsAreVisible(t *testing.T) {
 	feedDone := make(chan struct{})
 	go func() {
 		defer close(feedDone)
-		requests <- &ssh.Request{Type: "pty-req", WantReply: false, Payload: ssh.Marshal(ptyRequest{Term: "xterm", Columns: 80, Rows: 24, Modes: "\x01\x02"})}
+		requests <- &ssh.Request{Type: "pty-req", WantReply: false, Payload: ssh.Marshal(PtyRequest{Term: "xterm", Columns: 80, Rows: 24, Modes: "\x01\x02"})}
 		pending <- PendingTransport{Tr: tr}
 	}()
 
@@ -153,11 +153,11 @@ func TestQueueDecisionMatchesLiveBridgeContract(t *testing.T) {
 		{"env valid", "env", ssh.Marshal(envRequest{Name: "LANG", Value: "en_US.UTF-8"}), true, true},
 		{"env empty name", "env", ssh.Marshal(envRequest{Name: "", Value: "x"}), false, false},
 		{"agent req", "auth-agent-req@openssh.com", nil, true, true},
-		{"pty valid", "pty-req", ssh.Marshal(ptyRequest{Term: "xterm", Columns: 80, Rows: 24, Modes: "\x00"}), true, true},
-		{"pty empty term", "pty-req", ssh.Marshal(ptyRequest{Term: "", Columns: 80, Rows: 24, Modes: "\x00"}), true, true},
-		{"pty empty modes", "pty-req", ssh.Marshal(ptyRequest{Term: "xterm", Columns: 80, Rows: 24}), true, true},
-		{"pty truncated modes", "pty-req", ssh.Marshal(ptyRequest{Term: "xterm", Columns: 80, Rows: 24, Modes: "\x01\x02"}), false, false},
-		{"pty bad dims", "pty-req", ssh.Marshal(ptyRequest{Term: "xterm", Columns: 0, Rows: 1 << 31, Modes: "\x00"}), false, false},
+		{"pty valid", "pty-req", ssh.Marshal(PtyRequest{Term: "xterm", Columns: 80, Rows: 24, Modes: "\x00"}), true, true},
+		{"pty empty term", "pty-req", ssh.Marshal(PtyRequest{Term: "", Columns: 80, Rows: 24, Modes: "\x00"}), true, true},
+		{"pty empty modes", "pty-req", ssh.Marshal(PtyRequest{Term: "xterm", Columns: 80, Rows: 24}), true, true},
+		{"pty truncated modes", "pty-req", ssh.Marshal(PtyRequest{Term: "xterm", Columns: 80, Rows: 24, Modes: "\x01\x02"}), false, false},
+		{"pty bad dims", "pty-req", ssh.Marshal(PtyRequest{Term: "xterm", Columns: 0, Rows: 1 << 31, Modes: "\x00"}), false, false},
 		{"shell empty payload", "shell", nil, true, true},
 		{"shell with payload", "shell", []byte{1}, false, false},
 		{"exec valid", "exec", ssh.Marshal(execRequest{Command: "true"}), true, true},

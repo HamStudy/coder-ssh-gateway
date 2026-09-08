@@ -102,8 +102,12 @@ type ServerConfig struct {
 	// triggers the tunnel supervisor's TERM/KILL ladder). Zero drains
 	// immediately.
 	DrainPeriod time.Duration
-	Logger      *slog.Logger
-	Audit       audit.Logger
+	// EnrollmentUser renders the key-management UI's recovery hints
+	// ("re-enroll with <user>@"). Empty falls back to keymgmt's "login"
+	// default; the app layer wires the effective enrollment username.
+	EnrollmentUser string
+	Logger         *slog.Logger
+	Audit          audit.Logger
 }
 
 // Server owns the immutable base ssh.ServerConfig and the accept loop.

@@ -215,19 +215,24 @@ func (s *Server) handleConn(raw net.Conn) {
 	connCtx, cancel := context.WithCancel(state.Context())
 	defer cancel()
 
-	wc := &workspaceContext{srv: s, state: state, perms: perms, target: serverConn.User(), out: serverConn}
-
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		s.handleGlobalRequests(connCtx, state, wc, requests)
-	}()
-
-	// §8.3 dispatch: workspace connections admit session channels (target =
-	// username) and direct-tcpip relays/jumps, in any order.
+	// §8.3 dispatch by permission mode. The workspaceContext and the
+	// workspace-backed global-request handler exist ONLY in workspace mode:
+	// a keymanagement connection must never reach a workspace transport
+	// (credential load + coder child spawn), so its global requests are
+	// answered by the refusing handler inside dispatchKeyManagement.
 	switch perms.Mode {
 	case sshauth.ModeWorkspace:
+		// Workspace connections admit session channels (target =
+		// username) and direct-tcpip relays/jumps, in any order.
+		wc := &workspaceContext{srv: s, state: state, perms: perms, target: serverConn.User(), out: serverConn}
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.handleGlobalRequests(connCtx, state, wc, requests)
+		}()
 		s.dispatchWorkspaceChannels(connCtx, wc, channels)
+	case sshauth.ModeKeyManagement:
+		s.dispatchKeyManagement(channels, requests, state, perms, log)
 	default:
 		log.Warn("unknown permission mode; closing", slog.String("mode", perms.Mode))
 		rejectChannelAll(log, channels)

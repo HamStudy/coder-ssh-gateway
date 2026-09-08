@@ -62,7 +62,11 @@ func (a sessionAddr) Network() string { return "stdio" }
 func (a sessionAddr) String() string  { return string(a) }
 
 type envRequest struct{ Name, Value string }
-type ptyRequest struct {
+
+// PtyRequest is the RFC 4254 pty-req payload. Exported so the server's
+// key-management dispatch can validate pty-req requests through the same
+// parser (and the same mobile-quirk tolerance) as the session bridge.
+type PtyRequest struct {
 	Term          string
 	Columns, Rows uint32
 	Width, Height uint32
@@ -217,7 +221,7 @@ func applySessionRequest(session *ssh.Session, typ string, payload []byte, start
 			return nil
 		}, ""
 	case "pty-req":
-		r, modes, err := parsePtyRequest(payload)
+		r, modes, err := ParsePtyRequest(payload)
 		if err != nil {
 			return false, false, nil, "invalid pty-req: " + err.Error()
 		}
@@ -306,12 +310,12 @@ func finishSession(channel ssh.Channel, err error) error {
 	return err
 }
 
-// parsePtyRequest validates an RFC 4254 pty-req payload for relay to the
-// inner session. Term may be empty (mobile clients omit it); an empty modes
-// string means "no modes". Shared by the live bridge and the deferred
-// bridge's queueDecision so both accept identically.
-func parsePtyRequest(payload []byte) (ptyRequest, ssh.TerminalModes, error) {
-	var r ptyRequest
+// ParsePtyRequest validates an RFC 4254 pty-req payload. Term may be empty
+// (mobile clients omit it); an empty modes string means "no modes". Shared
+// by the live bridge, the deferred bridge's queueDecision, and the server's
+// key-management dispatch so all accept identically.
+func ParsePtyRequest(payload []byte) (PtyRequest, ssh.TerminalModes, error) {
+	var r PtyRequest
 	if ssh.Unmarshal(payload, &r) != nil {
 		return r, nil, errors.New("malformed pty-req payload")
 	}
