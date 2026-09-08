@@ -39,6 +39,7 @@ type Config struct {
 	Deployment    Deployment    `yaml:"deployment"`
 	Limits        Limits        `yaml:"limits"`
 	Enrollment    Enrollment    `yaml:"enrollment"`
+	KeyManagement KeyManagement `yaml:"key_management"`
 	Observability Observability `yaml:"observability"`
 }
 
@@ -127,6 +128,19 @@ type Enrollment struct {
 	Timeout Duration `yaml:"timeout"`
 }
 
+// KeyManagement configures the account-scoped key-management UI: prove
+// an already-enrolled key over SSH and manage that account's keys from
+// any client. Enabled by default.
+type KeyManagement struct {
+	// Enabled arms the key-management user. False makes the username
+	// behave exactly like any unknown username.
+	Enabled bool `yaml:"enabled"`
+	// User is the outer SSH username that opens the key-management UI
+	// (default "login-admin"). Must be a DNS-label name and must differ
+	// from enrollment.user while both features are enabled.
+	User string `yaml:"user"`
+}
+
 type Observability struct {
 	LogFormat      string `yaml:"log_format"`
 	LogLevel       string `yaml:"log_level"`
@@ -190,6 +204,10 @@ func Default() *Config {
 			User:        "login",
 			MaxAttempts: 3,
 			Timeout:     Duration(5 * time.Minute),
+		},
+		KeyManagement: KeyManagement{
+			Enabled: true,
+			User:    "login-admin",
 		},
 		Observability: Observability{
 			LogFormat:      "json",

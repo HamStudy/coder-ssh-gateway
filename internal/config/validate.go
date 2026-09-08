@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -23,6 +24,7 @@ func (c *Config) Validate() error {
 	c.validateDeployment(&errs)
 	c.validateLimits(&errs)
 	c.validateEnrollment(&errs)
+	c.validateUsernames(&errs)
 
 	return errors.Join(errs...)
 }
@@ -198,6 +200,44 @@ func (c *Config) validateEnrollment(errs *[]error) {
 	}
 	if c.Enrollment.Timeout <= 0 {
 		*errs = append(*errs, fmt.Errorf("enrollment.timeout: must be positive, got %v", c.Enrollment.Timeout.Std()))
+	}
+}
+
+// usernamePattern is the special-username grammar: a DNS label,
+// ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ — the same shape route hostnames
+// enforce (internal/route/hostname.go), so a special username can never
+// be confused with route grammar.
+var usernamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// validateUsernames checks the special usernames of the enrollment and
+// key-management features: required-when-enabled, DNS-label charset
+// (even when a feature is disabled — fail fast on typos), and mutual
+// exclusion while both features are enabled. It is a pure function of
+// the effective config: validation runs after env overrides, so
+// env-induced values obey the same rules as YAML ones.
+func (c *Config) validateUsernames(errs *[]error) {
+	if c.KeyManagement.Enabled && c.KeyManagement.User == "" {
+		*errs = append(*errs, errors.New("key_management.user: required when key management is enabled"))
+	}
+	users := []struct {
+		field string
+		value string
+	}{
+		{"enrollment.user", c.Enrollment.User},
+		{"key_management.user", c.KeyManagement.User},
+	}
+	for _, u := range users {
+		if u.value == "" {
+			continue
+		}
+		if !usernamePattern.MatchString(u.value) {
+			*errs = append(*errs, fmt.Errorf("%s: %q is not a valid username (lowercase letters, digits, and hyphens; must start and end with a letter or digit)", u.field, u.value))
+		}
+	}
+	if c.Enrollment.Enabled && c.KeyManagement.Enabled &&
+		c.Enrollment.User != "" && c.KeyManagement.User != "" &&
+		c.Enrollment.User == c.KeyManagement.User {
+		*errs = append(*errs, errors.New("enrollment.user and key_management.user must differ when both are enabled"))
 	}
 }
 

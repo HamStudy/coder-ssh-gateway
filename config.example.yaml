@@ -220,20 +220,6 @@ limits:
   stderr_buffer_bytes: 65536                # [DEFAULT] bounded ring for
                                             # child stderr diagnostics
 
-# Maintenance session (auth@).
-maintenance:
-  enabled: true                             # [DEFAULT] enable the
-                                            # maintenance session
-  session_timeout: 5m                       # [DEFAULT] whole-session
-                                            # bound
-  input_timeout: 2m                         # [DEFAULT] negotiation and
-                                            # per-keystroke bound
-  bind_on_first_token_requires_admin_flag: true
-                                            # [SECURITY] first-token
-                                            # binding only for accounts
-                                            # created with
-                                            # --bind-on-first-token
-
 # Self-enrollment (login@).
 enrollment:
   enabled: true                             # [DEPLOYMENT] primary
@@ -251,6 +237,39 @@ enrollment:
                                             # deadline extension while
                                             # an enrollment token prompt
                                             # is open
+
+# Account-scoped key management over SSH (login-admin@): prove an
+# already-enrolled key and manage that account's keys from any client.
+key_management:
+  enabled: true                             # [DEFAULT] arm the
+                                             # key-management username.
+                                             # Set to false and the
+                                             # username behaves exactly
+                                             # like any unknown username.
+  user: login-admin                         # [DEPLOYMENT] SSH username
+                                             # that opens the key-
+                                             # management UI. Lowercase
+                                             # letters, digits, and
+                                             # hyphens only; must start
+                                             # and end with a letter or
+                                             # digit (a DNS-label name).
+                                             # Must differ from
+                                             # enrollment.user while
+                                             # both features are enabled
+                                             # (startup validation
+                                             # rejects equal names).
+                                             # A special username takes
+                                             # precedence over a
+                                             # workspace route of the
+                                             # same name, so a
+                                             # workspace named
+                                             # login-admin is
+                                             # unreachable by username.
+                                             # Runtime override:
+                                             # CSGW_KEY_MANAGEMENT_USER
+                                             # (enrollment.user likewise:
+                                             # CSGW_ENROLLMENT_USER);
+                                             # env beats this file.
 
 # Observability.
 observability:

@@ -128,6 +128,100 @@ func TestApplyEnvOverrides(t *testing.T) {
 	})
 }
 
+// TestApplyEnvOverridesUsernames pins the username override contract:
+// values are plain usernames (never host:port), env beats YAML, empty
+// skips, and username semantics (charset, collision) belong to Validate,
+// not to the env layer.
+func TestApplyEnvOverridesUsernames(t *testing.T) {
+	t.Run("both usernames applied over config values", func(t *testing.T) {
+		t.Setenv(EnvEnrollmentUser, "signin")
+		t.Setenv(EnvKeyManagementUser, "ops")
+		cfg := Default()
+		cfg.Enrollment.User = "login"
+		cfg.KeyManagement.User = "login-admin"
+
+		applied, err := ApplyEnvOverrides(cfg)
+		if err != nil {
+			t.Fatalf("ApplyEnvOverrides: %v", err)
+		}
+		if cfg.Enrollment.User != "signin" {
+			t.Errorf("enrollment.user = %q, want signin (env beats config)", cfg.Enrollment.User)
+		}
+		if cfg.KeyManagement.User != "ops" {
+			t.Errorf("key_management.user = %q, want ops (env beats config)", cfg.KeyManagement.User)
+		}
+		for _, want := range []string{EnvEnrollmentUser, EnvKeyManagementUser} {
+			found := false
+			for _, a := range applied {
+				if a == want {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("applied missing %q (got %v)", want, applied)
+			}
+		}
+	})
+
+	t.Run("empty env value is ignored", func(t *testing.T) {
+		t.Setenv(EnvKeyManagementUser, "")
+		cfg := Default()
+		applied, err := ApplyEnvOverrides(cfg)
+		if err != nil {
+			t.Fatalf("ApplyEnvOverrides: %v", err)
+		}
+		if len(applied) != 0 {
+			t.Errorf("applied = %v, want empty", applied)
+		}
+		if cfg.KeyManagement.User != "login-admin" {
+			t.Errorf("key_management.user = %q, want default login-admin", cfg.KeyManagement.User)
+		}
+	})
+
+	t.Run("username values are not address-checked", func(t *testing.T) {
+		for _, name := range []string{"a", "ops", "keys-lead", strings.Repeat("k", 63)} {
+			t.Setenv(EnvKeyManagementUser, name)
+			cfg := Default()
+			if _, err := ApplyEnvOverrides(cfg); err != nil {
+				t.Errorf("username %q rejected: %v", name, err)
+			}
+			if cfg.KeyManagement.User != name {
+				t.Errorf("key_management.user = %q, want %q", cfg.KeyManagement.User, name)
+			}
+		}
+	})
+
+	t.Run("env-induced collision fails Validate not ApplyEnvOverrides", func(t *testing.T) {
+		t.Setenv(EnvEnrollmentUser, "login-admin")
+		cfg, _ := validConfig(t)
+		if _, err := ApplyEnvOverrides(cfg); err != nil {
+			t.Fatalf("ApplyEnvOverrides: %v (collision must surface in Validate)", err)
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected collision error from Validate, got nil")
+		}
+		if !strings.Contains(err.Error(), "enrollment.user and key_management.user must differ") {
+			t.Errorf("error %q does not name the collision", err)
+		}
+	})
+
+	t.Run("invalid charset via env caught by Validate", func(t *testing.T) {
+		t.Setenv(EnvKeyManagementUser, "a b")
+		cfg, _ := validConfig(t)
+		if _, err := ApplyEnvOverrides(cfg); err != nil {
+			t.Fatalf("ApplyEnvOverrides: %v (charset must surface in Validate)", err)
+		}
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected charset error from Validate, got nil")
+		}
+		if !strings.Contains(err.Error(), "key_management.user") {
+			t.Errorf("error %q does not name key_management.user", err)
+		}
+	})
+}
+
 // TestValidateAcceptsWildcardAddresses proves container-style binds
 // (0.0.0.0 / empty host) are not rejected by startup validation for any of
 // the three bind addresses.

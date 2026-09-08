@@ -151,6 +151,21 @@ func TestParseValidFixture(t *testing.T) {
 	}
 }
 
+// TestParseExampleConfig guards the shipped example against strict-decode
+// drift: Parse only (NO Validate — the example carries placeholder values).
+func TestParseExampleConfig(t *testing.T) {
+	cfg, err := Parse(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("Parse config.example.yaml: %v", err)
+	}
+	if !cfg.Enrollment.Enabled || cfg.Enrollment.User != "login" {
+		t.Errorf("example enrollment = %+v, want enabled login", cfg.Enrollment)
+	}
+	if !cfg.KeyManagement.Enabled || cfg.KeyManagement.User != "login-admin" {
+		t.Errorf("example key_management = %+v, want enabled login-admin", cfg.KeyManagement)
+	}
+}
+
 func TestParsePathSemantics(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -330,6 +345,48 @@ func TestEnrollmentSectionParsing(t *testing.T) {
 	}
 }
 
+// TestKeyManagementDefaultsWhenUnconfigured pins unconfigured behavior: a
+// config that omits the section entirely behaves exactly like today's
+// defaults (stale-state probe for todo 2 of the ssh-key-management plan).
+func TestKeyManagementDefaultsWhenUnconfigured(t *testing.T) {
+	env := newValidEnv(t)
+	cfg, err := Load(env.writeConfig(t, env.yaml()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Enrollment.User != "login" {
+		t.Errorf("enrollment.user = %q, want default login", cfg.Enrollment.User)
+	}
+	if !cfg.KeyManagement.Enabled {
+		t.Error("key_management.enabled = false, want default true")
+	}
+	if cfg.KeyManagement.User != "login-admin" {
+		t.Errorf("key_management.user = %q, want default login-admin", cfg.KeyManagement.User)
+	}
+}
+
+func TestKeyManagementSectionParsing(t *testing.T) {
+	env := newValidEnv(t)
+	cfg, err := Load(env.writeConfig(t, env.yaml()+`key_management:
+  enabled: false
+  user: ops
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KeyManagement.Enabled {
+		t.Error("key_management.enabled = true, want false")
+	}
+	if cfg.KeyManagement.User != "ops" {
+		t.Errorf("key_management.user = %q, want ops", cfg.KeyManagement.User)
+	}
+
+	_, err = Load(env.writeConfig(t, env.yaml()+"key_management:\n  bogus: true\n"))
+	if err == nil {
+		t.Fatal("expected error for unknown key_management field")
+	}
+}
+
 func TestDefaultValues(t *testing.T) {
 	c := Default()
 	checks := []struct {
@@ -357,6 +414,8 @@ func TestDefaultValues(t *testing.T) {
 		{"enrollment.enabled", c.Enrollment.Enabled, true},
 		{"enrollment.user", c.Enrollment.User, "login"},
 		{"enrollment.max_attempts", c.Enrollment.MaxAttempts, 3},
+		{"key_management.enabled", c.KeyManagement.Enabled, true},
+		{"key_management.user", c.KeyManagement.User, "login-admin"},
 		{"observability.log_format", c.Observability.LogFormat, "json"},
 		{"observability.metrics_address", c.Observability.MetricsAddress, "127.0.0.1:9090"},
 		{"observability.health_address", c.Observability.HealthAddress, "127.0.0.1:9091"},
@@ -627,6 +686,148 @@ func TestValidateCollectsMultipleErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ssh.host_keys") || !strings.Contains(err.Error(), "deployment.wait") {
 		t.Errorf("expected both field names in joined error, got: %v", err)
+	}
+}
+
+func TestValidateUsernames(t *testing.T) {
+	long := strings.Repeat("a", 63)
+	tooLong := strings.Repeat("a", 64)
+	type mutator func(*Config)
+	cases := []struct {
+		name      string
+		mutate    mutator
+		wantErr   string
+		forbidden string
+	}{
+		{name: "defaults", wantErr: ""},
+		{
+			name:   "single-character key management user",
+			mutate: func(c *Config) { c.KeyManagement.User = "a" },
+		},
+		{
+			name:   "hyphenated key management user",
+			mutate: func(c *Config) { c.KeyManagement.User = "keys-lead" },
+		},
+		{
+			name:   "63-character key management user at label bound",
+			mutate: func(c *Config) { c.KeyManagement.User = long },
+		},
+		{
+			name: "key management disabled tolerates empty user",
+			mutate: func(c *Config) {
+				c.KeyManagement.Enabled = false
+				c.KeyManagement.User = ""
+			},
+		},
+		{
+			name: "key management disabled tolerates collision",
+			mutate: func(c *Config) {
+				c.KeyManagement.Enabled = false
+				c.KeyManagement.User = "login"
+			},
+		},
+		{
+			name: "enrollment disabled tolerates empty user",
+			mutate: func(c *Config) {
+				c.Enrollment.Enabled = false
+				c.Enrollment.User = ""
+			},
+		},
+		{
+			name:   "enrollment user rename",
+			mutate: func(c *Config) { c.Enrollment.User = "signin" },
+		},
+		{
+			name:    "key management user empty when enabled",
+			mutate:  func(c *Config) { c.KeyManagement.User = "" },
+			wantErr: "key_management.user: required when key management is enabled",
+		},
+		{
+			name: "both enabled and equal",
+			mutate: func(c *Config) {
+				c.KeyManagement.User = "login"
+			},
+			wantErr: "enrollment.user and key_management.user must differ",
+		},
+		{
+			name: "both enabled equal via enrollment rename",
+			mutate: func(c *Config) {
+				c.Enrollment.User = "login-admin"
+			},
+			wantErr: "enrollment.user and key_management.user must differ",
+		},
+		{
+			name: "both empty when enabled reports required without must-differ",
+			mutate: func(c *Config) {
+				c.Enrollment.User = ""
+				c.KeyManagement.User = ""
+			},
+			wantErr:   "key_management.user: required when key management is enabled",
+			forbidden: "must differ",
+		},
+		{
+			name:    "key management user uppercase",
+			mutate:  func(c *Config) { c.KeyManagement.User = "Keys_Admin" },
+			wantErr: "key_management.user",
+		},
+		{
+			name:    "key management user leading hyphen",
+			mutate:  func(c *Config) { c.KeyManagement.User = "-lead" },
+			wantErr: "key_management.user",
+		},
+		{
+			name:    "key management user trailing hyphen",
+			mutate:  func(c *Config) { c.KeyManagement.User = "lead-" },
+			wantErr: "key_management.user",
+		},
+		{
+			name:    "key management user embedded space",
+			mutate:  func(c *Config) { c.KeyManagement.User = "a b" },
+			wantErr: "key_management.user",
+		},
+		{
+			name:    "key management user over label length",
+			mutate:  func(c *Config) { c.KeyManagement.User = tooLong },
+			wantErr: "key_management.user",
+		},
+		{
+			name:    "enrollment user uppercase",
+			mutate:  func(c *Config) { c.Enrollment.User = "Onboard" },
+			wantErr: "enrollment.user",
+		},
+		{
+			name: "charset fails even when key management disabled",
+			mutate: func(c *Config) {
+				c.KeyManagement.Enabled = false
+				c.KeyManagement.User = "Keys_Admin"
+			},
+			wantErr: "key_management.user",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, _ := validConfig(t)
+			if tc.mutate != nil {
+				tc.mutate(cfg)
+			}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected valid config, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErr)
+			}
+			if tc.forbidden != "" && strings.Contains(err.Error(), tc.forbidden) {
+				t.Fatalf("error %q should not contain %q", err.Error(), tc.forbidden)
+			}
+		})
 	}
 }
 
