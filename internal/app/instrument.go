@@ -49,24 +49,6 @@ func (v *instrumentedVerifier) Verify(ctx context.Context, token []byte) (core.C
 	return ident, err
 }
 
-func (v *instrumentedVerifier) VerifyIdentity(ctx context.Context, token []byte, want uuid.UUID) error {
-	release, ok := v.counters.AcquireCoderAPI()
-	if !ok {
-		v.rec.LimitRejection(string(limits.ReasonCoderAPI))
-		v.rec.CredentialValidation(metrics.ValidationUnavailable, 0)
-		return &core.CredentialError{
-			Kind:       core.ControlPlaneUnavailable,
-			Retryable:  true,
-			DetailCode: core.AUTH_CODER_UNAVAILABLE,
-		}
-	}
-	defer release()
-	start := time.Now()
-	err := v.inner.VerifyIdentity(ctx, token, want)
-	v.rec.CredentialValidation(validationResultLabel(err), time.Since(start))
-	return err
-}
-
 // validationResultLabel maps a verifier outcome to a bounded §34.2 result
 // label; unclassified errors collapse to "error".
 func validationResultLabel(err error) string {

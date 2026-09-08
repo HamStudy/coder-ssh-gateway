@@ -1,7 +1,7 @@
 // Package app implements the coder-ssh-gateway command-line surface (§29):
 // serve, init, admin, and doctor, plus the glue that assembles the full
 // system from config, store, secretbox, coderapi, sshauth, server, tunnel,
-// and maintenance (§24).
+// .
 //
 // Conventions:
 //   - Tokens NEVER appear as command-line arguments (§29); credential set

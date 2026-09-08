@@ -51,7 +51,6 @@ type Listen struct {
 }
 
 type SSH struct {
-	MaintenanceUser      string   `yaml:"maintenance_user"`
 	ServerVersion        string   `yaml:"server_version"`
 	HostKeys             []string `yaml:"host_keys"`
 	AllowSSHCertificates bool     `yaml:"allow_ssh_certificates"`
@@ -118,8 +117,7 @@ type Enrollment struct {
 	// username behave exactly like any unknown username (§35).
 	Enabled bool `yaml:"enabled"`
 	// User is the outer SSH username that triggers enrollment
-	// (default "login"). It must differ from the transport and
-	// maintenance usernames.
+	// (default "login").
 	User string `yaml:"user"`
 	// MaxAttempts bounds candidate token attempts per enrollment
 	// connection (mirrors limits.renewal_attempts_per_connection).

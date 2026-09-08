@@ -283,8 +283,7 @@ func (s *Server) enrollmentGoodbye(conn ssh.Conn, channels <-chan ssh.NewChannel
 
 // rejectChannelAll drains the channels channel with a Prohibited rejection
 // per open so ssh.NewServerConn bookkeeping unwinds cleanly on close.
-// Used by maintenance mode when no MaintenanceHandler is wired and by the
-// unknown-mode guard.
+// Used by the unknown-permission-mode guard.
 func rejectChannelAll(log *slog.Logger, channels <-chan ssh.NewChannel) {
 	for ch := range channels {
 		log.Debug("rejecting channel",

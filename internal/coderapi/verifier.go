@@ -110,7 +110,6 @@ func (v *Verifier) Verify(ctx context.Context, token []byte) (core.CoderIdentity
 	return ident, nil
 }
 
-// VerifyIdentity verifies the token and additionally requires the returned
 // UUID to equal want (§11.3 expected identity match). A mismatch returns
 // *core.CredentialError with Kind CredentialWrongIdentity.
 func (v *Verifier) VerifyIdentity(ctx context.Context, token []byte, want uuid.UUID) error {

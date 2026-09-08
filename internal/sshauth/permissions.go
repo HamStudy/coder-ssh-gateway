@@ -27,7 +27,6 @@ const (
 
 const (
 	ModeCandidate = "candidate"
-	ModeTransport = "transport"
 	// ModeWorkspace is an authenticated direct workspace session. Its target
 	// comes from the outer SSH username and is parsed only after key proof.
 	ModeWorkspace = "workspace"
@@ -173,7 +172,7 @@ func ParseFinalPermissions(perms *ssh.Permissions) (FinalPerms, error) {
 		if deploymentID == uuid.Nil {
 			return FinalPerms{}, ErrZeroDeploymentID
 		}
-	} else if mode == ModeTransport || mode == ModeWorkspace {
+	} else if mode == ModeWorkspace {
 		return FinalPerms{}, ErrMissingDeploymentID
 	}
 

@@ -78,12 +78,10 @@ const (
 )
 
 // RenewalVerifier is the narrow verifier subset the renewal continuation
-// needs (§25.4). *coderapi.Verifier satisfies it. VerifyIdentity is used by
-// the maintenance-mode flow (T21); renewal itself calls Verify once and
-// compares the returned UUID against the account binding.
+// needs (§25.4). *coderapi.Verifier satisfies it. Renewal calls Verify once
+// and compares the returned UUID against the account binding.
 type RenewalVerifier interface {
 	Verify(ctx context.Context, token []byte) (core.CoderIdentity, error)
-	VerifyIdentity(ctx context.Context, token []byte, want uuid.UUID) error
 }
 
 // RenewalStore is the narrow store subset the renewal continuation needs
@@ -159,9 +157,7 @@ func (rc *RenewalConfig) cliAuthURL() string {
 }
 
 // renewalScope identifies one connection for logs and audit in the shared
-// §25.4 completion path. The auth continuations build it from ConnState; the
-// maintenance handler (§14, post-auth on a session channel) carries the same
-// identity through the context via WithConnScope.
+// §25.4 completion path. The auth continuations build it from ConnState.
 type renewalScope struct {
 	ctx  context.Context
 	id   string
@@ -170,55 +166,6 @@ type renewalScope struct {
 
 func scopeFromState(state *ConnState) renewalScope {
 	return renewalScope{ctx: state.Context(), id: state.ID(), peer: state.PeerAddr()}
-}
-
-// connScope is the WithConnScope payload: server-connection identity plus
-// the authenticated SSH key ID for audit attribution.
-type connScope struct {
-	id     string
-	peer   string
-	sshKey uuid.UUID
-}
-
-type connScopeKey struct{}
-
-// WithConnScope annotates ctx with the server-side connection identity for
-// ReplaceToken (§14 maintenance mode runs post-auth, so no ConnState exists
-// on the renewal path). The server channel dispatcher installs it.
-func WithConnScope(ctx context.Context, connectionID, peer string, sshKeyID uuid.UUID) context.Context {
-	return context.WithValue(ctx, connScopeKey{}, connScope{id: connectionID, peer: peer, sshKey: sshKeyID})
-}
-
-func scopeFromContext(ctx context.Context) connScope {
-	if cs, ok := ctx.Value(connScopeKey{}).(connScope); ok {
-		return cs
-	}
-	return connScope{}
-}
-
-// ReplaceToken is the §14.3 maintenance-mode entry to the shared §25.4
-// completion path (replaceCredential). Unlike the auth continuations it
-// performs NO handshake side effects — no auth banner, no reconnect
-// allowance, no must_reconnect permissions — because the maintenance channel
-// owns user messaging and the §14.3 transport close. Connection identity for
-// logs and audit comes from WithConnScope (absent scope is tolerated).
-//
-// The returned generation is the credential generation after the call: the
-// newly stored one, or — when a concurrent renewal won the CAS (§23.2) — the
-// reloaded current generation (a success outcome: the credential is valid).
-// Errors are the shared renewal sentinels; only ErrTokenRejected is
-// retryable with a fresh candidate.
-func (rc *RenewalConfig) ReplaceToken(ctx context.Context, account core.Account, expectedGeneration int64, rawCandidate []byte) (int64, error) {
-	cs := scopeFromContext(ctx)
-	keyRecord := core.SSHKeyRecord{ID: cs.sshKey, AccountID: account.ID}
-	snap, _, err := rc.replaceCredential(
-		renewalScope{ctx: ctx, id: cs.id, peer: cs.peer},
-		account, keyRecord, expectedGeneration, rawCandidate,
-	)
-	if err != nil {
-		return expectedGeneration, err
-	}
-	return snap.Generation, nil
 }
 
 // renewalSession is one connection's §12 renewal attempt: the verified
@@ -340,8 +287,7 @@ func (rc *RenewalConfig) validateAndStoreReplacement(
 // replaceCredential is the side-effect-light core of the §25.4 shared
 // completion: sanitize -> rate gate -> verify -> identity binding ->
 // generation-CAS store replace. It emits logs and §34.3 audit events but
-// touches no handshake state, so both the auth continuations and the §14.3
-// maintenance session (via ReplaceToken) share it.
+// touches no handshake state, so the auth continuations share it.
 //
 // Candidate token bytes are NEVER logged or audited (§13.2/§34.3); the
 // sanitized buffer is wiped before return (the store additionally wipes it

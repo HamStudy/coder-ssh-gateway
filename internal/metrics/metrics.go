@@ -43,7 +43,7 @@ const (
 	MethodOther               = "other"
 
 	// MethodToken labels credential renewals: every renewal path (SSH
-	// keyboard-interactive, password, or the maintenance session) presents a
+	// keyboard-interactive, or password) presents a
 	// Coder token; the audit layer does not distinguish the carrier method.
 	MethodToken = "token"
 

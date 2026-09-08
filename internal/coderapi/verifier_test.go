@@ -120,29 +120,6 @@ func TestVerifySuccessExpectedUUID(t *testing.T) {
 	if id.Username != "taxilian" || id.Status != "active" {
 		t.Fatalf("identity = %+v", id)
 	}
-
-	if err := v.VerifyIdentity(context.Background(), []byte(testToken), wantID); err != nil {
-		t.Fatalf("VerifyIdentity(match): %v", err)
-	}
-}
-
-func TestVerifySuccessWrongUUID(t *testing.T) {
-	serverID := uuid.New()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"id":%q,"username":"other","status":"active"}`, serverID.String())
-	}))
-	defer srv.Close()
-
-	v, err := coderapi.New(deploymentFor(t, srv.URL), coderapi.Options{})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	err = v.VerifyIdentity(context.Background(), []byte(testToken), uuid.New())
-	ce := requireKind(t, err, core.CredentialWrongIdentity)
-	if ce.DetailCode != core.AUTH_WRONG_CODER_IDENTITY {
-		t.Fatalf("detail = %q, want %q", ce.DetailCode, core.AUTH_WRONG_CODER_IDENTITY)
-	}
-	assertNoSecretsInError(t, err)
 }
 
 func TestVerifyMalformedJSON(t *testing.T) {
