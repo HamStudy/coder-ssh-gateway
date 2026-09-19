@@ -118,7 +118,7 @@ required; install straight from the OCI registry:
 ```bash
 helm install csgw \
   oci://ghcr.io/hamstudy/charts/coder-ssh-gateway \
-  --version 0.2.1 \
+  --version 0.6.0 \
   -n csgw --create-namespace --set coder.domain=coder.example.com
 ```
 

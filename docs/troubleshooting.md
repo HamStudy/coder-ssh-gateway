@@ -228,8 +228,8 @@ failed: Session open refused by peer`; other clients report a refused
 Most likely cause: gateway versions **0.5.0 and older** enforce this
 rule — a workspace connection permitted exactly one session channel for
 its whole lifetime; even after that session closed, the connection
-could never serve another. The rule is fixed in the first gateway
-release after 0.5.0: concurrent sessions work and a closed session
+could never serve another. The rule is fixed in 0.6.0
+and later: concurrent sessions work and a closed session
 frees its slot. Upgrade the gateway to the latest release.
 
 On a fixed version, the refusal means the connection is at its
