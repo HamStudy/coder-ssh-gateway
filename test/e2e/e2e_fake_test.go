@@ -7,7 +7,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -294,6 +296,216 @@ func TestE2ERapidPreflightFake(t *testing.T) {
 	elapsed := time.Since(start)
 	f.waitNoChildren(t, 5*time.Second)
 	t.Logf("%d rapid sequential ProxyJump probes succeeded in %v", probes, elapsed)
+}
+
+// TestE2EControlMasterMultiplexing locks the session-reuse regression:
+// ONE gateway connection — a real OpenSSH ControlMaster — carries two
+// sequential multiplexed execs and two concurrently HELD interactive
+// shells, with exactly one coder transport child alive while both shells
+// are live. ProxyCommand=/bin/false on every multiplexed session client
+// makes the silent fresh-connection fallback impossible, so a refused
+// second session fails the client loudly (the pre-fix bug's signature)
+// instead of silently passing.
+func TestE2EControlMasterMultiplexing(t *testing.T) {
+	requireOpenSSH(t)
+	f := newGatewayFixture(t, "e2e-valid-token")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	target := testWorkspace + "@" + f.host
+	cfgArgs := f.sshCommonArgs(t)
+
+	// The control socket must live in a SHORT directory: sun_path caps at
+	// 108 bytes and the deep per-test temp tree overflows it.
+	sockDir, err := os.MkdirTemp("", "csgw-cm")
+	if err != nil {
+		t.Fatalf("mkdir control-socket dir: %v", err)
+	}
+	sock := filepath.Join(sockDir, "cm.sock")
+
+	// MASTER: one long-lived connection carrying every channel below.
+	// No ProxyCommand here — the master owns the real dial.
+	masterArgs := append(append([]string{}, cfgArgs...),
+		"-p", f.port,
+		"-N",
+		"-o", "ControlMaster=yes",
+		"-o", "ControlPath="+sock,
+		target,
+	)
+	master := exec.CommandContext(ctx, "ssh", masterArgs...)
+	masterStderr := &lockedBuffer{}
+	master.Stderr = masterStderr
+	if err := master.Start(); err != nil {
+		t.Fatalf("start ControlMaster: %v", err)
+	}
+	masterWait := make(chan error, 1)
+	go func() { masterWait <- master.Wait() }()
+
+	// OpenSSH links the final ControlPath atomically once the master's mux
+	// listener is up (post-auth), so socket existence == ready.
+	socketReady := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(50 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			if _, err := os.Stat(sock); err == nil {
+				close(socketReady)
+				return
+			}
+			select {
+			case <-tick.C:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	select {
+	case <-socketReady:
+	case err := <-masterWait:
+		t.Fatalf("ControlMaster exited during startup: %v\nstderr:\n%s\ngateway logs:\n%s", err, masterStderr.String(), f.logBuf.String())
+	case <-time.After(30 * time.Second):
+		t.Fatalf("control socket %s never appeared\nmaster stderr:\n%s\ngateway logs:\n%s", sock, masterStderr.String(), f.logBuf.String())
+	}
+
+	// Teardown, exactly-once: polite mux shutdown, then a bounded kill
+	// fallback. master.Wait is called exactly once, via masterWait.
+	shutdownMaster := func() {
+		octx, ocancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ocancel()
+		oargs := append(append([]string{}, cfgArgs...),
+			"-o", "ControlPath="+sock,
+			"-O", "exit",
+			target,
+		)
+		_, _, _ = runSSH(octx, oargs...)
+		select {
+		case <-masterWait:
+		case <-time.After(5 * time.Second):
+			_ = master.Process.Kill()
+			select {
+			case <-masterWait:
+			case <-time.After(5 * time.Second):
+				t.Errorf("ControlMaster did not exit after kill\nstderr:\n%s", masterStderr.String())
+			}
+		}
+	}
+	var shutdownOnce sync.Once
+	t.Cleanup(func() {
+		shutdownOnce.Do(shutdownMaster)
+		_ = os.RemoveAll(sockDir)
+	})
+
+	// Every multiplexed session client: never a master itself, and
+	// ProxyCommand=/bin/false forbids OpenSSH's fallback to a fresh direct
+	// connection when a mux session is refused — the refusal then has to
+	// surface as a nonzero client exit.
+	muxClientOpts := []string{
+		"-o", "ControlMaster=no",
+		"-o", "ControlPath=" + sock,
+		"-o", "ProxyCommand=/bin/false",
+	}
+
+	// SEQUENTIAL PHASE: two execs over the shared connection. The second
+	// session-after-close is exactly the reported bug — pre-fix, the
+	// connection permitted one session channel for its entire life.
+	for i, command := range []string{"echo one", "echo two"} {
+		args := append(append([]string{}, cfgArgs...), muxClientOpts...)
+		args = append(args, "-p", f.port, target, command)
+		stdout, stderr, code := runSSH(ctx, args...)
+		if code != 0 {
+			t.Fatalf("multiplexed exec %d (%q) exit %d\nstdout: %q\nstderr: %q\ngateway logs:\n%s",
+				i+1, command, code, stdout, stderr, f.logBuf.String())
+		}
+		if want := innerssh.ExecPrefix + command; stdout != want {
+			t.Fatalf("multiplexed exec %d stdout = %q, want %q\nstderr: %q", i+1, stdout, want, stderr)
+		}
+		t.Logf("multiplexed exec %d (%q) ok", i+1, command)
+	}
+
+	// CONCURRENT PHASE: two HELD shell sessions over the same connection.
+	// Held shells — not short execs — prove the sessions genuinely
+	// overlap: the fake inner server answers exec immediately, so even
+	// concurrent execs could pass without ever sharing the connection.
+	type heldShell struct {
+		stdin io.WriteCloser
+		out   *lockedBuffer
+		wait  chan error
+	}
+	markers := []string{"held-shell-alpha-4d91", "held-shell-beta-7c25"}
+	shells := make([]heldShell, len(markers))
+	for i := range shells {
+		args := append(append([]string{}, cfgArgs...), muxClientOpts...)
+		args = append(args, "-p", f.port, target)
+		cmd := exec.CommandContext(ctx, "ssh", args...)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatalf("held shell %d stdin pipe: %v", i, err)
+		}
+		out := &lockedBuffer{}
+		cmd.Stdout = out
+		cmd.Stderr = out
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start held shell %d: %v", i, err)
+		}
+		waitCh := make(chan error, 1)
+		go func() { waitCh <- cmd.Wait() }()
+		shells[i] = heldShell{stdin: stdin, out: out, wait: waitCh}
+	}
+
+	// Both shells must be demonstrably live (banner received) BEFORE the
+	// one-child assertion runs; the logged timestamps are the ordering
+	// proof for that sequencing.
+	bannerAt := make([]time.Time, len(shells))
+	for i := range shells {
+		waitForTranscript(t, shells[i].out, strings.TrimSpace(innerssh.ShellBanner), 30*time.Second, f.logBuf)
+		bannerAt[i] = time.Now()
+		t.Logf("held shell %d banner observed at %s", i, bannerAt[i].Format(time.RFC3339Nano))
+	}
+
+	// While BOTH shells are live there is exactly ONE coder transport
+	// child: every session on the connection rides the shared transport.
+	kids := f.childPIDs()
+	t.Logf("one-child assertion at %s (after both banners): gateway children=%v",
+		time.Now().Format(time.RFC3339Nano), kids)
+	if len(kids) != 1 {
+		t.Fatalf("gateway children while both held shells live = %v, want exactly 1 shared transport child\ngateway logs:\n%s", kids, f.logBuf.String())
+	}
+
+	// Two independent shells: each echoes its own marker line back.
+	for i := range shells {
+		if _, err := io.WriteString(shells[i].stdin, markers[i]+"\n"); err != nil {
+			t.Fatalf("write marker to held shell %d: %v", i, err)
+		}
+	}
+	for i := range shells {
+		waitForTranscript(t, shells[i].out, markers[i], 30*time.Second, f.logBuf)
+		t.Logf("held shell %d echoed marker %q", i, markers[i])
+	}
+
+	// Closing stdin is the client-side session EOF: the fake shell sends
+	// exit-status 0 and both clients must exit cleanly.
+	for i := range shells {
+		if err := shells[i].stdin.Close(); err != nil {
+			t.Fatalf("close held shell %d stdin: %v", i, err)
+		}
+	}
+	for i := range shells {
+		select {
+		case err := <-shells[i].wait:
+			if err != nil {
+				t.Fatalf("held shell %d exited with error: %v\ntranscript:\n%s\ngateway logs:\n%s", i, err, shells[i].out.String(), f.logBuf.String())
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("held shell %d did not exit after stdin close\ntranscript:\n%s\ngateway logs:\n%s", i, shells[i].out.String(), f.logBuf.String())
+		}
+		t.Logf("held shell %d exited cleanly", i)
+	}
+
+	// Polite master teardown, then no leftover transport children.
+	shutdownOnce.Do(shutdownMaster)
+	f.waitNoChildren(t, 5*time.Second)
+	t.Logf("one ControlMaster connection carried 2 sequential execs + 2 concurrent held shells on 1 transport child")
 }
 
 // waitForTranscript polls the PTY transcript until it contains want.
