@@ -14,6 +14,8 @@ import (
 
 	"github.com/HamStudy/coder-ssh-gateway/internal/config"
 	"github.com/HamStudy/coder-ssh-gateway/internal/core"
+	"github.com/HamStudy/coder-ssh-gateway/internal/limits"
+	"github.com/HamStudy/coder-ssh-gateway/internal/metrics"
 	"github.com/HamStudy/coder-ssh-gateway/internal/server"
 	"github.com/HamStudy/coder-ssh-gateway/internal/tunnel"
 )
@@ -121,6 +123,30 @@ func (t *fakeTransport) RelayGlobalRequest(reqType string, wantReply bool, paylo
 }
 
 func (t *fakeTransport) Close() {}
+
+// gatedTransportFactory wraps a fake factory whose NewTransport blocks on a
+// gate: entry is signaled before blocking, so a test can hold the transport
+// start in-flight and observe behavior at that exact point. Both waits
+// escape on ctx cancellation so no goroutine outlives the connection.
+type gatedTransportFactory struct {
+	inner   *fakeTransportFactory
+	entered chan struct{}
+	gate    chan struct{}
+}
+
+func (g *gatedTransportFactory) NewTransport(ctx context.Context, target string, snap core.CredentialSnapshot, out ssh.Conn) (tunnel.WorkspaceTransport, error) {
+	select {
+	case g.entered <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case <-g.gate:
+		return g.inner.NewTransport(ctx, target, snap, out)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 func (f *fakeTunnelStarter) count() int {
 	f.mu.Lock()
@@ -299,8 +325,8 @@ func TestDirectTCPIPFullPath(t *testing.T) {
 
 // §8.3 dispatch matrix for workspace connections: arbitrary direct-tcpip
 // targets relay through the connection transport, workspace:22 targets get
-// jump tunnels, malformed payloads are rejected, and exactly one session
-// channel is admitted.
+// jump tunnels, malformed payloads are rejected, and session channels
+// multiplex concurrently under the channel limits (slots free on close).
 func TestWorkspaceChannelDispatchMatrix(t *testing.T) {
 	defer leakCheck(t)
 
@@ -355,7 +381,7 @@ func TestWorkspaceChannelDispatchMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("session admitted once then rejected", func(t *testing.T) {
+	t.Run("session reopens after close", func(t *testing.T) {
 		ch, _, err := client.OpenChannel("session", nil)
 		if err != nil {
 			t.Fatalf("first session open: %v", err)
@@ -364,11 +390,18 @@ func TestWorkspaceChannelDispatchMatrix(t *testing.T) {
 			t.Errorf("shell request: ok=%v err=%v, want accepted", ok, err)
 		}
 		_ = ch.Close()
-		_, _, err = client.OpenChannel("session", nil)
-		reason, ok := openChannelReason(err)
-		if !ok || reason != ssh.Prohibited {
-			t.Errorf("second session err = %v, want OpenChannelError Prohibited", err)
+		waitFor(t, 5*time.Second, func() bool {
+			u := ts.counters.Usage()
+			return len(u.Channels) == 0 && len(u.ChannelAccounts) == 0
+		})
+		ch2, _, err := client.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatalf("second session open after close: %v", err)
 		}
+		if ok, err := ch2.SendRequest("shell", true, nil); err != nil || !ok {
+			t.Errorf("second shell request: ok=%v err=%v, want accepted", ok, err)
+		}
+		_ = ch2.Close()
 	})
 
 	t.Run("forwarded-tcpip unknown type", func(t *testing.T) {
@@ -387,6 +420,418 @@ func TestWorkspaceChannelDispatchMatrix(t *testing.T) {
 		}
 	})
 }
+
+// RFC 4254 §5 multiplexing on a workspace connection (sshd MaxSessions
+// model): concurrent sessions coexist up to limits.channels_per_connection,
+// and a closed session — cleanly or abruptly — frees its slot for the next
+// open on the same connection.
+func TestWorkspaceSessionMultiplexing(t *testing.T) {
+	defer leakCheck(t)
+
+	f := newFixture(t, coderOKHandler(testCoderUserID))
+	defer f.close(t)
+	f.installCredential(t, "wire-token-transport-0123456789")
+
+	ts := startTestServer(t, f, nil)
+	defer ts.shutdown(t)
+
+	client, err := dialGateway(ts.addr(), "coder", ssh.PublicKeys(f.signer))
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	defer client.Close()
+
+	drainChannelSlots := func() {
+		t.Helper()
+		waitFor(t, 5*time.Second, func() bool {
+			u := ts.counters.Usage()
+			return len(u.Channels) == 0 && len(u.ChannelAccounts) == 0
+		})
+	}
+
+	t.Run("two concurrent sessions both function", func(t *testing.T) {
+		ch1, _, err := client.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatalf("first session open: %v", err)
+		}
+		ch2, _, err := client.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatalf("second concurrent session open: %v", err)
+		}
+		for i, ch := range []ssh.Channel{ch1, ch2} {
+			if ok, err := ch.SendRequest("shell", true, nil); err != nil || !ok {
+				t.Errorf("session %d shell request: ok=%v err=%v, want accepted", i+1, ok, err)
+			}
+		}
+		_ = ch1.Close()
+		_ = ch2.Close()
+	})
+
+	t.Run("reopen after clean close", func(t *testing.T) {
+		ch, _, err := client.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatalf("session open: %v", err)
+		}
+		if ok, err := ch.SendRequest("shell", true, nil); err != nil || !ok {
+			t.Errorf("shell request: ok=%v err=%v, want accepted", ok, err)
+		}
+		_ = ch.Close()
+		drainChannelSlots()
+		ch2, _, err := client.OpenChannel("session", nil)
+		if err != nil {
+			t.Fatalf("session reopen after clean close: %v", err)
+		}
+		if ok, err := ch2.SendRequest("shell", true, nil); err != nil || !ok {
+			t.Errorf("reopened shell request: ok=%v err=%v, want accepted", ok, err)
+		}
+		_ = ch2.Close()
+	})
+}
+
+// Deterministic close-before-bridge slot release: with the transport start
+// gated in-flight (factory entered, blocked), closing the outer session
+// channel must release BOTH limiter slots before the transport ever starts,
+// and a new session opens on the same connection once the gate lifts. The
+// gate removes the race in an ungated close-after-open (the transport may
+// already have started), so this runs standalone on a fresh connection —
+// earlier sessions on a shared connection would keep the gate from ever
+// being reached.
+func TestWorkspaceSessionCloseBeforeBridgeReleasesSlots(t *testing.T) {
+	defer leakCheck(t)
+
+	f := newFixture(t, coderOKHandler(testCoderUserID))
+	defer f.close(t)
+	f.installCredential(t, "wire-token-transport-0123456789")
+
+	gated := &gatedTransportFactory{
+		inner:   newFakeTransportFactory(),
+		entered: make(chan struct{}, 1),
+		gate:    make(chan struct{}),
+	}
+	ts := startTestServer(t, f, func(sc *server.ServerConfig, lc *config.Config) {
+		lc.Limits.ChannelsPerConnection = 1
+		lc.Limits.ChannelsPerAccount = 1
+		sc.WorkspaceTransports = gated
+	})
+	defer ts.shutdown(t)
+
+	client, err := dialGateway(ts.addr(), "coder", ssh.PublicKeys(f.signer))
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	defer client.Close()
+
+	ch, _, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("session open: %v", err)
+	}
+	// Wait until the transport start is in-flight: the factory has been
+	// entered and is blocked, so the bridge cannot have started.
+	select {
+	case <-gated.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("transport factory never entered")
+	}
+
+	_ = ch.Close()
+	// Both channel slots must release while the transport start is still
+	// blocked — under caps of 1/1 a leaked slot would surface as a
+	// non-empty usage map here.
+	waitFor(t, 5*time.Second, func() bool {
+		u := ts.counters.Usage()
+		return len(u.Channels) == 0 && len(u.ChannelAccounts) == 0
+	})
+
+	close(gated.gate)
+
+	ch2, _, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("session reopen after close-before-bridge: %v", err)
+	}
+	if ok, err := ch2.SendRequest("shell", true, nil); err != nil || !ok {
+		t.Errorf("reopened shell request: ok=%v err=%v, want accepted", ok, err)
+	}
+	_ = ch2.Close()
+}
+
+// Over-cap concurrent sessions take the channel-limit path: ResourceShortage
+// rejection before Accept, audit + log evidence, and the cap frees on close.
+func TestWorkspaceSessionChannelLimit(t *testing.T) {
+	defer leakCheck(t)
+
+	f := newFixture(t, coderOKHandler(testCoderUserID))
+	defer f.close(t)
+	f.installCredential(t, "wire-token-transport-0123456789")
+
+	ts := startTestServer(t, f, func(sc *server.ServerConfig, lc *config.Config) {
+		lc.Limits.ChannelsPerConnection = 1
+	})
+	defer ts.shutdown(t)
+
+	client, err := dialGateway(ts.addr(), "coder", ssh.PublicKeys(f.signer))
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	defer client.Close()
+
+	ch1, _, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("first session open: %v", err)
+	}
+	if ok, err := ch1.SendRequest("shell", true, nil); err != nil || !ok {
+		t.Errorf("shell request: ok=%v err=%v, want accepted", ok, err)
+	}
+
+	// The first session holds the only per-connection slot.
+	_, _, err = client.OpenChannel("session", nil)
+	reason, ok := openChannelReason(err)
+	if !ok || reason != ssh.ResourceShortage {
+		t.Errorf("second session err = %v, want OpenChannelError ResourceShortage", err)
+	}
+	if !channelAuditHasDetail(f, core.TUNNEL_LIMIT_REACHED) {
+		t.Error("missing audit with TUNNEL_LIMIT_REACHED")
+	}
+	if !f.logs.contains("channel rejected at limit") {
+		t.Error("missing channel-limit rejection log line")
+	}
+
+	// Closing the held session frees the slot for a new one.
+	_ = ch1.Close()
+	waitFor(t, 5*time.Second, func() bool {
+		u := ts.counters.Usage()
+		return len(u.Channels) == 0 && len(u.ChannelAccounts) == 0
+	})
+	ch2, _, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("session reopen after limit release: %v", err)
+	}
+	_ = ch2.Close()
+}
+
+// Simultaneous session opens race for the per-connection semaphore: exactly
+// the cap (default fixture limits: 4) is accepted, the rest are rejected
+// cleanly, and no slot leaks — a further open succeeds after one holder
+// closes.
+func TestWorkspaceSessionConcurrentOpenRace(t *testing.T) {
+	defer leakCheck(t)
+
+	f := newFixture(t, coderOKHandler(testCoderUserID))
+	defer f.close(t)
+	f.installCredential(t, "wire-token-transport-0123456789")
+
+	ts := startTestServer(t, f, nil)
+	defer ts.shutdown(t)
+
+	client, err := dialGateway(ts.addr(), "coder", ssh.PublicKeys(f.signer))
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	defer client.Close()
+
+	type openResult struct {
+		ch  ssh.Channel
+		err error
+	}
+	const opens = 6
+	results := make(chan openResult, opens)
+	for i := 0; i < opens; i++ {
+		go func() {
+			ch, _, err := client.OpenChannel("session", nil)
+			results <- openResult{ch: ch, err: err}
+		}()
+	}
+	var accepted []ssh.Channel
+	rejected := 0
+	for i := 0; i < opens; i++ {
+		r := <-results
+		if r.err == nil {
+			accepted = append(accepted, r.ch)
+			continue
+		}
+		reason, ok := openChannelReason(r.err)
+		if !ok || reason != ssh.ResourceShortage {
+			t.Errorf("open err = %v, want OpenChannelError ResourceShortage", r.err)
+		}
+		rejected++
+	}
+	if len(accepted) != 4 || rejected != 2 {
+		t.Fatalf("accepted = %d, rejected = %d, want 4/2 under cap 4", len(accepted), rejected)
+	}
+	for i, ch := range accepted {
+		if ok, err := ch.SendRequest("shell", true, nil); err != nil || !ok {
+			t.Errorf("accepted session %d shell: ok=%v err=%v, want accepted", i+1, ok, err)
+		}
+	}
+
+	// One holder closes; the freed slot admits a new open (no slot leak).
+	_ = accepted[0].Close()
+	waitFor(t, 5*time.Second, func() bool {
+		for _, n := range ts.counters.Usage().Channels {
+			if n == 3 {
+				return true
+			}
+		}
+		return false
+	})
+	ch, _, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("open after holder close: %v", err)
+	}
+	_ = ch.Close()
+	for _, c := range accepted[1:] {
+		_ = c.Close()
+	}
+}
+
+// limitRejectionRecorder counts LimitRejection calls per reason code; the
+// rest of the Recorder surface stays no-op.
+type limitRejectionRecorder struct {
+	metrics.NoopRecorder
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func newLimitRejectionRecorder() *limitRejectionRecorder {
+	return &limitRejectionRecorder{counts: make(map[string]int)}
+}
+
+func (r *limitRejectionRecorder) LimitRejection(reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counts[reason]++
+}
+
+func (r *limitRejectionRecorder) count(reason string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.counts[reason]
+}
+
+// assertSessionLimitRejection opens two sessions under the given limit
+// overrides: the first is held, the second must be refused on the wire
+// (ResourceShortage) with a TUNNEL_LIMIT_REACHED audit and exact
+// per-reason LimitRejection counts (wantConn/wantAcct).
+func assertSessionLimitRejection(t *testing.T, mutate func(lc *config.Config), wantConn, wantAcct int) {
+	t.Helper()
+
+	f := newFixture(t, coderOKHandler(testCoderUserID))
+	defer f.close(t)
+	f.installCredential(t, "wire-token-transport-0123456789")
+
+	rec := newLimitRejectionRecorder()
+	ts := startTestServer(t, f, func(sc *server.ServerConfig, lc *config.Config) {
+		sc.Metrics = rec
+		mutate(lc)
+	})
+	defer ts.shutdown(t)
+
+	client, err := dialGateway(ts.addr(), "coder", ssh.PublicKeys(f.signer))
+	if err != nil {
+		t.Fatalf("auth: %v", err)
+	}
+	defer client.Close()
+
+	held, _, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("first session open: %v", err)
+	}
+	defer held.Close()
+
+	_, _, err = client.OpenChannel("session", nil)
+	reason, ok := openChannelReason(err)
+	if !ok || reason != ssh.ResourceShortage {
+		t.Fatalf("over-cap session err = %v, want OpenChannelError ResourceShortage", err)
+	}
+	if !channelAuditHasDetail(f, core.TUNNEL_LIMIT_REACHED) {
+		t.Error("missing audit with TUNNEL_LIMIT_REACHED")
+	}
+	if got := rec.count(string(limits.ReasonChannelConn)); got != wantConn {
+		t.Errorf("LimitRejection[%s] = %d, want %d", limits.ReasonChannelConn, got, wantConn)
+	}
+	if got := rec.count(string(limits.ReasonChannelAccount)); got != wantAcct {
+		t.Errorf("LimitRejection[%s] = %d, want %d", limits.ReasonChannelAccount, got, wantAcct)
+	}
+}
+
+// Never-silent rule for session cap rejections: the over-cap open must
+// record LimitRejection with the exact reason code (channel_conn vs
+// channel_account), mirroring the direct-tcpip admission paths.
+func TestWorkspaceSessionLimitRejectionMetrics(t *testing.T) {
+	defer leakCheck(t)
+
+	t.Run("per-connection cap records channel_conn", func(t *testing.T) {
+		assertSessionLimitRejection(t, func(lc *config.Config) {
+			lc.Limits.ChannelsPerConnection = 1
+			lc.Limits.ChannelsPerAccount = 8
+		}, 1, 0)
+	})
+
+	t.Run("per-account cap records channel_account", func(t *testing.T) {
+		assertSessionLimitRejection(t, func(lc *config.Config) {
+			lc.Limits.ChannelsPerConnection = 4
+			lc.Limits.ChannelsPerAccount = 1
+		}, 0, 1)
+	})
+}
+
+// Per-account session cap interplay: a session held on one connection
+// consumes the account-wide channel slot, so a second connection's session
+// open is refused until the first session closes.
+func TestWorkspaceSessionPerAccountCap(t *testing.T) {
+	defer leakCheck(t)
+
+	f := newFixture(t, coderOKHandler(testCoderUserID))
+	defer f.close(t)
+	f.installCredential(t, "wire-token-transport-0123456789")
+
+	ts := startTestServer(t, f, func(sc *server.ServerConfig, lc *config.Config) {
+		lc.Limits.ChannelsPerConnection = 4
+		lc.Limits.ChannelsPerAccount = 1
+	})
+	defer ts.shutdown(t)
+
+	clientA, err := dialGateway(ts.addr(), "coder", ssh.PublicKeys(f.signer))
+	if err != nil {
+		t.Fatalf("auth A: %v", err)
+	}
+	defer clientA.Close()
+	clientB, err := dialGateway(ts.addr(), "coder", ssh.PublicKeys(f.signer))
+	if err != nil {
+		t.Fatalf("auth B: %v", err)
+	}
+	defer clientB.Close()
+
+	chA, _, err := clientA.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("connection A session open: %v", err)
+	}
+	if ok, err := chA.SendRequest("shell", true, nil); err != nil || !ok {
+		t.Errorf("A shell request: ok=%v err=%v, want accepted", ok, err)
+	}
+
+	// B's open is refused: the per-account cap (1) is held by A's session
+	// even though B's own per-connection budget is untouched.
+	_, _, err = clientB.OpenChannel("session", nil)
+	reason, ok := openChannelReason(err)
+	if !ok || reason != ssh.ResourceShortage {
+		t.Errorf("connection B session err = %v, want OpenChannelError ResourceShortage", err)
+	}
+
+	// Closing A's session frees the account slot; B opens immediately.
+	_ = chA.Close()
+	waitFor(t, 5*time.Second, func() bool {
+		return len(ts.counters.Usage().ChannelAccounts) == 0
+	})
+	chB, _, err := clientB.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("connection B session open after A close: %v", err)
+	}
+	if ok, err := chB.SendRequest("shell", true, nil); err != nil || !ok {
+		t.Errorf("B shell request: ok=%v err=%v, want accepted", ok, err)
+	}
+	_ = chB.Close()
+}
+
 func TestChannelLimitResourceShortage(t *testing.T) {
 	defer leakCheck(t)
 

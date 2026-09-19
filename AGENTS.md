@@ -49,7 +49,7 @@ Centrality unmeasured (no codegraph index); roles from LSP + reads.
 | `sshauth.BuildCallbacks` | fn | internal/sshauth/config.go | per-connection pubkey + verified-key callbacks |
 | `FinalWorkspacePermissions` / `FinalEnrollmentPermissions` | type | internal/sshauth/permissions.go | terminal auth outcomes; enrollment forces reconnect |
 | `server.handleConn` | fn | internal/server/connection.go | admission → handshake → callbacks → dispatch |
-| `dispatchWorkspaceChannels` | fn | internal/server/channels.go | one session channel + N direct-tcpip per connection |
+| `dispatchWorkspaceChannels` | fn | internal/server/channels.go | session channels bounded concurrently by `limits.channels_per_connection` (freed at close) + N direct-tcpip per connection |
 | `WorkspaceSessionStarter` | type | internal/tunnel/workspace_session.go | outer session → inner SSH bridge |
 | `TunnelStarter` | type | internal/tunnel/tunnel_starter.go | direct-tcpip raw byte pipe + supervision |
 | `Launcher.Launch` | meth | internal/tunnel/starter.go | builds argv/env, process group, token wipe |

@@ -160,9 +160,10 @@ One paragraph per moving part:
   token per user, encrypted at rest with a key that lives in the state
   directory's `secrets/` folder. That makes the gateway a
   credential broker: [treat the host accordingly](./SECURITY.md).
-- **Each session becomes a Coder session.** For every accepted SSH
-  channel the gateway spawns an isolated
-  `coder ssh --stdio` child and bridges your terminal to it. Shell,
+- **Each session becomes a Coder session.** A workspace connection
+  spawns one `coder ssh --stdio` child — the Coder transport — lazily,
+  on its first channel, and every session channel on the connection
+  maps to a fresh inner SSH session on that shared child. Shell,
   exec, PTY, signals, and window changes pass through, plus SFTP/scp,
   agent forwarding (`ssh -A`), and port forwarding (`-L`/`-R`/`-D`) —
   forwarding targets resolve inside the workspace, so `-L

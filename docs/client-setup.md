@@ -138,6 +138,27 @@ reaches the dev server running in your workspace. Targets shaped like a
 workspace (`workspace:22`) instead open a jump tunnel to that workspace,
 so ProxyJump keeps working on the same connection.
 
+### Connection reuse
+
+One SSH connection can carry several workspace sessions at once.
+Connection-multiplexing clients — OpenSSH `ControlMaster`/mosh-style
+multi-session clients, and mobile apps that open multiple terminals over
+a single link — all work: each session opens its own session channel on
+the shared connection.
+
+Concurrent session channels per connection are capped by the operator's
+`limits.channels_per_connection` (default 4), the same model as sshd's
+`MaxSessions`. A closed session frees both of its limiter slots
+immediately, so a new session after a closed one succeeds — subject to
+both caps (`limits.channels_per_connection` and
+`limits.channels_per_account`; the per-account slot can be consumed by
+another connection in between). An open over the cap is refused
+with a logged reason — never silently dropped.
+
+The exception is the key-management connection (`login-admin@`): it runs
+exactly one UI session per connection, by design. Reconnect to re-open
+the UI.
+
 ### ProxyJump — raw inner SSH transport
 
 `ProxyJump` (`-J`) carries your own OpenSSH session through the gateway

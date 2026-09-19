@@ -205,7 +205,15 @@ limits:
                                             # rate burst
   connections_per_key: 8                    # [DEFAULT]
   connections_per_account: 8                # [DEFAULT]
-  channels_per_connection: 4                # [DEFAULT]
+  channels_per_connection: 4                # [DEFAULT] max concurrent
+                                            # channels on one outer
+                                            # connection; session and
+                                            # direct-tcpip channels both
+                                            # count, slots freed at close.
+                                            # Effectively caps concurrent
+                                            # workspace sessions per
+                                            # connection (sshd MaxSessions
+                                            # model)
   channels_per_account: 8                   # [DEFAULT]
   coder_processes: 128                      # [DEFAULT] max spawned CLI
                                             # processes

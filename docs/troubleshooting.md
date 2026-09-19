@@ -15,6 +15,8 @@ you're seeing against the table for the exact failure path.
 - **"Host key verification failed"** — [Host key mismatch](#host-key-mismatch)
 - **`ssh` hangs after the gateway banner** — [Hangs after banner](#hangs-after-banner)
 - **Workspace connection drops mid-session** — [Workspace drops mid-session](#workspace-drops-mid-session)
+- **Second session channel refused (`mux_client_request_session: session request failed`)** —
+  [Second session channel refused](#second-session-channel-refused)
 - **`ssh: Could not resolve hostname` for the workspace** — [Workspace name not accepted](#workspace-name-not-accepted)
 - **"No supported methods remain" after key was already accepted** —
   [Token expired](#token-expired)
@@ -212,6 +214,41 @@ between the gateway and Coder.
 4. **Audit log details.** The most common code is
    `TUNNEL_CODER_EXITED` (CLI exited) or `TUNNEL_STREAM_FAILED` (mid-
    stream I/O error). Both are listed in [Detail codes](#detail-codes).
+
+---
+
+## Second session channel refused
+
+What you're seeing: a second terminal, tab, or mux session on an
+already-connected workspace fails. With OpenSSH connection sharing the
+master client reports `mux_client_request_session: session request
+failed: Session open refused by peer`; other clients report a refused
+`session` channel on an established connection.
+
+Most likely cause: gateway versions **0.5.0 and older** enforce this
+rule — a workspace connection permitted exactly one session channel for
+its whole lifetime; even after that session closed, the connection
+could never serve another. The rule is fixed in the first gateway
+release after 0.5.0: concurrent sessions work and a closed session
+frees its slot. Upgrade the gateway to the latest release.
+
+On a fixed version, the refusal means the connection is at its
+concurrent channel cap:
+
+1. **Check the limits.** `limits.channels_per_connection` (default 4)
+   bounds concurrent session channels on one connection, and
+   `limits.channels_per_account` bounds channels across the account. If
+   you need more parallel terminals on one connection, ask your operator
+   to raise `channels_per_connection`.
+2. **Close finished sessions.** A closed session frees its slot
+   immediately. Stale ControlMaster sessions (`ssh -O exit
+   <target>`) and forgotten tabs still hold slots until they exit.
+3. **Confirm from the gateway logs.** An over-cap open is refused with a
+   logged reason naming the limit — never silently. Look for a
+   channel-limit log line on the affected connection.
+4. **Key-management connections are different.** `login-admin@` runs
+   exactly one UI session per connection by design; reconnect to
+   re-open it.
 
 ---
 

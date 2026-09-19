@@ -1065,7 +1065,7 @@ wins over both `state.dir` in YAML and any default.
 | `limits.connections_per_ip` | `16` | Max connections per source IP (also pre-auth rate burst). |
 | `limits.connections_per_key` | `8` | Max connections per registered key. |
 | `limits.connections_per_account` | `8` | Max connections per account. |
-| `limits.channels_per_connection` | `4` | Max channels on one outer connection. |
+| `limits.channels_per_connection` | `4` | Max concurrent channels on one outer connection; session and direct-tcpip channels both count, slots freed at close. Effectively caps concurrent workspace sessions per connection (sshd `MaxSessions` model). |
 | `limits.channels_per_account` | `8` | Max channels per account. |
 | `limits.coder_processes` | `128` | Max concurrent spawned Coder CLI processes. |
 | `limits.coder_api_requests` | `32` | Max concurrent Coder API requests. |

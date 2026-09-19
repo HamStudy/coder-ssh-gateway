@@ -168,10 +168,14 @@ func startErrorCode(err error) string {
 // username is the workspace target for session channels. direct-tcpip
 // channels with a workspace target (:22) get a dedicated jump tunnel;
 // everything else relays through the connection transport (ssh -L/-D).
-// Session channels: exactly one (first wins). Channel handlers run in their
-// own goroutines so multiplexing never blocks on a slow channel (§19.9).
+// Session channels are bounded CONCURRENTLY by
+// limits.channels_per_connection (per-account by
+// limits.channels_per_account); the semaphore slots release when the
+// channel closes, so a closed session's slot serves the next open — the
+// RFC 4254 §5 multiplexing model under an sshd MaxSessions-style cap.
+// Channel handlers run in their own goroutines so multiplexing never
+// blocks on a slow channel (§19.9).
 func (s *Server) dispatchWorkspaceChannels(ctx context.Context, wc *workspaceContext, channels <-chan ssh.NewChannel) {
-	served := false
 	defer wc.close()
 	var wg sync.WaitGroup
 	for newCh := range channels {
@@ -183,10 +187,10 @@ func (s *Server) dispatchWorkspaceChannels(ctx context.Context, wc *workspaceCon
 		)
 		switch newCh.ChannelType() {
 		case "session":
-			if served || s.cfg.WorkspaceTransports == nil {
+			if s.cfg.WorkspaceTransports == nil {
 				s.rec.ChannelRejected()
-				s.log.Info("session channel rejected", "reason", "already served or no factory", "served", served)
-				_ = newCh.Reject(ssh.Prohibited, "workspace connections permit one session channel")
+				s.log.Info("session channel rejected", "reason", "no workspace transport available")
+				_ = newCh.Reject(ssh.Prohibited, "no workspace transport available")
 				continue
 			}
 			if s.draining.Load() {
@@ -195,7 +199,6 @@ func (s *Server) dispatchWorkspaceChannels(ctx context.Context, wc *workspaceCon
 				_ = newCh.Reject(ssh.Prohibited, "server is shutting down")
 				continue
 			}
-			served = true
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -243,12 +246,14 @@ func (s *Server) admitWorkspaceSession(ctx context.Context, wc *workspaceContext
 	}
 	relChan, ok := s.cfg.Counters.AcquireChannel(state.ID())
 	if !ok {
+		s.rec.LimitRejection(string(limits.ReasonChannelConn))
 		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonChannelConn))
 		return
 	}
 	defer relChan()
 	relAcct, ok := s.cfg.Counters.AcquireChannelAccount(perms.AccountID)
 	if !ok {
+		s.rec.LimitRejection(string(limits.ReasonChannelAccount))
 		s.rejectChannelLimit(state, perms, newCh, string(limits.ReasonChannelAccount))
 		return
 	}
